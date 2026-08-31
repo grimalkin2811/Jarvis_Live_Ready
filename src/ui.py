@@ -26,6 +26,7 @@ from .audio import AudioIO
 from .config import load_config
 from .gemini_live import GeminiLive
 from UI import appearance_actions
+from UI import menu_state
 from UI.screen_halo_overlay import ScreenHaloOverlay
 
 
@@ -92,6 +93,8 @@ def _run_voice_loop(
             mic,
             presence_hook=presence_hook,
             voice_hook=voice_hook,
+            mic_enabled=menu_state.LIVE.get_mic_enabled,
+            wake_threshold=menu_state.LIVE.get_wake_threshold,
         )
         gemini = GeminiLive(
             config.api_key,
@@ -101,6 +104,7 @@ def _run_voice_loop(
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
             on_speaking=lambda: presence_hook("speaking") if presence_hook else None,
+            response_mode_provider=menu_state.response_mode_label_from_live,
         )
 
         print(f"Jarvis Live - Bonjour {config.user}")

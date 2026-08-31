@@ -29,6 +29,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QWidget
 
 from . import appearance_actions
+from . import menu_state
 from . import system_actions
 
 
@@ -232,10 +233,20 @@ class MorphingOrbWidget(QWidget):
         self._menu_action_flash_time = -1.0
         self._menu_toggle_state: dict[str, bool] = {}
         self._menu_layout_mode = "line"
-        self._menu_hold_seconds = 0.55
+        self._menu_hold_seconds = 0.38
         self._menu_release_seconds = 0.18
         self._menu_exit_seconds = 0.24
-        self._menu_distance_close_enabled = False  # TEMP_DISABLED: distance-based close
+        # Distance-based close + sector switching: interaction du menu radial.
+        self._menu_distance_close_enabled = True
+        # Interactions directes sur les nœuds (sliders / molette).
+        self._menu_drag_index = -1
+        self._menu_drag_axis = ""
+        self._menu_drag_start_x = 0.0
+        self._menu_drag_start_value = 0
+        self._menu_wheel_index = -1
+        # État interactif persistant du menu.
+        self._menu_state_path = os.path.join(os.path.dirname(__file__), "menu_state.json")
+        self.menu_state = menu_state.load_state(self._menu_state_path)
         self._menu_open_projection = self.base_radius * 0.42
         self._menu_close_projection = self.base_radius * 3.00
         self._menu_open_lateral = self.base_radius * 1.15
@@ -440,32 +451,30 @@ class MorphingOrbWidget(QWidget):
         )
 
         if self._menu_sector >= 0:
-            if self._menu_distance_close_enabled:
-                # TEMP_DISABLED: distance-based close logic kept for later reactivation.
-                active_sx, active_sy = self._sector_vector(self._menu_sector)
-                active_projection = sector_dx * active_sx + sector_dy * active_sy
-                active_lateral = abs(sector_dx * (-active_sy) + sector_dy * active_sx)
-                distance_over_limit = core_dist >= close_distance
-                keep_open = (
-                    not distance_over_limit
-                    and active_projection >= open_distance * 0.72
-                    and active_lateral <= self.base_radius * 1.10
-                )
+            # Fermeture par l'interaction radiale :
+            # revenir vers l'orbite ou partir loin ferme ; rester dans un secteur
+            # (ou en surgir) conserve le menu et permet de changer de menu.
+            active_sx, active_sy = self._sector_vector(self._menu_sector)
+            active_projection = sector_dx * active_sx + sector_dy * active_sy
+            active_lateral = abs(sector_dx * (-active_sy) + sector_dy * active_sx)
+            near_center = core_dist < self.base_radius * 0.55
+            far_away = core_dist >= hard_close_distance
+            in_sector = sector >= 0 and sector_ok and direction_stability >= 0.22
+            keep_open = (
+                not near_center
+                and not far_away
+                and (in_sector or active_projection >= open_distance * 0.60)
+                and active_lateral <= self.base_radius * 1.45
+            )
 
-                if core_dist >= hard_close_distance:
-                    self._menu_sector = -1
-                    self._menu_candidate = -1
-                elif distance_over_limit and (self.time - self._menu_last_stable_time) > 0.08:
-                    self._menu_sector = -1
-                    self._menu_candidate = -1
-                elif keep_open:
-                    self._menu_last_stable_time = self.time
-                elif (self.time - self._menu_last_stable_time) > self._menu_release_seconds:
-                    self._menu_sector = -1
-                    self._menu_candidate = -1
-            else:
-                # TEMP_DISABLED: distance-based close is disabled, but sector switching stays active.
-                pass
+            if near_center or far_away:
+                self._menu_sector = -1
+                self._menu_candidate = -1
+            elif keep_open:
+                self._menu_last_stable_time = self.time
+            elif (self.time - self._menu_last_stable_time) > self._menu_release_seconds:
+                self._menu_sector = -1
+                self._menu_candidate = -1
 
         if stable_intent:
             self._menu_sector = sector
@@ -665,40 +674,116 @@ class MorphingOrbWidget(QWidget):
         self.center = QPointF(self.width() / 2, self.height() / 2)
 
     def mouseMoveEvent(self, event):
-        self.cursor = event.position()
+        pos = event.position()
+        self.cursor = pos
+
+        if self._menu_drag_index >= 0 and self._menu_nodes:
+            node = self._menu_nodes[self._menu_drag_index] if self._menu_drag_index < len(self._menu_nodes) else None
+            spec = self._spec_for_name(node.section) if node is not None else None
+            items = spec.items if spec is not None else []
+            item = None
+            for it in items:
+                if it.label == node.label:
+                    item = it
+                    break
+            if spec is not None and item is not None and self._menu_is_slider(spec, item):
+                delta = pos.x() - self._menu_drag_start_x
+                factor = 100.0 / 140.0  # 140 px de glissement = 100% de variation
+                value = self._menu_drag_start_value + int(round(delta * factor))
+                self._menu_set_slider(spec, item, value)
+                self._menu_action_flash = f"{item.label}: {self._menu_slider_value(spec, item)}%"
+                self._menu_action_flash_time = self.time
+
         self.update()
+
+    def mouseReleaseEvent(self, event):
+        self._menu_drag_index = -1
+        self._menu_drag_axis = ""
+        self.update()
+        super().mouseReleaseEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton and self._menu_nodes:
-            cursor_x = event.position().x()
-            cursor_y = event.position().y()
-            best_index = -1
-            best_distance = float("inf")
-
-            for index, node in enumerate(self._menu_nodes):
-                if node.visible_amount <= 0.05:
-                    continue
-                hit_radius = node.radius * (1.45 + 0.20 * node.visible_amount)
-                distance = math.hypot(cursor_x - node.position.x(), cursor_y - node.position.y())
-                if distance <= hit_radius and distance < best_distance:
-                    best_index = index
-                    best_distance = distance
-
-            if best_index >= 0:
-                node = self._menu_nodes[best_index]
-                node.click_amount = 1.0
-                if node.callback is not None:
-                    node.callback()
+            hit = self._menu_hit_test(event.position())
+            if hit is not None:
+                index, node, spec, item = hit
+                if spec is not None and item is not None and self._menu_is_slider(spec, item):
+                    # Démarre un glisser-ajuster sur le slider, sans déclencher le callback.
+                    self._menu_drag_index = index
+                    self._menu_drag_axis = item.label
+                    self._menu_drag_start_x = event.position().x()
+                    self._menu_drag_start_value = self._menu_slider_value(spec, item)
+                    node.click_amount = 0.5
+                else:
+                    node.click_amount = 1.0
+                    if node.callback is not None:
+                        node.callback()
                 self.update()
                 event.accept()
                 return
 
         super().mousePressEvent(event)
 
+    def wheelEvent(self, event):
+        if self._menu_nodes:
+            node = self._menu_hot_node
+            if node >= 0 and node < len(self._menu_nodes):
+                target = self._menu_nodes[node]
+                spec = self._spec_for_name(target.section)
+                items = spec.items if spec is not None else []
+                item = None
+                for it in items:
+                    if it.label == target.label:
+                        item = it
+                        break
+                if spec is not None and item is not None:
+                    if self._menu_is_slider(spec, item):
+                        step = 5 if event.angleDelta().y() > 0 else -5
+                        self._menu_set_slider(spec, item, self._menu_slider_value(spec, item) + step)
+                        self._menu_action_flash = f"{item.label}: {self._menu_slider_value(spec, item)}%"
+                        self._menu_action_flash_time = self.time
+                        event.accept()
+                        return
+                    if self._menu_is_option(spec, item):
+                        self._menu_cycle_option(spec, item)
+                        self._menu_action_flash = f"{item.label}: {self._menu_value(spec, item)}"
+                        self._menu_action_flash_time = self.time
+                        event.accept()
+                        return
+
+        super().wheelEvent(event)
+
+    def _menu_hit_test(self, pos) -> tuple[int, MenuNode, MenuSpec | None, MenuItemSpec | None] | None:
+        cursor_x = pos.x()
+        cursor_y = pos.y()
+        best_index = -1
+        best_distance = float("inf")
+        for index, node in enumerate(self._menu_nodes):
+            if node.visible_amount <= 0.05:
+                continue
+            hit_radius = node.radius * (1.45 + 0.20 * node.visible_amount)
+            distance = math.hypot(cursor_x - node.position.x(), cursor_y - node.position.y())
+            if distance <= hit_radius and distance < best_distance:
+                best_index = index
+                best_distance = distance
+
+        if best_index < 0:
+            return None
+        node = self._menu_nodes[best_index]
+        spec = self._spec_for_name(node.section)
+        item = None
+        if spec is not None:
+            for it in spec.items:
+                if it.label == node.label:
+                    item = it
+                    break
+        return best_index, node, spec, item
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key_Escape:
             appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
             system_actions.save_state(self.system_state, self._system_state_path)
+            self._save_menu_state()
             self.close()
             return
 
@@ -718,6 +803,7 @@ class MorphingOrbWidget(QWidget):
     def closeEvent(self, event):
         appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
         system_actions.save_state(self.system_state, self._system_state_path)
+        self._save_menu_state()
         super().closeEvent(event)
 
     # =========================================================
@@ -807,39 +893,229 @@ class MorphingOrbWidget(QWidget):
         }
         return radii.get(item.kind, 6.8)
 
+    def _spec_for_name(self, name: str) -> MenuSpec | None:
+        for spec in MENU_SPECS:
+            if spec.name == name:
+                return spec
+        return None
+
+    def _item_for(self, spec: MenuSpec, label: str) -> MenuItemSpec | None:
+        for item in spec.items:
+            if item.label == label:
+                return item
+        return None
+
+    # ------------------------------------------------------------------
+    # Valeurs affichées (textes) associées aux nœuds
+    # ------------------------------------------------------------------
+    def _appearance_value(self, label: str) -> str:
+        if label == "Color":
+            return self.appearance_state.theme_name.capitalize()
+        if label == "Minimal Mode":
+            return "On" if self.appearance_state.minimal_mode else "Off"
+        if label == "Cinematic Mode":
+            return "On" if self.appearance_state.cinematic_mode else "Off"
+        if label.startswith("Glow"):
+            return f"{self.appearance_state.glow_intensity:.2f}"
+        if label.startswith("Blob Size"):
+            return f"{self.appearance_state.blob_scale:.2f}"
+        return ""
+
+    def _voice_value(self, label: str) -> str:
+        st = self.menu_state
+        if label == "TTS Volume":
+            return f"{st.tts_volume}%"
+        if label == "Speech Speed":
+            return f"{st.speech_speed}%"
+        if label == "Voice Select":
+            return menu_state.VOICE_OPTIONS[st.voice_select % len(menu_state.VOICE_OPTIONS)]
+        if label == "Mic Toggle":
+            return "On" if st.mic_enabled else "Off"
+        if label == "Hotword Sens.":
+            return f"{st.hotword_sensitivity}%"
+        if label == "Listen Mode":
+            return "On" if st.listen_mode else "Off"
+        return ""
+
+    def _system_value(self, label: str) -> str:
+        st = self.menu_state
+        if label == "Startup":
+            return "On" if st.startup else "Off"
+        if label == "Overlay":
+            return "On" if st.overlay else "Off"
+        if label == "Always on Top":
+            return "On" if st.always_on_top else "Off"
+        if label == "Transparency":
+            return f"{st.transparency}%"
+        if label == "Shortcuts":
+            return menu_state.SHORTCUT_PRESETS[st.shortcuts % len(menu_state.SHORTCUT_PRESETS)]
+        if label == "Permissions":
+            return "OK"
+        if label == "Response Mode":
+            return self.system_state.response_mode_label
+        return ""
+
+    def _memory_value(self, label: str) -> str:
+        if label == "Clear Cache":
+            return "Clear"
+        if label == "Saved Threads":
+            return "0"
+        return ""
+
+    def _menu_value(self, spec: MenuSpec, item: MenuItemSpec) -> str:
+        if spec.name == "Appearance":
+            return self._appearance_value(item.label)
+        if spec.name == "Voice":
+            return self._voice_value(item.label)
+        if spec.name == "System":
+            return self._system_value(item.label)
+        if spec.name == "Memory":
+            return self._memory_value(item.label)
+        return ""
+
+    # ------------------------------------------------------------------
+    # Contrôles interactifs (toggles / sliders / options)
+    # ------------------------------------------------------------------
+    def _menu_is_slider(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
+        return (spec.name, item.label) in {
+            ("Voice", "TTS Volume"),
+            ("Voice", "Speech Speed"),
+            ("Voice", "Hotword Sens."),
+            ("System", "Transparency"),
+        }
+
+    def _menu_is_option(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
+        return (spec.name, item.label) in {
+            ("Voice", "Voice Select"),
+            ("System", "Shortcuts"),
+        }
+
+    def _menu_toggle_value(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
+        name, label = spec.name, item.label
+        if name == "Voice" and label == "Mic Toggle":
+            return self.menu_state.mic_enabled
+        if name == "Voice" and label == "Listen Mode":
+            return self.menu_state.listen_mode
+        if name == "System" and label == "Startup":
+            return self.menu_state.startup
+        if name == "System" and label == "Overlay":
+            return self.menu_state.overlay
+        if name == "System" and label == "Always on Top":
+            return self.menu_state.always_on_top
+        return False
+
+    def _menu_set_toggle(self, spec: MenuSpec, item: MenuItemSpec, value: bool) -> None:
+        name, label = spec.name, item.label
+        value = bool(value)
+        if name == "Voice" and label == "Mic Toggle":
+            self.menu_state.mic_enabled = value
+            menu_state.LIVE.set_mic_enabled(value)
+        elif name == "Voice" and label == "Listen Mode":
+            self.menu_state.listen_mode = value
+        elif name == "System" and label == "Startup":
+            self.menu_state.startup = value
+        elif name == "System" and label == "Overlay":
+            self.menu_state.overlay = value
+        elif name == "System" and label == "Always on Top":
+            self.menu_state.always_on_top = value
+            self._apply_always_on_top(value)
+        self._save_menu_state()
+
+    def _menu_slider_value(self, spec: MenuSpec, item: MenuItemSpec) -> int:
+        name, label = spec.name, item.label
+        if name == "Voice" and label == "TTS Volume":
+            return self.menu_state.tts_volume
+        if name == "Voice" and label == "Speech Speed":
+            return self.menu_state.speech_speed
+        if name == "Voice" and label == "Hotword Sens.":
+            return self.menu_state.hotword_sensitivity
+        if name == "System" and label == "Transparency":
+            return self.menu_state.transparency
+        return 0
+
+    def _menu_set_slider(self, spec: MenuSpec, item: MenuItemSpec, value: int) -> None:
+        name, label = spec.name, item.label
+        value = max(0, min(100, int(value)))
+        if name == "Voice" and label == "TTS Volume":
+            self.menu_state.tts_volume = value
+        elif name == "Voice" and label == "Speech Speed":
+            self.menu_state.speech_speed = value
+        elif name == "Voice" and label == "Hotword Sens.":
+            self.menu_state.hotword_sensitivity = value
+            menu_state.LIVE.set_hotword_sensitivity(value)
+        elif name == "System" and label == "Transparency":
+            self.menu_state.transparency = value
+            self._apply_transparency(value)
+        self._save_menu_state()
+
+    def _menu_cycle_option(self, spec: MenuSpec, item: MenuItemSpec) -> None:
+        name, label = spec.name, item.label
+        if name == "Voice" and label == "Voice Select":
+            self.menu_state.voice_select = (self.menu_state.voice_select + 1) % len(menu_state.VOICE_OPTIONS)
+        elif name == "System" and label == "Shortcuts":
+            self.menu_state.shortcuts = (self.menu_state.shortcuts + 1) % len(menu_state.SHORTCUT_PRESETS)
+        self._save_menu_state()
+
+    # ------------------------------------------------------------------
+    # Effets appliqués au widget
+    # ------------------------------------------------------------------
+    def _apply_always_on_top(self, value: bool) -> None:
+        try:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, bool(value))
+            self.show()
+        except Exception:
+            pass
+
+    def _apply_transparency(self, value: int) -> None:
+        try:
+            self.setWindowOpacity(max(0.15, min(1.0, int(value) / 100.0)))
+        except Exception:
+            pass
+
+    def _audio_test(self) -> None:
+        """Émet un signal sonore de test court (bip système)."""
+        try:
+            QApplication.beep()
+        except Exception:
+            pass
+        self.pulse = 1.0
+
+    def _clear_cache(self) -> None:
+        self._menu_toggle_state.clear()
+
+    def _save_menu_state(self) -> None:
+        menu_state.save_state(self.menu_state, self._menu_state_path)
+
     def _menu_callback_for(self, spec: MenuSpec, item: MenuItemSpec) -> Callable[[], None]:
         if spec.name == "Appearance":
             return self._appearance_callback_for(item)
-        if spec.name == "System":
-            return self._system_callback_for(item)
 
         def _callback() -> None:
-            key = f"{spec.name}:{item.label}"
-            if item.kind == "toggle":
-                self._menu_toggle_state[key] = not self._menu_toggle_state.get(key, False)
-                state = "on" if self._menu_toggle_state[key] else "off"
-                self._menu_action_flash = f"{item.label} {state}"
-            elif item.label == "Audio Test":
-                self.pulse = 1.0
+            name, label = spec.name, item.label
+            if self._menu_is_slider(spec, item):
+                self._menu_action_flash = f"{label}: {self._menu_slider_value(spec, item)}%"
+            elif self._menu_is_option(spec, item):
+                self._menu_cycle_option(spec, item)
+                self._menu_action_flash = f"{label}: {self._menu_value(spec, item)}"
+            elif item.kind == "toggle":
+                current = self._menu_toggle_value(spec, item)
+                self._menu_set_toggle(spec, item, not current)
+                self._menu_action_flash = f"{label}: {'On' if not current else 'Off'}"
+            elif name == "Voice" and label == "Audio Test":
+                self._audio_test()
+                self._menu_action_flash = f"{label} ▶"
+            elif name == "System" and label == "Response Mode":
+                system_actions.cycle_response_mode(self.system_state)
+                system_actions.save_state(self.system_state, self._system_state_path)
+                menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
+                self._menu_action_flash = f"Response: {self.system_state.response_mode_label}"
+            elif name == "Memory" and label == "Clear Cache":
+                self._clear_cache()
+                self._menu_action_flash = "Cache cleared"
+            elif name == "Memory":
                 self._menu_action_flash = item.label
             else:
                 self._menu_action_flash = item.label
-            self._menu_action_flash_time = self.time
-
-        return _callback
-
-    def _system_callback_for(self, item: MenuItemSpec) -> Callable[[], None]:
-        def _callback() -> None:
-            if item.label == "Response Mode":
-                system_actions.cycle_response_mode(self.system_state)
-                system_actions.save_state(self.system_state, self._system_state_path)
-                self._menu_action_flash = f"Response: {self.system_state.response_mode_label}"
-                self._menu_action_flash_time = self.time
-                return
-            key = f"System:{item.label}"
-            self._menu_toggle_state[key] = not self._menu_toggle_state.get(key, False)
-            state = "on" if self._menu_toggle_state[key] else "off"
-            self._menu_action_flash = f"{item.label} {state}"
             self._menu_action_flash_time = self.time
 
         return _callback
@@ -861,6 +1137,8 @@ class MorphingOrbWidget(QWidget):
             action(self.appearance_state)
             self._apply_appearance_state()
             appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
+            self._menu_action_flash = f"{item.label}: {self._appearance_value(item.label)}"
+            self._menu_action_flash_time = self.time
         return _callback
 
     def _apply_appearance_state(self) -> None:
@@ -1022,12 +1300,20 @@ class MorphingOrbWidget(QWidget):
         if visible <= 0.01:
             return
 
+        item = self._item_for(spec, node.label)
         hover = clamp(node.hover_amount, 0.0, 1.0)
         click = clamp(node.click_amount, 0.0, 1.0)
         line_alpha = int((52 + 120 * hover + 80 * click) * visible)
         node_alpha = int((130 + 90 * hover + 60 * click) * visible)
         text_alpha = int((175 + 60 * hover + 40 * click) * visible)
         state = self.appearance_state
+
+        # Couleur d'accent pour les toggles actifs (état ON).
+        is_toggle_on = (
+            item is not None
+            and item.kind == "toggle"
+            and self._menu_toggle_value(spec, item)
+        )
 
         control = QPointF(
             (anchor.x() + node.position.x()) / 2.0 + perp_x * (6.0 + 4.0 * hover),
@@ -1053,15 +1339,43 @@ class MorphingOrbWidget(QWidget):
             state.glow_color.blue(),
             int(node_alpha * 0.18),
         )
+        if is_toggle_on:
+            fill_color = QColor(
+                state.glow_color.red(),
+                state.glow_color.green(),
+                state.glow_color.blue(),
+                int(node_alpha * 0.40),
+            )
         outline_color = QColor(
             state.text_color.red(),
             state.text_color.green(),
             state.text_color.blue(),
             int(node_alpha * 0.82),
         )
+        if is_toggle_on:
+            outline_color = QColor(120, 240, 170, int(node_alpha * 0.95))
         painter.setBrush(fill_color)
         painter.setPen(QPen(outline_color, 1.0 + 0.55 * hover))
         painter.drawEllipse(node.position, pulse_radius, pulse_radius)
+
+        # Petit indicateur de valeur pour les sliders.
+        if item is not None:
+            if self._menu_is_slider(spec, item):
+                value = self._menu_slider_value(spec, item) / 100.0
+                bar_len = pulse_radius * 1.9
+                bar_height = 2.4 + 1.2 * hover
+                bar_x = node.position.x() - bar_len / 2.0
+                bar_y = node.position.y() + pulse_radius + 5.0
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(255, 255, 255, int(node_alpha * 0.22)))
+                painter.drawRect(QRectF(bar_x, bar_y, bar_len, bar_height))
+                painter.setBrush(QColor(
+                    state.glow_color.red(),
+                    state.glow_color.green(),
+                    state.glow_color.blue(),
+                    int(node_alpha * 0.9),
+                ))
+                painter.drawRect(QRectF(bar_x, bar_y, bar_len * value, bar_height))
 
         text_font = QFont("Segoe UI", 9)
         if self._menu_layout_mode == "grid":
@@ -1103,13 +1417,13 @@ class MorphingOrbWidget(QWidget):
         painter.setPen(QColor(220, 245, 255, text_alpha))
         painter.setPen(QColor(state.text_color.red(), state.text_color.green(), state.text_color.blue(), text_alpha))
         label_text = node.label
-        if spec.name == "Appearance" and node.label == "Color":
-            label_text = f"Color: {self.appearance_state.theme_name.capitalize()}"
-        if spec.name == "System" and node.label == "Response Mode":
-            label_text = f"Response: {self.system_state.response_mode_label}"
         if node.label == "Long-term Memory":
             label_text = "Long-term\nMemory"
             label_rect = QRectF(label_rect.x(), label_rect.y() - 3.0, label_rect.width(), 30.0)
+        else:
+            value_text = self._menu_value(spec, node)
+            if value_text and value_text != "Clear":
+                label_text = f"{node.label} · {value_text}"
         painter.drawText(
             label_rect,
             label_alignment,

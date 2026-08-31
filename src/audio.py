@@ -40,14 +40,19 @@ class AudioIO:
     # Anti-double-détection
     WAKE_COOLDOWN_SECONDS = 1.0
 
-    def __init__(self, on_input, presence_hook=None, voice_hook=None):
+    def __init__(self, on_input, presence_hook=None, voice_hook=None,
+                 mic_enabled=None, wake_threshold=None):
         self.on_input = on_input
 
         # Hooks optionnels pour l'UI (voir src/ui.py).
         # presence_hook(state) : "listening" | "hidden"
         # voice_hook(level)     : 0.0 .. 1.0 (niveau d'entrée micro)
+        # mic_enabled()         : bool — micro coupé/rétabli depuis le menu.
+        # wake_threshold()      : float — sensibilité du wake word depuis le menu.
         self.presence_hook = presence_hook
         self.voice_hook = voice_hook
+        self.mic_enabled = mic_enabled
+        self.wake_threshold = wake_threshold
         self._last_voice_emit = 0.0
 
         self.running = False
@@ -201,7 +206,7 @@ class AudioIO:
 
         # Niveau d'entrée (RMS) pour l'énergie vocale de l'UI.
         # Calcul léger, effectué à chaque bloc de 80 ms.
-        if self.voice_hook is not None:
+        if self.voice_hook is not None and self._is_mic_enabled():
             try:
                 samples = np.frombuffer(indata, dtype=np.int16)
                 rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
@@ -256,6 +261,10 @@ class AudioIO:
             except queue.Empty:
                 continue
 
+            # Micro coupé : on ne forward rien et on n'écoute pas le wake word.
+            if not self._is_mic_enabled():
+                continue
+
             # =================================================
             # MODE ACTIF
             # =================================================
@@ -283,12 +292,26 @@ class AudioIO:
     # DÉTECTION DU WAKE WORD
     # =========================================================
 
+    def _is_mic_enabled(self) -> bool:
+        if self.mic_enabled is None:
+            return True
+        try:
+            return bool(self.mic_enabled())
+        except Exception:
+            return True
+
     def _detect_wake_word(self, pcm):
 
         if self.wake_model is None:
             return False
 
         now = time.monotonic()
+        threshold = self.WAKE_THRESHOLD
+        if self.wake_threshold is not None:
+            try:
+                threshold = float(self.wake_threshold())
+            except Exception:
+                pass
 
         # Anti-double-détection
         if (
@@ -317,7 +340,7 @@ class AudioIO:
             #     flush=True
             # )
 
-            if score >= self.WAKE_THRESHOLD:
+            if score >= threshold:
 
                 print(
                     f'\n[Wake Word] "Hey Jarvis" détecté '
