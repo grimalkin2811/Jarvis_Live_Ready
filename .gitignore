@@ -2,3 +2,8 @@
 .venv/
 __pycache__/
 *.py[cod]
+
+# État et logs de l'UI (régénérés à l'exécution)
+UI/appearance_state.json
+UI/system_state.json
+UI/jarvis_debug.log

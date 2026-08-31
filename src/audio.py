@@ -40,8 +40,15 @@ class AudioIO:
     # Anti-double-détection
     WAKE_COOLDOWN_SECONDS = 1.0
 
-    def __init__(self, on_input):
+    def __init__(self, on_input, presence_hook=None, voice_hook=None):
         self.on_input = on_input
+
+        # Hooks optionnels pour l'UI (voir src/ui.py).
+        # presence_hook(state) : "listening" | "hidden"
+        # voice_hook(level)     : 0.0 .. 1.0 (niveau d'entrée micro)
+        self.presence_hook = presence_hook
+        self.voice_hook = voice_hook
+        self._last_voice_emit = 0.0
 
         self.running = False
         self.awake = False
@@ -192,6 +199,17 @@ class AudioIO:
 
         pcm = bytes(indata)
 
+        # Niveau d'entrée (RMS) pour l'énergie vocale de l'UI.
+        # Calcul léger, effectué à chaque bloc de 80 ms.
+        if self.voice_hook is not None:
+            try:
+                samples = np.frombuffer(indata, dtype=np.int16)
+                rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+                level = min(1.0, rms / 3000.0)
+                self._emit_voice(level)
+            except Exception:
+                pass
+
         try:
             self.input_queue.put_nowait(pcm)
 
@@ -314,6 +332,30 @@ class AudioIO:
         return False
 
     # =========================================================
+    # HOOKS UI (présence / énergie vocale)
+    # =========================================================
+
+    def _emit_presence(self, state):
+        if self.presence_hook is not None:
+            try:
+                self.presence_hook(state)
+            except Exception:
+                pass
+
+    def _emit_voice(self, level):
+        if self.voice_hook is None:
+            return
+        now = time.monotonic()
+        # Throttle à ~20 Hz pour ne pas saturer le pont Qt.
+        if now - self._last_voice_emit < 0.05:
+            return
+        self._last_voice_emit = now
+        try:
+            self.voice_hook(float(level))
+        except Exception:
+            pass
+
+    # =========================================================
     # RÉVEIL DE JARVIS
     # =========================================================
 
@@ -323,6 +365,7 @@ class AudioIO:
 
         self.awake = True
         self.last_wake_time = now
+        self._emit_presence("listening")
 
         # Sécurité : retour en veille si Gemini ne répond pas
         self.follow_up_until = (
@@ -363,6 +406,7 @@ class AudioIO:
             time.monotonic()
             + self.FOLLOW_UP_SECONDS
         )
+        self._emit_presence("listening")
 
         print(
             f"[Jarvis] Conversation active pour encore "
@@ -381,6 +425,7 @@ class AudioIO:
         if time.monotonic() >= self.follow_up_until:
 
             self.awake = False
+            self._emit_presence("hidden")
 
             try:
                 self.wake_model.reset()
@@ -478,6 +523,7 @@ class AudioIO:
 
         self.audio_started = False
         self.follow_up_until = time.monotonic() + self.FOLLOW_UP_SECONDS
+        self._emit_presence("listening")
 
     # =========================================================
     # ARRÊT

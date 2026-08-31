@@ -8,5 +8,5 @@ if not exist ".venv\Scripts\python.exe" (
  echo Lance setup.bat d'abord.
  exit /b 1
 )
-.venv\Scripts\python.exe -m src.main
+.venv\Scripts\python.exe -m src.main %*
 exit /b %errorlevel%
