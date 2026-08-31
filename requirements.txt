@@ -1,0 +1,8 @@
+google-genai
+sounddevice
+numpy
+openwakeword
+onnxruntime
+python-dotenv
+pycaw
+comtypes
