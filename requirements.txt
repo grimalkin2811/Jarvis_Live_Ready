@@ -6,3 +6,4 @@ onnxruntime
 python-dotenv
 pycaw
 comtypes
+PySide6

@@ -12,7 +12,8 @@ class GeminiLive:
         user,
         on_audio,
         on_turn_complete=None,
-        on_interrupted=None
+        on_interrupted=None,
+        on_speaking=None,
     ):
         self.client = genai.Client(api_key=key)
         self.model = model
@@ -21,6 +22,7 @@ class GeminiLive:
         self.on_audio = on_audio
         self.on_turn_complete = on_turn_complete
         self.on_interrupted = on_interrupted
+        self.on_speaking = on_speaking
 
         self.session = None
         self.ctx = None
@@ -106,6 +108,8 @@ class GeminiLive:
                 server_content
                 and server_content.model_turn
             ):
+                if not self.speaking and self.on_speaking is not None:
+                    self.on_speaking()
                 self.speaking = True
                 for part in server_content.model_turn.parts:
 

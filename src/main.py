@@ -1,11 +1,27 @@
+"""Point d'entrée de Jarvis Live Ready.
+
+Modes disponibles :
+
+* (par défaut)  : assistant vocal headless (console), comme avant.
+* ``--ui``      : orbe morphing interactif (menus radiaux) + assistant vocal.
+* ``--desktop`` : overlay halo plein écran + assistant vocal.
+
+Exemples :
+    python -m src.main
+    python -m src.main --ui
+    python -m src.main --desktop
+"""
+
+import argparse
 import asyncio
+import sys
 
 from .audio import AudioIO
 from .config import load_config
 from .gemini_live import GeminiLive
 
 
-async def main():
+async def run_headless():
     try:
         config = load_config()
     except Exception as exc:
@@ -53,7 +69,7 @@ async def main():
                 print("[Jarvis] Reconnexion dans 5 secondes...")
                 await asyncio.sleep(5)
             else:
-                # Reconnexion immédiate et silencieuse après une fermeture normale 
+                # Reconnexion immédiate et silencieuse après une fermeture normale
                 # pour préserver l'état éveillé et la fenêtre de 8 secondes de l'utilisateur.
                 await asyncio.sleep(0.1)
             finally:
@@ -66,8 +82,39 @@ async def main():
             audio.stop()
 
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Jarvis Live Ready - assistant vocal Gemini Live."
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--ui",
+        action="store_true",
+        help="Lance l'orbe morphing interactif + l'assistant vocal.",
+    )
+    group.add_argument(
+        "--desktop",
+        action="store_true",
+        help="Lance l'overlay halo plein écran + l'assistant vocal.",
+    )
+    return parser
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
+
+    if args.ui or args.desktop:
+        from .ui import run_ui
+
+        mode = "ui" if args.ui else "desktop"
+        return run_ui(mode)
+
     try:
-        asyncio.run(main())
+        asyncio.run(run_headless())
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -8,6 +8,19 @@ Assistant vocal Windows prêt à tester avec Gemini Live.
 3. Entre ton nom et ta clé Gemini API.
 4. Une fois terminé, lance `Jarvis.bat`.
 
+## Interface graphique (PySide6)
+
+Jarvis propose désormais une interface reprenant l'orbe morphing de `grimalkin2811/Jarvis` :
+
+| Commande | Effet |
+|---|---|
+| `Jarvis.bat` | Assistant headless (console), comme avant. |
+| `Jarvis.bat --ui` | Orbe morphing interactif + menus radiaux + assistant vocal. |
+| `Jarvis.bat --desktop` | Overlay halo plein écran (transparent aux clics) reflétant l'état : écoute / parole / veille. |
+
+En mode `--ui`, survole le bord de l'écran pour déplier les menus radiaux
+(Voice, System, Memory, Appearance). `Échap` pour quitter.
+
 ## Fonctions
 - Questions/réponses vocales normales
 - Ouvrir une application
