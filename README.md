@@ -33,9 +33,69 @@ En mode `--ui`, survole les bords de l'orbe pour déplier les menus radiaux
 Les réglages sont conservés dans `UI/menu_state.json` au redémarrage.
 `Échap` pour quitter.
 
+## Mémoire persistante locale
+
+Jarvis possède une mémoire durable légère basée sur SQLite (`src/memory.py`).
+Elle sert à conserver uniquement les informations importantes sur l'utilisateur
+(prénom, préférences, projets, personnes importantes, décisions, configuration),
+pas l'intégralité des conversations.
+
+### Stockage
+
+Par défaut, la base est stockée hors du code source :
+
+```text
+~/.jarvis/memory.db
+```
+
+Le dossier peut être changé avec `JARVIS_DATA_DIR` ou le chemin complet avec
+`JARVIS_MEMORY_DATABASE_PATH`. Les fichiers `data/` et `*.db` sont ignorés par
+Git pour éviter d'envoyer des souvenirs privés dans le repository.
+
+### Fonctionnement
+
+- Au démarrage d'une session Gemini Live, Jarvis injecte seulement quelques
+  souvenirs importants/récents dans un bloc séparé `MEMORY — ...`.
+- Pendant la conversation, Gemini peut appeler les outils mémoire pour rechercher
+  ou modifier les souvenirs : `remember`, `recall`, `list_memories`,
+  `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory`.
+- Si Gemini Live fournit une transcription de l'audio utilisateur, Jarvis lance
+  en fin de tour une extraction locale conservatrice (`Souviens-toi que...`,
+  `Je préfère...`, `Mon projet actuel...`, `J'utilise maintenant...`). Cette
+  extraction ne nécessite pas de clé Gemini supplémentaire et ne mémorise pas les
+  phrases banales.
+- Les souvenirs similaires reçoivent une clé de sujet (`subject_key`) afin de
+  mettre à jour une information existante plutôt que créer des contradictions
+  (ex. Python 3.12 → Python 3.13.9).
+- La mémoire est non bloquante : si SQLite est inaccessible ou corrompu, Jarvis
+  continue à fonctionner sans mémoire.
+
+### Commandes naturelles
+
+Exemples :
+
+- « Souviens-toi que je préfère les réponses en français. »
+- « Qu'est-ce que tu sais sur moi ? »
+- « Recherche dans ta mémoire mon projet actuel. »
+- « Oublie que j'utilise Python 3.12. »
+- « Efface toute ta mémoire. » (demande une confirmation)
+
+### Configuration
+
+Dans `.env` :
+
+```env
+JARVIS_MEMORY_ENABLED=1
+JARVIS_MEMORY_DATABASE_PATH=C:\\Users\\Moi\\.jarvis\\memory.db  # optionnel
+JARVIS_MEMORY_MAX_RESULTS=5
+JARVIS_MEMORY_MIN_IMPORTANCE=1
+```
+
+Mettre `JARVIS_MEMORY_ENABLED=0` désactive la mémoire sans supprimer la base.
+
 ## Fonctions
 
-Jarvis dispose de **57 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **65 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -48,6 +108,7 @@ Jarvis dispose de **57 outils** déclarés dans `src/tools.py` (voir
 | **Date / heure** | `get_local_time`, `get_local_date`, `get_datetime`, `days_until` |
 | **Minuteurs** | `set_timer`, `list_timers`, `cancel_timer` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
+| **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
 | **Fichiers** | `open_folder`, `list_folder`, `search_files` |
 | **Calcul & divers** | `calculate`, `random_number`, `flip_coin`, `roll_dice`, `pick_random` |
@@ -84,5 +145,6 @@ python -m unittest discover tests
 ```
 
 Les tests sont multiplateformes et ne déclenchent aucune action réelle
-(ni ouverture d'application, ni navigateur).
+(ni ouverture d'application, ni navigateur). Les tests mémoire utilisent des
+bases SQLite temporaires et ne nécessitent pas de clé Gemini réelle.
 

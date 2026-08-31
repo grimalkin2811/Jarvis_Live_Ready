@@ -8,3 +8,9 @@ UI/appearance_state.json
 UI/system_state.json
 UI/menu_state.json
 UI/jarvis_debug.log
+
+# Données locales persistantes (mémoire SQLite, caches utilisateur)
+data/
+*.db
+*.db-shm
+*.db-wal

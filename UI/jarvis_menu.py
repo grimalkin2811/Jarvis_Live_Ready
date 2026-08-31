@@ -958,6 +958,22 @@ class MorphingOrbWidget(QWidget):
     def _memory_value(self, label: str) -> str:
         if label == "Clear Cache":
             return "Clear"
+        if label == "Long-term Memory":
+            try:
+                from src.memory import get_default_memory_manager
+                result = get_default_memory_manager().list_memories(limit=500)
+                if result.get("success"):
+                    return str(result.get("count", 0))
+                return "Off"
+            except Exception:
+                return "?"
+        if label == "Model State":
+            try:
+                from src.memory import get_default_memory_manager
+                manager = get_default_memory_manager()
+                return "On" if manager.enabled and manager.available else "Off"
+            except Exception:
+                return "?"
         if label == "Saved Threads":
             return "0"
         return ""
