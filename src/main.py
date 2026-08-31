@@ -19,6 +19,7 @@ import sys
 from .audio import AudioIO
 from .config import load_config
 from .gemini_live import GeminiLive
+from .memory import MemoryManager, set_default_memory_manager
 
 
 async def run_headless():
@@ -37,6 +38,14 @@ async def run_headless():
             asyncio.run_coroutine_threadsafe(gemini.send_audio(pcm), loop)
 
     try:
+        memory_manager = MemoryManager(
+            config.memory_database_path,
+            enabled=config.memory_enabled,
+            max_results=config.memory_max_results,
+            min_importance=config.memory_min_importance,
+        )
+        set_default_memory_manager(memory_manager)
+
         audio = AudioIO(mic)
         gemini = GeminiLive(
             config.api_key,
@@ -45,6 +54,7 @@ async def run_headless():
             on_audio=audio.play,
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
+            memory_manager=memory_manager,
         )
 
         print(f"Jarvis Live - Bonjour {config.user}")

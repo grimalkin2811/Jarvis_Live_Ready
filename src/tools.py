@@ -38,6 +38,8 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+from .memory import get_default_memory_manager
+
 # ---------------------------------------------------------------------------
 # Dépendances optionnelles
 # ---------------------------------------------------------------------------
@@ -1594,6 +1596,61 @@ def pick_random(options):
 
 
 # ===========================================================================
+# MÉMOIRE PERSISTANTE
+# ===========================================================================
+
+
+def remember(content, category="other", importance=3):
+    """Ajoute ou met à jour un souvenir durable dans la mémoire locale."""
+    return get_default_memory_manager().add_memory(
+        content,
+        category=category,
+        importance=importance,
+        source="tool:remember",
+    )
+
+
+def recall(query="", limit=5):
+    """Recherche les souvenirs pertinents pour une requête."""
+    return get_default_memory_manager().search_memories(query, limit=limit)
+
+
+def list_memories(limit=50, category=None):
+    """Liste les souvenirs enregistrés, pour inspection par l'utilisateur."""
+    return get_default_memory_manager().list_memories(limit=limit, category=category)
+
+
+def search_memories(query, limit=10):
+    """Recherche explicite dans la mémoire locale."""
+    return get_default_memory_manager().search_memories(query, limit=limit)
+
+
+def update_memory(memory_id, content=None, category=None, importance=None):
+    """Modifie un souvenir existant."""
+    return get_default_memory_manager().update_memory(
+        memory_id,
+        content=content,
+        category=category,
+        importance=importance,
+    )
+
+
+def delete_memory(memory_id):
+    """Supprime logiquement un souvenir précis."""
+    return get_default_memory_manager().delete_memory(memory_id)
+
+
+def forget(query, confirm=False, limit=10):
+    """Oublie les souvenirs liés à une requête après confirmation."""
+    return get_default_memory_manager().forget(query, limit=limit, confirm=confirm)
+
+
+def clear_memory(confirm=False):
+    """Efface toute la mémoire durable après confirmation."""
+    return get_default_memory_manager().clear_memory(confirm=confirm)
+
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -1644,6 +1701,15 @@ TOOL_FUNCTIONS = {
     "take_note": take_note,
     "read_notes": read_notes,
     "delete_notes": delete_notes,
+    # Mémoire persistante
+    "remember": remember,
+    "recall": recall,
+    "list_memories": list_memories,
+    "search_memories": search_memories,
+    "update_memory": update_memory,
+    "delete_memory": delete_memory,
+    "forget": forget,
+    "clear_memory": clear_memory,
     # Web
     "open_website": open_website,
     "list_websites": list_websites,
@@ -1782,6 +1848,56 @@ TOOL_DECLARATIONS = [
     _decl("take_note", "Enregistre une note datee pour l'utilisateur.", {"text": _STR}, ["text"]),
     _decl("read_notes", "Relit les dernieres notes enregistrees.", {"limit": _INT}),
     _decl("delete_notes", "Efface toutes les notes (confirmation requise).", {"confirm": _BOOL}),
+    # --- Mémoire persistante ---------------------------------------------------------------
+    _decl(
+        "remember",
+        "Enregistre une information durable importante sur l'utilisateur dans la memoire locale. A utiliser pour 'souviens-toi', preferences, identite, projets, decisions ou configurations importantes.",
+        {
+            "content": {**_STR, "description": "Souvenir clair et autonome, reformule sans bruit."},
+            "category": {"type": "string", "description": "identity, preference, person, project, configuration, fact, habit, decision ou other."},
+            "importance": {**_INT, "description": "Importance de 1 a 5."},
+        },
+        ["content"],
+    ),
+    _decl(
+        "recall",
+        "Recherche quelques souvenirs pertinents dans la memoire locale avant de repondre a une question personnelle ou contextuelle.",
+        {"query": _STR, "limit": _INT},
+    ),
+    _decl(
+        "list_memories",
+        "Liste les souvenirs en memoire quand l'utilisateur demande ce que Jarvis sait de lui.",
+        {"limit": _INT, "category": _STR},
+    ),
+    _decl(
+        "search_memories",
+        "Recherche explicitement dans la memoire locale.",
+        {"query": _STR, "limit": _INT},
+        ["query"],
+    ),
+    _decl(
+        "update_memory",
+        "Modifie un souvenir existant par identifiant.",
+        {"memory_id": _INT, "content": _STR, "category": _STR, "importance": _INT},
+        ["memory_id"],
+    ),
+    _decl(
+        "delete_memory",
+        "Supprime un souvenir precis par identifiant.",
+        {"memory_id": _INT},
+        ["memory_id"],
+    ),
+    _decl(
+        "forget",
+        "Oublie les souvenirs correspondant a une requete. Demande une confirmation orale avant confirm=true.",
+        {"query": _STR, "confirm": _BOOL, "limit": _INT},
+        ["query"],
+    ),
+    _decl(
+        "clear_memory",
+        "Efface toute la memoire durable. Demande TOUJOURS une confirmation orale avant confirm=true.",
+        {"confirm": _BOOL},
+    ),
     # --- Web ------------------------------------------------------------------------------
     _decl(
         "open_website",

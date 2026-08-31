@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QApplication
 from .audio import AudioIO
 from .config import load_config
 from .gemini_live import GeminiLive
+from .memory import MemoryManager, set_default_memory_manager
 from UI import appearance_actions
 from UI import menu_state
 from UI.screen_halo_overlay import ScreenHaloOverlay
@@ -89,6 +90,14 @@ def _run_voice_loop(
 
     async def _main():
         nonlocal gemini, audio
+        memory_manager = MemoryManager(
+            config.memory_database_path,
+            enabled=config.memory_enabled,
+            max_results=config.memory_max_results,
+            min_importance=config.memory_min_importance,
+        )
+        set_default_memory_manager(memory_manager)
+
         audio = AudioIO(
             mic,
             presence_hook=presence_hook,
@@ -105,6 +114,7 @@ def _run_voice_loop(
             on_interrupted=audio.clear_output,
             on_speaking=lambda: presence_hook("speaking") if presence_hook else None,
             response_mode_provider=menu_state.response_mode_label_from_live,
+            memory_manager=memory_manager,
         )
 
         print(f"Jarvis Live - Bonjour {config.user}")

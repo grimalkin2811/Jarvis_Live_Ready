@@ -1,6 +1,7 @@
 from google import genai
 from google.genai import types
 
+from .memory import MemoryManager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
 
 
@@ -15,6 +16,7 @@ class GeminiLive:
         on_interrupted=None,
         on_speaking=None,
         response_mode_provider=None,
+        memory_manager: MemoryManager | None = None,
     ):
         self.client = genai.Client(api_key=key)
         self.model = model
@@ -26,12 +28,14 @@ class GeminiLive:
         self.on_speaking = on_speaking
         # Fournit le mode de réponse courant (menu radial) pour le prompt système.
         self.response_mode_provider = response_mode_provider
+        self.memory_manager = memory_manager
 
         self.session = None
         self.ctx = None
         self.speaking = False
         self.tool_active = False
         self.resumption_handle = None
+        self._turn_user_text = []
 
     def can_send(self):
         return self.session is not None and not self.speaking and not self.tool_active
@@ -59,23 +63,47 @@ class GeminiLive:
             except Exception:
                 response_mode = ""
 
+        memory_context = ""
+        if self.memory_manager is not None and self.memory_manager.enabled:
+            try:
+                # Au démarrage d'une session audio Live, Jarvis ne dispose pas
+                # encore d'une transcription de la requête. On injecte donc un
+                # petit noyau de souvenirs importants/récents, puis le modèle
+                # peut appeler recall(query=...) pour une recherche ciblée.
+                memory_context = self.memory_manager.relevant_memories_for_prompt(
+                    query=self.user,
+                    limit=self.memory_manager.max_results,
+                )
+            except Exception as exc:
+                print(f"[Memory] Contexte indisponible : {exc}")
+                memory_context = ""
+
+        system_instruction = (
+            f"Tu es Jarvis, assistant vocal de {self.user}. "
+            "Parle naturellement en français. "
+            f"{response_mode}"
+            "Réponds aux questions générales. "
+            "Tu disposes d'une mémoire locale persistante, contrôlée par l'utilisateur. "
+            "Utilise recall pour rechercher des souvenirs pertinents lorsque la question dépend du profil, des préférences, projets ou décisions passées. "
+            "Utilise remember quand l'utilisateur dit explicitement de retenir quelque chose, ou pour une information clairement durable (identité, préférence, personne importante, projet, configuration, décision). "
+            "Ne mémorise pas les banalités ni chaque phrase de la conversation. "
+            "Pour oublier ou effacer la mémoire, utilise forget/delete_memory/clear_memory et demande confirmation pour les suppressions larges. "
+            "Pour les actions sur le PC, utilise les outils "
+            "et ne mens jamais sur leur résultat. "
+            "Si un outil renvoie success=false, dis-le simplement et "
+            "propose une alternative (par exemple list_applications ou "
+            "list_websites pour connaître ce qui est autorisé). "
+            "Avant toute action destructrice ou irréversible "
+            "(shutdown_pc, restart_pc, delete_notes, clear_memory), demande une "
+            "confirmation orale explicite puis rappelle l'outil avec "
+            "confirm=true."
+        )
+        if memory_context:
+            system_instruction += f"\n\n{memory_context}"
+
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            system_instruction=(
-                f"Tu es Jarvis, assistant vocal de {self.user}. "
-                "Parle naturellement en français. "
-                f"{response_mode}"
-                "Réponds aux questions générales. "
-                "Pour les actions sur le PC, utilise les outils "
-                "et ne mens jamais sur leur résultat. "
-                "Si un outil renvoie success=false, dis-le simplement et "
-                "propose une alternative (par exemple list_applications ou "
-                "list_websites pour connaître ce qui est autorisé). "
-                "Avant toute action destructrice ou irréversible "
-                "(shutdown_pc, restart_pc, delete_notes), demande une "
-                "confirmation orale explicite puis rappelle l'outil avec "
-                "confirm=true."
-            ),
+            system_instruction=system_instruction,
             tools=[
                 types.Tool(
                     function_declarations=decl
@@ -119,6 +147,18 @@ class GeminiLive:
                 "server_content",
                 None
             )
+
+            # Certaines versions de Gemini Live peuvent fournir une
+            # transcription de l'audio utilisateur. Si elle existe, on la
+            # collecte pour une extraction mémoire conservatrice en fin de tour.
+            if server_content:
+                try:
+                    transcript = getattr(server_content, "input_transcription", None)
+                    text = getattr(transcript, "text", None) if transcript else None
+                    if text:
+                        self._turn_user_text.append(str(text))
+                except Exception:
+                    pass
 
             # =================================================
             # AUDIO GEMINI
@@ -165,6 +205,15 @@ class GeminiLive:
                 self.speaking = False
                 if self.on_turn_complete:
                     self.on_turn_complete()
+                if self.memory_manager is not None and self._turn_user_text:
+                    try:
+                        text = " ".join(self._turn_user_text).strip()
+                        if text:
+                            self.memory_manager.remember_from_text(text, source="live_transcript")
+                    except Exception as exc:
+                        print(f"[Memory] Extraction ignorée : {exc}")
+                    finally:
+                        self._turn_user_text.clear()
 
             # =================================================
             # OUTILS

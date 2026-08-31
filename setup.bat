@@ -31,6 +31,9 @@ if errorlevel 1 (
  echo JARVIS_USER=%JARVIS_USER%
  echo GEMINI_API_KEY=%GEMINI_KEY%
  echo GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+ echo JARVIS_MEMORY_ENABLED=1
+ echo JARVIS_MEMORY_MAX_RESULTS=5
+ echo JARVIS_MEMORY_MIN_IMPORTANCE=1
 ) > .env
 echo.
 echo Installation terminee. Lance Jarvis.bat
