@@ -7,3 +7,4 @@ python-dotenv
 pycaw
 comtypes
 PySide6
+psutil

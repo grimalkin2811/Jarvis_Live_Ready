@@ -67,7 +67,14 @@ class GeminiLive:
                 f"{response_mode}"
                 "Réponds aux questions générales. "
                 "Pour les actions sur le PC, utilise les outils "
-                "et ne mens jamais sur leur résultat."
+                "et ne mens jamais sur leur résultat. "
+                "Si un outil renvoie success=false, dis-le simplement et "
+                "propose une alternative (par exemple list_applications ou "
+                "list_websites pour connaître ce qui est autorisé). "
+                "Avant toute action destructrice ou irréversible "
+                "(shutdown_pc, restart_pc, delete_notes), demande une "
+                "confirmation orale explicite puis rappelle l'outil avec "
+                "confirm=true."
             ),
             tools=[
                 types.Tool(
