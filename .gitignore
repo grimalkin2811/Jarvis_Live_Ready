@@ -6,4 +6,5 @@ __pycache__/
 # État et logs de l'UI (régénérés à l'exécution)
 UI/appearance_state.json
 UI/system_state.json
+UI/menu_state.json
 UI/jarvis_debug.log

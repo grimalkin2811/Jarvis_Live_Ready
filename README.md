@@ -18,8 +18,20 @@ Jarvis propose désormais une interface reprenant l'orbe morphing de `grimalkin2
 | `Jarvis.bat --ui` | Orbe morphing interactif + menus radiaux + assistant vocal. |
 | `Jarvis.bat --desktop` | Overlay halo plein écran (transparent aux clics) reflétant l'état : écoute / parole / veille. |
 
-En mode `--ui`, survole le bord de l'écran pour déplier les menus radiaux
-(Voice, System, Memory, Appearance). `Échap` pour quitter.
+En mode `--ui`, survole les bords de l'orbe pour déplier les menus radiaux
+(Voice, System, Memory, Appearance) et interagis directement avec les réglages :
+
+| Contrôle | Interaction |
+|---|---|
+| **Toggles** | Clic pour activer/désactiver (indicateur vert = actif). |
+| **Sliders** (TTS, Vitesse, Hotword, Transparence) | Glisse à la souris ou molette pour ajuster la valeur ; une barre affiche le niveau. |
+| **Options** (Voice Select, Shortcuts) | Clic ou molette pour parcourir les choix. |
+| **Response Mode** | Clic pour changer le mode de réponse (injecté dans le prompt Gemini). |
+| **Mic Toggle** | Coupe/rétablit le micro en direct. |
+| **Audio Test** | Émet un bip de test. |
+
+Les réglages sont conservés dans `UI/menu_state.json` au redémarrage.
+`Échap` pour quitter.
 
 ## Fonctions
 - Questions/réponses vocales normales

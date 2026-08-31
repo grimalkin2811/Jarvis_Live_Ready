@@ -14,6 +14,7 @@ class GeminiLive:
         on_turn_complete=None,
         on_interrupted=None,
         on_speaking=None,
+        response_mode_provider=None,
     ):
         self.client = genai.Client(api_key=key)
         self.model = model
@@ -23,6 +24,8 @@ class GeminiLive:
         self.on_turn_complete = on_turn_complete
         self.on_interrupted = on_interrupted
         self.on_speaking = on_speaking
+        # Fournit le mode de réponse courant (menu radial) pour le prompt système.
+        self.response_mode_provider = response_mode_provider
 
         self.session = None
         self.ctx = None
@@ -47,11 +50,21 @@ class GeminiLive:
             handle=self.resumption_handle
         )
 
+        response_mode = ""
+        if self.response_mode_provider is not None:
+            try:
+                mode = self.response_mode_provider()
+                if mode:
+                    response_mode = f"Mode de réponse : {mode}. "
+            except Exception:
+                response_mode = ""
+
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=(
                 f"Tu es Jarvis, assistant vocal de {self.user}. "
                 "Parle naturellement en français. "
+                f"{response_mode}"
                 "Réponds aux questions générales. "
                 "Pour les actions sur le PC, utilise les outils "
                 "et ne mens jamais sur leur résultat."
