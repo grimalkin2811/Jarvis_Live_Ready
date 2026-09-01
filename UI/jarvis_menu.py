@@ -1562,10 +1562,8 @@ class MorphingOrbWidget(QWidget):
             text_font.setPointSizeF(8.3)
         text_font.setLetterSpacing(QFont.AbsoluteSpacing, 0.6 + 0.5 * hover)
         painter.setFont(text_font)
-        text_offset = 13.0 + 9.0 * hover + 3.0 * click
         label_dx = 22.0 + 4.0 * hover + 2.0 * click
-        sector_index = max(0, self._menu_sector)
-        sector_sx, sector_sy = self._sector_vector(sector_index)
+        sector_sx, sector_sy = self._sector_vector(max(0, self._menu_sector))
         if self._menu_layout_mode == "grid":
             if sector_sy > 0.0:  # menu deploye vers le bas
                 label_pos = QPointF(node.position.x() + label_dx, node.position.y())
@@ -1578,24 +1576,14 @@ class MorphingOrbWidget(QWidget):
                 )
                 label_rect = QRectF(label_pos.x() - 8.0, label_pos.y() - 8.0, 170.0, 18.0)
                 label_alignment = Qt.AlignLeft | Qt.AlignVCenter
-        else:
-            if sector_sx < 0.0:  # menu deploye vers la gauche
-                label_pos = QPointF(node.position.x() - label_dx, node.position.y())
-                label_rect = QRectF(label_pos.x() - 130.0, label_pos.y() - 9.0, 120.0, 18.0)
-                label_alignment = Qt.AlignRight | Qt.AlignVCenter
-            elif sector_index == 1:  # right
-                label_pos = QPointF(node.position.x() + label_dx, node.position.y())
-                label_rect = QRectF(label_pos.x(), label_pos.y() - 9.0, 140.0, 18.0)
-                label_alignment = Qt.AlignLeft | Qt.AlignVCenter
-            elif sector_index == 2:  # bottom
-                label_pos = QPointF(node.position.x() + label_dx, node.position.y())
-                label_rect = QRectF(label_pos.x(), label_pos.y() - 9.0, 160.0, 18.0)
-                label_alignment = Qt.AlignLeft | Qt.AlignVCenter
-            else:  # top
-                label_pos = QPointF(node.position.x() + label_dx, node.position.y())
-                label_rect = QRectF(label_pos.x(), label_pos.y() - 9.0, 150.0, 18.0)
-                label_alignment = Qt.AlignLeft | Qt.AlignVCenter
-        painter.setPen(QColor(220, 245, 255, text_alpha))
+        elif sector_sx < 0.0:  # menu deploye vers la gauche : libelle aligne a droite
+            label_pos = QPointF(node.position.x() - label_dx, node.position.y())
+            label_rect = QRectF(label_pos.x() - 130.0, label_pos.y() - 9.0, 120.0, 18.0)
+            label_alignment = Qt.AlignRight | Qt.AlignVCenter
+        else:  # menu deploye vers la droite : libelle a droite du noeud
+            label_pos = QPointF(node.position.x() + label_dx, node.position.y())
+            label_rect = QRectF(label_pos.x(), label_pos.y() - 9.0, 150.0, 18.0)
+            label_alignment = Qt.AlignLeft | Qt.AlignVCenter
         painter.setPen(QColor(state.text_color.red(), state.text_color.green(), state.text_color.blue(), text_alpha))
         label_text = node.label
         if node.label == "Long-term Memory":
