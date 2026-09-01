@@ -19,7 +19,8 @@ Jarvis propose désormais une interface reprenant l'orbe morphing de `grimalkin2
 | `Jarvis.bat --desktop` | Overlay halo plein écran (transparent aux clics) reflétant l'état : écoute / parole / veille. |
 
 En mode `--ui`, survole les bords de l'orbe pour déplier les menus radiaux
-(Voice, System, Memory, Appearance) et interagis directement avec les réglages :
+(Voice, System, Memory, Appearance, Routines) et interagis directement avec les
+réglages :
 
 | Contrôle | Interaction |
 |---|---|
@@ -29,6 +30,7 @@ En mode `--ui`, survole les bords de l'orbe pour déplier les menus radiaux
 | **Response Mode** | Clic pour changer le mode de réponse (injecté dans le prompt Gemini). |
 | **Mic Toggle** | Coupe/rétablit le micro en direct. |
 | **Audio Test** | Émet un bip de test. |
+| **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. |
 
 Les réglages sont conservés dans `UI/menu_state.json` au redémarrage.
 `Échap` pour quitter.
@@ -93,9 +95,116 @@ JARVIS_MEMORY_MIN_IMPORTANCE=1
 
 Mettre `JARVIS_MEMORY_ENABLED=0` désactive la mémoire sans supprimer la base.
 
+## Routines (macros vocales)
+
+Une routine est un **enchaînement d'outils nommé et rejouable**. Elle ne peut
+rien faire de plus que ce que Jarvis sait déjà faire : la liste blanche est
+préservée, et les outils destructeurs y sont interdits.
+
+### Créer et lancer
+
+- « Crée une routine *mode travail* qui ouvre VS Code, met le volume à 30 et
+  ouvre Spotify. »
+- « Lance le mode travail. »
+- « Quelles routines est-ce que tu connais ? »
+- « Ajoute une pause de 2 secondes avant Spotify dans le mode travail. »
+- « Planifie le mode travail en semaine à 9h. »
+- « Supprime la routine cinéma. » (demande une confirmation)
+
+### Stockage
+
+Les routines vivent dans un fichier JSON **lisible et modifiable à la main** :
+
+```text
+~/.jarvis/routines.json
+```
+
+```json
+{
+  "version": 1,
+  "routines": [
+    {
+      "name": "mode travail",
+      "description": "Session de code du matin",
+      "enabled": true,
+      "schedule": { "time": "09:00", "days": [0, 1, 2, 3, 4] },
+      "steps": [
+        { "tool": "open_application", "args": { "application": "vscode" } },
+        { "tool": "wait", "args": { "seconds": 2 } },
+        { "tool": "set_volume", "args": { "volume": 30 } }
+      ]
+    }
+  ]
+}
+```
+
+`days` suit la convention Python : lundi = 0, dimanche = 6. Un fichier édité à
+la main est rechargé automatiquement (l'orbe le détecte en moins d'une seconde,
+ou via `Reload` dans le menu Routines).
+
+À la voix ou en ligne de commande, les étapes acceptent aussi une syntaxe
+compacte, plus facile à dicter :
+
+```text
+open_application(vscode); wait(2); set_volume(30); open_website(spotify)
+```
+
+### Garde-fous
+
+| Règle | Détail |
+|---|---|
+| **Liste blanche** | Une étape ne peut appeler qu'un outil existant de `TOOL_FUNCTIONS`. |
+| **Outils interdits** | `shutdown_pc`, `restart_pc`, `delete_notes`, `clear_memory`, `forget`, `delete_memory`, `update_memory`, `run_routine` (pas de récursion) et les outils de gestion des routines. |
+| **Refus explicite** | Une étape interdite fait **échouer** la création, plutôt que d'être retirée en silence : tu ne peux pas croire posséder une routine qui n'en fait pas autant qu'annoncé. |
+| **Limites** | 25 étapes par routine, 50 routines, pause de 60 secondes maximum. |
+| **Non bloquant** | Une étape en échec est rapportée mais n'interrompt pas la routine ; depuis l'orbe, l'exécution a lieu hors du thread graphique. |
+
+`list_routine_tools` renvoie à tout moment la liste des outils autorisés.
+
+## Rappels persistants
+
+Les minuteurs (`set_timer`) vivent en mémoire et disparaissent au redémarrage.
+Les **rappels** (`set_reminder`) sont conservés dans SQLite
+(`~/.jarvis/schedule.db`) et rejoués au lancement de Jarvis — un rappel manqué
+parce que le PC était éteint est annoncé au démarrage, avec son heure prévue.
+
+- « Rappelle-moi d'appeler le dentiste demain à 9h. »
+- « Rappelle-moi la réunion chaque lundi à 8h30. »
+- « Quels sont mes rappels ? »
+- « Annule le rappel numéro 3. »
+
+Échéances comprises : `dans 20 minutes`, `dans une heure et demie`,
+`demain à 9h`, `après-demain à 10h`, `lundi à 8h30`, `ce soir à 21h`, `midi`,
+`12/03/2027 à 14h`, `le 12 mars`, ou une date ISO `2026-09-15T08:45`.
+Récurrences : `daily`, `weekdays`, `weekends`, `weekly`, `monthly`, `hourly`
+(« tous les jours », « en semaine », « chaque semaine »… sont reconnus).
+
+Un rappel peut aussi déclencher une routine plutôt qu'annoncer un texte
+(`set_reminder(text=..., when=..., routine="mode travail")`).
+
+Le planificateur tourne dans un thread de fond démarré avec Jarvis (modes
+console, `--ui` et `--desktop`). Il vérifie les échéances toutes les 15
+secondes. Une routine planifiée ne part que dans les 5 minutes suivant son
+heure — pas question de lancer le « mode travail » à 15h parce qu'il était
+prévu à 9h — et jamais deux fois pour la même échéance.
+
+### Configuration
+
+Dans `.env` :
+
+```env
+JARVIS_ROUTINES_ENABLED=1
+JARVIS_REMINDERS_ENABLED=1
+JARVIS_ROUTINES_PATH=C:\\Users\\Moi\\.jarvis\\routines.json      # optionnel
+JARVIS_SCHEDULE_DATABASE_PATH=C:\\Users\\Moi\\.jarvis\\schedule.db  # optionnel
+```
+
+Mettre l'une des variables à `0` désactive la fonctionnalité sans supprimer les
+données.
+
 ## Fonctions
 
-Jarvis dispose de **65 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **75 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -107,6 +216,8 @@ Jarvis dispose de **65 outils** déclarés dans `src/tools.py` (voir
 | **Presse-papiers** | `get_clipboard`, `set_clipboard` |
 | **Date / heure** | `get_local_time`, `get_local_date`, `get_datetime`, `days_until` |
 | **Minuteurs** | `set_timer`, `list_timers`, `cancel_timer` |
+| **Rappels persistants** | `set_reminder`, `list_reminders`, `cancel_reminder` |
+| **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
 | **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
@@ -116,7 +227,8 @@ Jarvis dispose de **65 outils** déclarés dans `src/tools.py` (voir
 Exemples de phrases : « ouvre YouTube », « quelle météo à Lyon ? », « mets un
 minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 3 ? », « note que je dois appeler Paul », « capture l'écran », « verrouille le
-PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille ».
+PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
+mode travail », « rappelle-moi d'appeler le dentiste demain à 9h ».
 
 ## Sécurité : listes blanches
 
@@ -135,8 +247,9 @@ La reconnaissance des noms est tolérante : casse, accents, tirets et petites
 phrases (« ouvre le site wikipedia ») sont acceptés. Tout ce qui n'est pas dans
 la liste blanche renvoie `success: false` — Jarvis l'annonce alors honnêtement.
 
-Les actions irréversibles (`shutdown_pc`, `restart_pc`, `delete_notes`)
-exigent un paramètre `confirm=true`, demandé oralement à l'utilisateur.
+Les actions irréversibles (`shutdown_pc`, `restart_pc`, `delete_notes`,
+`delete_routine`) exigent un paramètre `confirm=true`, demandé oralement à
+l'utilisateur.
 
 ## Tests
 
@@ -145,6 +258,7 @@ python -m unittest discover tests
 ```
 
 Les tests sont multiplateformes et ne déclenchent aucune action réelle
-(ni ouverture d'application, ni navigateur). Les tests mémoire utilisent des
-bases SQLite temporaires et ne nécessitent pas de clé Gemini réelle.
+(ni ouverture d'application, ni navigateur). Les tests mémoire, routines et
+rappels utilisent des fichiers et des bases SQLite temporaires, et ne
+nécessitent pas de clé Gemini réelle.
 

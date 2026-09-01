@@ -20,6 +20,7 @@ from .audio import AudioIO
 from .config import load_config
 from .gemini_live import GeminiLive
 from .memory import MemoryManager, set_default_memory_manager
+from .scheduler import start_default_scheduler
 
 
 async def run_headless():
@@ -32,6 +33,7 @@ async def run_headless():
     gemini = None
     audio = None
     task = None
+    scheduler = None
 
     def mic(pcm):
         if gemini is not None and gemini.can_send():
@@ -45,6 +47,12 @@ async def run_headless():
             min_importance=config.memory_min_importance,
         )
         set_default_memory_manager(memory_manager)
+
+        # Rappels persistants + routines planifiees (thread de fond).
+        try:
+            scheduler = start_default_scheduler()
+        except Exception as exc:
+            print(f"[Scheduler] Demarrage impossible : {exc}")
 
         audio = AudioIO(mic)
         gemini = GeminiLive(
@@ -89,6 +97,11 @@ async def run_headless():
                 except Exception:
                     pass
     finally:
+        if scheduler is not None:
+            try:
+                scheduler.stop()
+            except Exception:
+                pass
         if audio is not None:
             audio.stop()
 

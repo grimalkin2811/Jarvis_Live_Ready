@@ -34,6 +34,8 @@ if errorlevel 1 (
  echo JARVIS_MEMORY_ENABLED=1
  echo JARVIS_MEMORY_MAX_RESULTS=5
  echo JARVIS_MEMORY_MIN_IMPORTANCE=1
+ echo JARVIS_ROUTINES_ENABLED=1
+ echo JARVIS_REMINDERS_ENABLED=1
 ) > .env
 echo.
 echo Installation terminee. Lance Jarvis.bat
