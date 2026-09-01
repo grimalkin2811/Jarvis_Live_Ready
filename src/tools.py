@@ -39,6 +39,8 @@ import urllib.request
 import webbrowser
 
 from .memory import get_default_memory_manager
+from .routines import get_default_routine_manager
+from .scheduler import get_default_scheduler
 
 # ---------------------------------------------------------------------------
 # Dépendances optionnelles
@@ -1651,6 +1653,85 @@ def clear_memory(confirm=False):
 
 
 # ===========================================================================
+# ROUTINES (macros vocales)
+# ===========================================================================
+
+
+def create_routine(name, steps, description="", schedule=""):
+    """Crée une routine : un enchaînement d'outils nommé et rejouable."""
+    return get_default_routine_manager().create_routine(
+        name,
+        steps,
+        description=description,
+        schedule=schedule or None,
+    )
+
+
+def run_routine(name):
+    """Exécute une routine existante."""
+    return get_default_routine_manager().run_routine(name)
+
+
+def list_routines():
+    """Liste les routines enregistrées."""
+    return get_default_routine_manager().list_routines()
+
+
+def describe_routine(name):
+    """Détaille les étapes et la planification d'une routine."""
+    return get_default_routine_manager().describe_routine(name)
+
+
+def update_routine(name, steps=None, description=None, schedule=None, enabled=None):
+    """Modifie une routine : étapes, description, planification ou activation."""
+    return get_default_routine_manager().update_routine(
+        name,
+        steps=steps,
+        description=description,
+        schedule=schedule,
+        enabled=enabled,
+    )
+
+
+def delete_routine(name, confirm=False):
+    """Supprime une routine après confirmation."""
+    return get_default_routine_manager().delete_routine(name, confirm=confirm)
+
+
+def list_routine_tools():
+    """Liste les outils utilisables comme étape d'une routine."""
+    from .routines import FORBIDDEN_TOOLS, available_tools
+
+    return _ok(outils=available_tools(), interdits=sorted(FORBIDDEN_TOOLS))
+
+
+# ===========================================================================
+# RAPPELS PERSISTANTS
+# ===========================================================================
+
+
+def set_reminder(text, when="", recurrence="", routine=""):
+    """Programme un rappel durable, conservé après un redémarrage."""
+    return get_default_scheduler().add_reminder(
+        text,
+        when=when or None,
+        recurrence=recurrence,
+        routine=routine or None,
+    )
+
+
+def list_reminders(limit=20):
+    """Liste les rappels en attente."""
+    return get_default_scheduler().list_reminders(limit=limit)
+
+
+def cancel_reminder(reminder_id=None, confirm=False):
+    """Annule un rappel (ou tous, avec confirmation)."""
+    return get_default_scheduler().cancel_reminder(reminder_id=reminder_id, confirm=confirm)
+
+
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -1710,6 +1791,18 @@ TOOL_FUNCTIONS = {
     "delete_memory": delete_memory,
     "forget": forget,
     "clear_memory": clear_memory,
+    # Routines
+    "create_routine": create_routine,
+    "run_routine": run_routine,
+    "list_routines": list_routines,
+    "describe_routine": describe_routine,
+    "update_routine": update_routine,
+    "delete_routine": delete_routine,
+    "list_routine_tools": list_routine_tools,
+    # Rappels persistants
+    "set_reminder": set_reminder,
+    "list_reminders": list_reminders,
+    "cancel_reminder": cancel_reminder,
     # Web
     "open_website": open_website,
     "list_websites": list_websites,
@@ -1898,6 +1991,92 @@ TOOL_DECLARATIONS = [
         "Efface toute la memoire durable. Demande TOUJOURS une confirmation orale avant confirm=true.",
         {"confirm": _BOOL},
     ),
+    # --- Routines --------------------------------------------------------------------------
+    _decl(
+        "create_routine",
+        "Cree une routine : un enchainement d'outils nomme et rejouable (par exemple 'mode travail'). "
+        "Les etapes s'ecrivent sous forme d'appels separes par des points-virgules, "
+        "par exemple : open_application(vscode); wait(2); set_volume(30); open_website(spotify). "
+        "Seuls les outils autorises sont acceptes ; appelle list_routine_tools en cas de doute.",
+        {
+            "name": {**_STR, "description": "Nom parle de la routine, par exemple 'mode travail'."},
+            "steps": {
+                **_STR,
+                "description": "Etapes separees par des points-virgules : outil(argument) ; outil(cle=valeur).",
+            },
+            "description": {**_STR, "description": "Courte description optionnelle."},
+            "schedule": {
+                **_STR,
+                "description": "Declenchement automatique optionnel : 'tous les jours a 9h', 'en semaine a 8h30', 'lundi et vendredi a 18h'.",
+            },
+        },
+        ["name", "steps"],
+    ),
+    _decl(
+        "run_routine",
+        "Execute une routine existante quand l'utilisateur la demande ('lance le mode travail').",
+        {"name": _STR},
+        ["name"],
+    ),
+    _decl("list_routines", "Liste les routines enregistrees et leur planification."),
+    _decl(
+        "describe_routine",
+        "Detaille les etapes et la planification d'une routine.",
+        {"name": _STR},
+        ["name"],
+    ),
+    _decl(
+        "update_routine",
+        "Modifie une routine existante : etapes, description, planification ou activation. "
+        "Utilise schedule='aucune' pour retirer un declenchement automatique.",
+        {
+            "name": _STR,
+            "steps": _STR,
+            "description": _STR,
+            "schedule": _STR,
+            "enabled": _BOOL,
+        },
+        ["name"],
+    ),
+    _decl(
+        "delete_routine",
+        "Supprime une routine. Demande une confirmation orale avant d'appeler avec confirm=true.",
+        {"name": _STR, "confirm": _BOOL},
+        ["name"],
+    ),
+    _decl(
+        "list_routine_tools",
+        "Liste les outils utilisables comme etape d'une routine, et ceux qui sont interdits.",
+    ),
+    # --- Rappels persistants ---------------------------------------------------------------
+    _decl(
+        "set_reminder",
+        "Programme un rappel durable qui survit au redemarrage du PC, contrairement a set_timer. "
+        "A utiliser pour 'rappelle-moi demain a 9h', 'chaque lundi a 8h'. "
+        "Pour un simple compte a rebours de quelques minutes, prefere set_timer.",
+        {
+            "text": {**_STR, "description": "Contenu du rappel, par exemple 'appeler Paul'."},
+            "when": {
+                **_STR,
+                "description": "Echeance : 'demain a 9h', 'dans 20 minutes', 'lundi a 8h30', '12/03/2026 a 14h' ou une date ISO.",
+            },
+            "recurrence": {
+                **_STR,
+                "description": "Optionnel : daily, weekdays, weekends, weekly, monthly, hourly.",
+            },
+            "routine": {
+                **_STR,
+                "description": "Optionnel : nom d'une routine a executer a l'echeance au lieu d'annoncer un texte.",
+            },
+        },
+        ["text"],
+    ),
+    _decl("list_reminders", "Liste les rappels en attente.", {"limit": _INT}),
+    _decl(
+        "cancel_reminder",
+        "Annule un rappel par identifiant, ou tous les rappels avec confirm=true apres confirmation orale.",
+        {"reminder_id": _INT, "confirm": _BOOL},
+    ),
     # --- Web ------------------------------------------------------------------------------
     _decl(
         "open_website",
@@ -1998,3 +2177,13 @@ if _MISSING or _EXTRA:  # pragma: no cover - erreur de developpement
         f"Incoherence des outils Jarvis. Non implementes: {sorted(_MISSING)} / "
         f"Non declares: {sorted(_EXTRA)}"
     )
+
+
+# Les routines reutilisent la boite a outils : on l'enregistre ici plutot que
+# de laisser src.routines importer src.tools (dependance circulaire).
+try:
+    from .routines import set_tool_registry as _set_routine_tool_registry
+
+    _set_routine_tool_registry(TOOL_FUNCTIONS, TOOL_DECLARATIONS)
+except Exception:  # pragma: no cover - ne doit jamais bloquer Jarvis
+    pass

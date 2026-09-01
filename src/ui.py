@@ -26,6 +26,7 @@ from .audio import AudioIO
 from .config import load_config
 from .gemini_live import GeminiLive
 from .memory import MemoryManager, set_default_memory_manager
+from .scheduler import start_default_scheduler
 from UI import appearance_actions
 from UI import menu_state
 from UI.screen_halo_overlay import ScreenHaloOverlay
@@ -106,6 +107,12 @@ def _run_voice_loop(
         )
         set_default_memory_manager(memory_manager)
 
+        # Rappels persistants + routines planifiees (thread de fond).
+        try:
+            start_default_scheduler()
+        except Exception as exc:
+            print(f"[Scheduler] Demarrage impossible : {exc}")
+
         audio = AudioIO(
             mic,
             presence_hook=presence_hook,
@@ -158,6 +165,12 @@ def _run_voice_loop(
     try:
         loop.run_until_complete(_main())
     finally:
+        try:
+            from .scheduler import get_default_scheduler
+
+            get_default_scheduler().stop()
+        except Exception:
+            pass
         if audio is not None:
             audio.stop()
         loop.close()

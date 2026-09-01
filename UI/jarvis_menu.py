@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import sys
+import threading
 from dataclasses import dataclass
 from typing import Callable, List
 
@@ -177,6 +179,58 @@ MENU_SPECS = [
     ),
 ]
 
+
+# ---------------------------------------------------------------------------
+# Menu Routines (construit dynamiquement : il reflète le fichier routines.json)
+# ---------------------------------------------------------------------------
+
+#: Nombre maximum de routines affichées dans le menu radial.
+ROUTINE_SLOTS = 5
+
+#: Libellés fixes du menu Routines, toujours présents en fin de liste.
+ROUTINE_STATIC_ITEMS = [
+    MenuItemSpec("Reminders", "status"),
+    MenuItemSpec("Reload", "buttonless"),
+]
+
+
+def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
+    """Noms des routines enregistrées, sans jamais faire échouer l'UI."""
+    try:
+        from src.routines import get_default_routine_manager
+
+        result = get_default_routine_manager().list_routines()
+        if not result.get("success"):
+            return []
+        return [str(item["name"])[:22] for item in result.get("routines", [])][:limit]
+    except Exception:
+        return []
+
+
+def build_routines_spec() -> MenuSpec:
+    """Construit le menu Routines à partir des routines réellement définies."""
+    names = _routine_names()
+    items = [MenuItemSpec(name, "pulse") for name in names]
+    if not items:
+        items = [MenuItemSpec("No routine", "status")]
+    items = items + ROUTINE_STATIC_ITEMS
+    return MenuSpec(
+        name="Routines",
+        icon="▷",
+        glow=QColor(140, 255, 215),
+        accent=QColor(215, 255, 240),
+        body=QColor(10, 26, 26),
+        items=items,
+        reveal_scale=0.96,
+        branch_bias=1.18,
+        panel_width=200.0,
+        panel_padding=18.0,
+    )
+
+
+MENU_SPECS.append(build_routines_spec())
+
+
 class MorphingOrbWidget(QWidget):
 
     def __init__(self) -> None:
@@ -233,6 +287,9 @@ class MorphingOrbWidget(QWidget):
         self._menu_action_flash_time = -1.0
         self._menu_toggle_state: dict[str, bool] = {}
         self._menu_layout_mode = "line"
+        self._routines_mtime = -1.0
+        self._routines_checked_at = -10.0
+        self._routines_cache: dict[str, str] = {}
         self._menu_hold_seconds = 0.38
         self._menu_release_seconds = 0.18
         self._menu_exit_seconds = 0.24
@@ -600,7 +657,7 @@ class MorphingOrbWidget(QWidget):
 
             menu_branch = 0.0
             if self._menu_sector >= 0 and self._menu_reveal > 0.01:
-                sector_angle = (self._menu_sector * (math.pi / 2.0)) - (math.pi / 2.0)
+                sector_angle = self._sector_angle(self._menu_sector)
                 sx = math.cos(sector_angle)
                 sy = math.sin(sector_angle)
                 sector_alignment = clamp(px * sx + py * sy, -1.0, 1.0)
@@ -846,8 +903,17 @@ class MorphingOrbWidget(QWidget):
         )
 
     def _sector_vector(self, sector: int) -> tuple[float, float]:
-        angle = (sector * (math.pi / 2.0)) - (math.pi / 2.0)
+        angle = self._sector_angle(sector)
         return math.cos(angle), math.sin(angle)
+
+    def _sector_angle(self, sector: int) -> float:
+        """Angle du secteur : les menus se repartissent sur tout le cercle.
+
+        Avec quatre menus on retrouve exactement les quadrants d'origine
+        (haut, droite, bas, gauche) ; au-dela, l'espacement reste regulier.
+        """
+        count = max(1, len(MENU_SPECS))
+        return (sector * (2.0 * math.pi / count)) - (math.pi / 2.0)
 
     def _sector_from_cursor(self, dx: float, dy: float) -> tuple[int, float, float]:
         dist = math.hypot(dx, dy)
@@ -858,10 +924,7 @@ class MorphingOrbWidget(QWidget):
         my = dy / dist
 
         axes = [
-            (0, 0.0, -1.0),  # Voice / top
-            (1, 1.0, 0.0),   # System / right
-            (2, 0.0, 1.0),   # Memory / bottom
-            (3, -1.0, 0.0),  # Appearance / left
+            (sector, *self._sector_vector(sector)) for sector in range(len(MENU_SPECS))
         ]
 
         scores = []
@@ -987,7 +1050,90 @@ class MorphingOrbWidget(QWidget):
             return self._system_value(item.label)
         if spec.name == "Memory":
             return self._memory_value(item.label)
+        if spec.name == "Routines":
+            return self._routines_value(item.label)
         return ""
+
+    # ------------------------------------------------------------------
+    # Routines
+    # ------------------------------------------------------------------
+    def _refresh_routines_spec(self) -> None:
+        """Reconstruit le menu Routines quand routines.json a changé.
+
+        La lecture disque est limitée à une fois par seconde et n'échoue
+        jamais : l'orbe doit continuer à tourner même sans routines.
+        """
+        if (self.time - self._routines_checked_at) < 1.0:
+            return
+        self._routines_checked_at = self.time
+        try:
+            from src.routines import get_default_routine_manager
+
+            mtime = get_default_routine_manager().mtime()
+        except Exception:
+            return
+        if mtime == self._routines_mtime:
+            return
+        self._routines_mtime = mtime
+        try:
+            index = next(i for i, spec in enumerate(MENU_SPECS) if spec.name == "Routines")
+        except StopIteration:
+            return
+        MENU_SPECS[index] = build_routines_spec()
+        self._routines_cache = {}
+
+    def _routines_value(self, label: str) -> str:
+        if label == "Reload":
+            return "↻"
+        if label == "No routine":
+            return "—"
+        if label == "Reminders":
+            try:
+                from src.scheduler import get_default_scheduler
+
+                result = get_default_scheduler().list_reminders(limit=100)
+                return str(result.get("count", 0)) if result.get("success") else "Off"
+            except Exception:
+                return "?"
+
+        cached = self._routines_cache.get(label)
+        if cached is not None:
+            return cached
+        try:
+            from src.routines import get_default_routine_manager
+
+            result = get_default_routine_manager().list_routines()
+            value = "▶"
+            for item in result.get("routines", []):
+                if str(item["name"])[:22] == label:
+                    planning = str(item.get("planification") or "aucune")
+                    hour = re.search(r"\d{1,2}:\d{2}", planning)
+                    # Une routine planifiée affiche son heure, sinon un simple « lire ».
+                    value = f"⏱ {hour.group(0)}" if hour else "▶"
+                    break
+        except Exception:
+            value = "▶"
+        self._routines_cache[label] = value
+        return value
+
+    def _run_routine_async(self, name: str) -> None:
+        """Lance une routine hors du thread Qt : l'orbe ne doit jamais figer."""
+
+        def _worker() -> None:
+            try:
+                from src.routines import get_default_routine_manager
+
+                result = get_default_routine_manager().run_routine(name)
+                if result.get("success"):
+                    message = f"{name} ✓"
+                else:
+                    message = f"{name} : {result.get('error') or 'échec partiel'}"
+            except Exception as exc:
+                message = f"{name} : {exc}"
+            self._menu_action_flash = message[:60]
+            self._menu_action_flash_time = self.time
+
+        threading.Thread(target=_worker, name="jarvis-routine", daemon=True).start()
 
     # ------------------------------------------------------------------
     # Contrôles interactifs (toggles / sliders / options)
@@ -1128,6 +1274,16 @@ class MorphingOrbWidget(QWidget):
             elif name == "Memory" and label == "Clear Cache":
                 self._clear_cache()
                 self._menu_action_flash = "Cache cleared"
+            elif name == "Routines" and label == "Reload":
+                self._routines_mtime = -1.0
+                self._routines_checked_at = -10.0
+                self._routines_cache = {}
+                self._menu_action_flash = "Routines rechargées"
+            elif name == "Routines" and label in {"No routine", "Reminders"}:
+                self._menu_action_flash = label
+            elif name == "Routines":
+                self._menu_action_flash = f"{label} …"
+                self._run_routine_async(label)
             elif name == "Memory":
                 self._menu_action_flash = item.label
             else:
@@ -1181,7 +1337,13 @@ class MorphingOrbWidget(QWidget):
         return anchor, sx, sy, perp_x, perp_y
 
     def _sync_menu_nodes(self, spec: MenuSpec) -> None:
-        if len(self._menu_nodes) != len(spec.items) or any(node.section != spec.name for node in self._menu_nodes):
+        labels = [item.label for item in spec.items]
+        stale = (
+            len(self._menu_nodes) != len(spec.items)
+            or any(node.section != spec.name for node in self._menu_nodes)
+            or [node.label for node in self._menu_nodes] != labels
+        )
+        if stale:
             self._menu_nodes = [
                 MenuNode(
                     label=item.label,
@@ -1199,6 +1361,7 @@ class MorphingOrbWidget(QWidget):
             self._menu_hot_node = -1
 
     def _update_menu_nodes(self) -> None:
+        self._refresh_routines_spec()
         spec = self._menu_spec()
         if spec is None or self._menu_alpha <= 0.01:
             for node in self._menu_nodes:
@@ -1218,13 +1381,14 @@ class MorphingOrbWidget(QWidget):
         if count == 0:
             return
 
-        self._menu_layout_mode = "grid" if self._menu_sector in (0, 2) else "line"
+        # Menu plutot vertical (haut/bas) : grille ; plutot horizontal : ligne.
+        self._menu_layout_mode = "grid" if abs(sy) >= abs(sx) else "line"
 
         hover_index = -1
         hover_score = -1.0
         count_mid = (count - 1) * 0.5
         spacing = 18.0 + 2.0 * spec.branch_bias
-        if self._menu_sector in (1, 3):
+        if self._menu_layout_mode == "line":
             spacing += 14.0
         curve_strength = 7.0 + 5.0 * reveal
 
@@ -1400,9 +1564,9 @@ class MorphingOrbWidget(QWidget):
         painter.setFont(text_font)
         text_offset = 13.0 + 9.0 * hover + 3.0 * click
         label_dx = 22.0 + 4.0 * hover + 2.0 * click
-        sector_index = self._menu_sector
+        sector_sx, sector_sy = self._sector_vector(max(0, self._menu_sector))
         if self._menu_layout_mode == "grid":
-            if sector_index == 2:  # bottom
+            if sector_sy > 0.0:  # menu deploye vers le bas
                 label_pos = QPointF(node.position.x() + label_dx, node.position.y())
                 label_rect = QRectF(label_pos.x(), label_pos.y() - 9.0, 160.0, 18.0)
                 label_alignment = Qt.AlignLeft | Qt.AlignVCenter
@@ -1414,7 +1578,7 @@ class MorphingOrbWidget(QWidget):
                 label_rect = QRectF(label_pos.x() - 8.0, label_pos.y() - 8.0, 170.0, 18.0)
                 label_alignment = Qt.AlignLeft | Qt.AlignVCenter
         else:
-            if sector_index == 3:  # left
+            if sector_sx < 0.0:  # menu deploye vers la gauche
                 label_pos = QPointF(node.position.x() - label_dx, node.position.y())
                 label_rect = QRectF(label_pos.x() - 130.0, label_pos.y() - 9.0, 120.0, 18.0)
                 label_alignment = Qt.AlignRight | Qt.AlignVCenter
