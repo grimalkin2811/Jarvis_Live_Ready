@@ -54,6 +54,7 @@ async def run_headless():
             on_audio=audio.play,
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
+            on_speaking=audio.begin_speaking,
             memory_manager=memory_manager,
         )
 
