@@ -68,6 +68,14 @@ class VoiceEnergyRouter(QObject):
         jarvis_menu.set_voice_energy(level)
 
 
+def _on_speaking(audio: AudioIO, presence_hook) -> None:
+    """Jarvis commence à parler : on le marque comme 'speaking' dans AudioIO
+    (pour suspendre le timeout) et on informe l'UI le cas échéant."""
+    audio.begin_speaking()
+    if presence_hook is not None:
+        presence_hook("speaking")
+
+
 def _run_voice_loop(
     config,
     presence_hook,
@@ -112,7 +120,7 @@ def _run_voice_loop(
             on_audio=audio.play,
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
-            on_speaking=lambda: presence_hook("speaking") if presence_hook else None,
+            on_speaking=lambda: _on_speaking(audio, presence_hook),
             response_mode_provider=menu_state.response_mode_label_from_live,
             memory_manager=memory_manager,
         )

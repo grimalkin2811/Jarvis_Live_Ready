@@ -58,6 +58,12 @@ class AudioIO:
         self.running = False
         self.awake = False
 
+        # True tant que Jarvis est en train de parler (réponse Gemini en cours).
+        # Pendant ce temps, le timeout de conversation ne doit jamais se
+        # déclencher : on ne retourne en veille que lorsque la réponse est finie.
+        self.speaking = False
+        self._speaking_lock = threading.Lock()
+
         # Heure limite de la fenêtre de conversation
         self.follow_up_until = 0.0
         self.last_wake_time = 0.0
@@ -387,6 +393,7 @@ class AudioIO:
         now = time.monotonic()
 
         self.awake = True
+        self._set_speaking(False)
         self.last_wake_time = now
         self._emit_presence("listening")
 
@@ -422,6 +429,12 @@ class AudioIO:
         Les 8 secondes commencent après sa réponse.
         """
 
+        # Jarvis a fini de parler : le timeout redevient actif.
+        self._set_speaking(False)
+
+        # Si un retour en veille a déjà eu lieu (connexion perdue, mic coupé,
+        # interruption de l'utilisateur après la fin du tour), on ne relance
+        # pas la fenêtre de conversation.
         if not self.awake:
             return
 
@@ -436,6 +449,14 @@ class AudioIO:
             f"{self.FOLLOW_UP_SECONDS:.0f} secondes."
         )
 
+    def begin_speaking(self):
+        """Jarvis commence à parler (début d'une réponse Gemini)."""
+        self._set_speaking(True)
+
+    def _set_speaking(self, speaking: bool) -> None:
+        with self._speaking_lock:
+            self.speaking = bool(speaking)
+
     # =========================================================
     # TIMEOUT / RETOUR EN VEILLE
     # =========================================================
@@ -444,6 +465,12 @@ class AudioIO:
 
         if not self.awake:
             return
+
+        # Pendant que Jarvis parle, la fenêtre de conversation est suspendue :
+        # on ne retourne en veille qu'une fois sa réponse terminée.
+        with self._speaking_lock:
+            if self.speaking:
+                return
 
         if time.monotonic() >= self.follow_up_until:
 
@@ -545,6 +572,8 @@ class AudioIO:
                     break
 
         self.audio_started = False
+        # L'utilisateur a interrompu Jarvis : il ne parle plus.
+        self._set_speaking(False)
         self.follow_up_until = time.monotonic() + self.FOLLOW_UP_SECONDS
         self._emit_presence("listening")
 
@@ -597,6 +626,7 @@ class AudioIO:
                 break
 
         self.awake = False
+        self._set_speaking(False)
 
         try:
             self.wake_model.reset()
