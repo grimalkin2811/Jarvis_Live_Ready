@@ -113,6 +113,14 @@ def _run_voice_loop(
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
 
+        # Historique du presse-papiers (copier/coller multiples) : veilleur leger.
+        try:
+            from .tools import start_clipboard_watcher
+
+            start_clipboard_watcher()
+        except Exception as exc:
+            print(f"[Presse-papiers] Historique indisponible : {exc}")
+
         audio = AudioIO(
             mic,
             presence_hook=presence_hook,

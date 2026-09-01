@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import functools
 import json
 import math
 import operator
@@ -38,9 +39,13 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+from .activity import get_default_activity_log, log_action
+from .backup import create_backup as _create_backup
+from .backup import list_backups as _list_backups
 from .memory import get_default_memory_manager
 from .routines import get_default_routine_manager
 from .scheduler import get_default_scheduler
+from .todo import get_default_todo_manager
 
 # ---------------------------------------------------------------------------
 # Dépendances optionnelles
@@ -68,6 +73,17 @@ DATA_DIR = os.environ.get(
     os.path.join(os.path.expanduser("~"), ".jarvis"),
 )
 NOTES_FILE = os.path.join(DATA_DIR, "notes.json")
+#: Historique du presse-papiers (copier/coller multiples).
+CLIPBOARD_HISTORY_FILE = os.path.join(DATA_DIR, "clipboard_history.json")
+#: Nombre maximum d'entrées conservées dans l'historique du presse-papiers.
+CLIPBOARD_HISTORY_MAX = 50
+#: Extensions de fichiers lisibles à voix haute.
+READABLE_EXTENSIONS = {
+    ".txt", ".md", ".markdown", ".csv", ".json", ".log", ".ini", ".cfg",
+    ".yml", ".yaml", ".xml", ".html", ".htm", ".py", ".js", ".ts", ".css",
+    ".bat", ".ps1", ".sql", ".rst", ".srt",
+}
+
 
 
 # ===========================================================================
@@ -186,6 +202,13 @@ SITES = {
     "france tv": "https://www.france.tv",
     "molotov": "https://www.molotov.tv",
     "crunchyroll": "https://www.crunchyroll.com",
+    # --- Films & séries (quoi regarder ce soir ?) ---------------------------
+    "justwatch": "https://www.justwatch.com/fr",
+    "allocine": "https://www.allocine.fr",
+    "imdb": "https://www.imdb.com",
+    "senscritique": "https://www.senscritique.com",
+    "letterboxd": "https://letterboxd.com",
+    "themoviedb": "https://www.themoviedb.org",
     # --- Musique & podcasts -------------------------------------------------
     "spotify": "https://open.spotify.com",
     "deezer": "https://www.deezer.com",
@@ -961,19 +984,471 @@ def set_brightness(level):
     return _ok(luminosite=value) if ok else _err(out or "Luminosite non pilotable.")
 
 
+def sleep_pc():
+    """Met le PC en veille (l'écran s'éteint, la session reste ouverte)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    try:
+        import ctypes
+
+        # SetSuspendState(Hibernate=0, Force=1, WakeupEventsDisabled=0)
+        if ctypes.windll.powrprof.SetSuspendState(0, 1, 0):
+            return _ok(action="veille")
+    except Exception:
+        pass
+    try:
+        _run(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"])
+        return _ok(action="veille")
+    except Exception as exc:
+        return _err(exc)
+
+
+def hibernate_pc():
+    """Met le PC en hibernation (état enregistré sur le disque, extinction complète)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    try:
+        result = _run(["shutdown", "/h"])
+    except Exception as exc:
+        return _err(exc)
+    if result.returncode == 0:
+        return _ok(action="hibernation")
+    message = (result.stderr or result.stdout or "").strip()
+    try:
+        import ctypes
+
+        if ctypes.windll.powrprof.SetSuspendState(1, 1, 0):
+            return _ok(action="hibernation")
+    except Exception:
+        pass
+    return _err(message or "Hibernation indisponible (peut-etre desactivee sur ce PC).")
+
+
+def turn_off_screen():
+    """Éteint l'écran sans verrouiller la session (bouger la souris le rallume)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    try:
+        import ctypes
+
+        # HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2 = éteint
+        ctypes.windll.user32.SendMessageW(0xFFFF, 0x0112, 0xF170, 2)
+        return _ok(action="ecran_eteint")
+    except Exception as exc:
+        return _err(exc)
+
+
+def empty_recycle_bin(confirm=False):
+    """Vide la corbeille Windows (nécessite confirm=True : action irréversible)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    if not confirm:
+        return _err(
+            "Confirmation requise : vider la corbeille est irreversible. "
+            "Rappelle l'outil avec confirm=true apres accord explicite."
+        )
+    ok, out = _powershell("Clear-RecycleBin -Force -Confirm:$false -ErrorAction Stop", timeout=60)
+    if ok:
+        return _ok(action="corbeille_videe")
+    try:
+        import ctypes
+
+        # SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND
+        code = ctypes.windll.shell32.SHEmptyRecycleBinW(None, None, 0x07)
+        if code == 0:
+            return _ok(action="corbeille_videe")
+    except Exception:
+        pass
+    if "vide" in (out or "").lower() or "empty" in (out or "").lower():
+        return _ok(action="corbeille_deja_vide")
+    return _err(out or "Impossible de vider la corbeille.")
+
+
+def get_folder_size(folder="telechargements"):
+    """Mesure le poids d'un dossier autorisé et ses plus gros éléments."""
+    name, path = _resolve_folder(folder)
+    if not path:
+        return _err(
+            "Dossier non autorise",
+            hint="Dossiers possibles : " + ", ".join(sorted(FOLDERS)),
+        )
+    if not os.path.isdir(path):
+        return _err(f"Dossier introuvable : {path}")
+
+    total = 0
+    files = 0
+    per_entry = {}
+    try:
+        for root, dirs, names in os.walk(path):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for filename in names:
+                full = os.path.join(root, filename)
+                try:
+                    size = os.path.getsize(full)
+                except Exception:
+                    continue
+                total += size
+                files += 1
+                relative = os.path.relpath(full, path)
+                top = relative.split(os.sep)[0]
+                per_entry[top] = per_entry.get(top, 0) + size
+                if files > 200000:  # garde-fou sur les arborescences géantes
+                    raise StopIteration
+    except StopIteration:
+        pass
+    except Exception as exc:
+        return _err(exc)
+
+    biggest = sorted(per_entry.items(), key=lambda item: item[1], reverse=True)[:5]
+    return _ok(
+        dossier=name,
+        chemin=path,
+        taille_mo=round(total / (1024 ** 2), 1),
+        taille_go=round(total / (1024 ** 3), 2),
+        fichiers=files,
+        plus_gros=[
+            {"nom": entry, "taille_mo": round(size / (1024 ** 2), 1)} for entry, size in biggest
+        ],
+    )
+
+
+def show_notification(title="Jarvis", message="", duration=5):
+    """Affiche une notification Windows (toast) en plus de la réponse vocale."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    heading = str(title or "Jarvis").strip()[:64] or "Jarvis"
+    body = str(message or "").strip()[:256]
+    if not body:
+        return _err("Message de notification vide")
+
+    safe_title = heading.replace("'", "''")
+    safe_body = body.replace("'", "''")
+
+    toast_script = (
+        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, "
+        "ContentType = WindowsRuntime] > $null; "
+        "$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+        "[Windows.UI.Notifications.ToastTemplateType]::ToastText02); "
+        "$texts = $template.GetElementsByTagName('text'); "
+        f"$texts.Item(0).AppendChild($template.CreateTextNode('{safe_title}')) > $null; "
+        f"$texts.Item(1).AppendChild($template.CreateTextNode('{safe_body}')) > $null; "
+        "$toast = New-Object Windows.UI.Notifications.ToastNotification $template; "
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("
+        "'Jarvis').Show($toast)"
+    )
+    ok, out = _powershell(toast_script, timeout=25)
+    if ok:
+        return _ok(titre=heading, message=body, style="toast")
+
+    try:
+        seconds = max(1, min(30, int(duration)))
+    except Exception:
+        seconds = 5
+    balloon_script = (
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$icon = New-Object System.Windows.Forms.NotifyIcon; "
+        "$icon.Icon = [System.Drawing.SystemIcons]::Information; "
+        f"$icon.BalloonTipTitle = '{safe_title}'; "
+        f"$icon.BalloonTipText = '{safe_body}'; "
+        "$icon.Visible = $true; "
+        f"$icon.ShowBalloonTip({seconds * 1000}); "
+        f"Start-Sleep -Seconds {min(seconds, 10)}; $icon.Dispose()"
+    )
+    ok2, out2 = _powershell(balloon_script, timeout=40)
+    if ok2:
+        return _ok(titre=heading, message=body, style="infobulle")
+    return _err(out2 or out or "Notification impossible.")
+
+
+def wake_on_lan(mac, broadcast="255.255.255.255", port=9):
+    """Réveille un autre PC du réseau local via un paquet magique Wake-on-LAN."""
+    raw = re.sub(r"[^0-9a-fA-F]", "", str(mac or ""))
+    if len(raw) != 12:
+        return _err(
+            "Adresse MAC invalide",
+            hint="Format attendu : AA:BB:CC:DD:EE:FF.",
+        )
+    try:
+        payload = b"\xff" * 6 + bytes.fromhex(raw) * 16
+    except Exception as exc:
+        return _err(exc)
+
+    target = str(broadcast or "255.255.255.255").strip() or "255.255.255.255"
+    try:
+        port = max(1, min(65535, int(port)))
+    except Exception:
+        port = 9
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            sock.settimeout(3)
+            sock.sendto(payload, (target, port))
+            # Un second envoi sur le port 7, très courant lui aussi.
+            if port == 9:
+                sock.sendto(payload, (target, 7))
+    except Exception as exc:
+        return _err(f"Envoi du paquet magique impossible : {exc}")
+
+    formatted = ":".join(raw[index : index + 2].upper() for index in range(0, 12, 2))
+    return _ok(mac=formatted, diffusion=target, port=port, action="wake_on_lan")
+
+
 # ===========================================================================
-# PRESSE-PAPIERS
+# CLAVIER : SAISIE DE TEXTE & TOUCHES
 # ===========================================================================
+
+#: Touches nommées autorisées pour ``press_key`` (liste blanche).
+KEYS = {
+    "entree": 0x0D, "enter": 0x0D, "retour": 0x0D, "return": 0x0D,
+    "tabulation": 0x09, "tab": 0x09,
+    "espace": 0x20, "space": 0x20,
+    "echap": 0x1B, "escape": 0x1B, "esc": 0x1B,
+    "retour arriere": 0x08, "backspace": 0x08, "effacer": 0x08,
+    "suppr": 0x2E, "supprimer": 0x2E, "delete": 0x2E, "del": 0x2E,
+    "inser": 0x2D, "insert": 0x2D,
+    "haut": 0x26, "up": 0x26,
+    "bas": 0x28, "down": 0x28,
+    "gauche": 0x25, "left": 0x25,
+    "droite": 0x27, "right": 0x27,
+    "debut": 0x24, "home": 0x24,
+    "fin": 0x23, "end": 0x23,
+    "page precedente": 0x21, "page haut": 0x21, "pageup": 0x21,
+    "page suivante": 0x22, "page bas": 0x22, "pagedown": 0x22,
+    "impression ecran": 0x2C, "impr ecran": 0x2C, "printscreen": 0x2C,
+    "verr maj": 0x14, "capslock": 0x14,
+    "windows": 0x5B, "win": 0x5B,
+    "menu": 0x5D,
+}
+KEYS.update({f"f{index}": 0x6F + index for index in range(1, 13)})
+KEYS.update({chr(code): code for code in range(ord("A"), ord("Z") + 1)})
+KEYS.update({chr(code).lower(): code for code in range(ord("A"), ord("Z") + 1)})
+KEYS.update({str(digit): 0x30 + digit for digit in range(10)})
+
+#: Modificateurs autorisés.
+MODIFIERS = {
+    "ctrl": 0x11, "control": 0x11, "controle": 0x11,
+    "alt": 0x12,
+    "maj": 0x10, "shift": 0x10,
+    "win": 0x5B, "windows": 0x5B,
+}
+
+#: Longueur maximale d'un texte tapé d'un coup (garde-fou).
+MAX_TYPE_LENGTH = 2000
+
+
+def _key_down_up(vk_code, down=True):
+    """Presse ou relâche une touche virtuelle Windows."""
+    try:
+        import ctypes
+
+        flags = 0 if down else 2  # KEYEVENTF_KEYUP
+        ctypes.windll.user32.keybd_event(vk_code, 0, flags, 0)
+        return True
+    except Exception:
+        return False
+
+
+def _send_unicode_text(text):
+    """Tape un texte Unicode via ``keybd_event`` (KEYEVENTF_UNICODE)."""
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        for char in text:
+            if char == "\n":
+                user32.keybd_event(0x0D, 0, 0, 0)
+                user32.keybd_event(0x0D, 0, 2, 0)
+                continue
+            code = ord(char)
+            # 0 + KEYEVENTF_UNICODE (0x4) : le scan code porte le caractère.
+            user32.keybd_event(0, code, 0x4, 0)
+            user32.keybd_event(0, code, 0x4 | 0x2, 0)
+            time.sleep(0.002)
+        return True
+    except Exception:
+        return False
+
+
+def _parse_key_combo(key, modifiers=""):
+    """Analyse « ctrl+s », key='s' + modifiers='ctrl' → (mods, touche)."""
+    raw = _normalize_name(key).replace(" plus ", "+")
+    tokens = [token.strip() for token in re.split(r"[+,]| et ", raw) if token.strip()]
+    extra = [
+        token.strip()
+        for token in re.split(r"[+,]| et ", _normalize_name(modifiers))
+        if token.strip()
+    ]
+
+    mods = []
+    main = None
+    for token in extra + tokens:
+        if token in MODIFIERS:
+            if MODIFIERS[token] not in mods:
+                mods.append(MODIFIERS[token])
+        elif token in KEYS:
+            main = KEYS[token]
+        else:
+            return None, None, token
+    return mods, main, None
+
+
+def type_text(text):
+    """Tape un texte au clavier dans la fenêtre active (comme si l'utilisateur l'écrivait)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    content = str(text or "")
+    if not content.strip():
+        return _err("Texte vide")
+    if len(content) > MAX_TYPE_LENGTH:
+        return _err(f"Texte trop long (max {MAX_TYPE_LENGTH} caracteres).")
+    if not _send_unicode_text(content):
+        return _err("Saisie clavier refusee par le systeme.")
+    return _ok(caracteres=len(content), texte=content[:80])
+
+
+def press_key(key, modifiers="", repeat=1):
+    """Appuie sur une touche autorisée, éventuellement avec des modificateurs (« ctrl+s »)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+
+    mods, main, unknown = _parse_key_combo(key, modifiers)
+    if unknown is not None:
+        return _err(
+            f"Touche non autorisee : {unknown}",
+            hint="Touches possibles : lettres, chiffres, F1-F12, entree, tab, espace, echap, "
+            "suppr, fleches, debut, fin, page haut/bas ; modificateurs : ctrl, alt, maj, win.",
+        )
+    if main is None:
+        return _err("Aucune touche principale indiquee.")
+
+    try:
+        count = max(1, min(20, int(repeat)))
+    except Exception:
+        count = 1
+
+    for _ in range(count):
+        for modifier in mods:
+            _key_down_up(modifier, True)
+        pressed = _key_down_up(main, True) and _key_down_up(main, False)
+        for modifier in reversed(mods):
+            _key_down_up(modifier, False)
+        if not pressed:
+            return _err("Touche refusee par le systeme.")
+        time.sleep(0.02)
+
+    return _ok(touche=_normalize_name(key), modificateurs=_normalize_name(modifiers), repetitions=count)
+
+
+# ===========================================================================
+# PRESSE-PAPIERS (+ HISTORIQUE)
+# ===========================================================================
+
+
+def _read_clipboard_native():
+    """Lecture rapide du presse-papiers texte via l'API Windows (sans PowerShell)."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        import ctypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        if not user32.OpenClipboard(0):
+            return None
+        try:
+            handle = user32.GetClipboardData(13)  # CF_UNICODETEXT
+            if not handle:
+                return None
+            kernel32.GlobalLock.restype = ctypes.c_void_p
+            pointer = kernel32.GlobalLock(ctypes.c_void_p(handle))
+            if not pointer:
+                return None
+            try:
+                return ctypes.c_wchar_p(pointer).value
+            finally:
+                kernel32.GlobalUnlock(ctypes.c_void_p(handle))
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return None
+
+
+_CLIPBOARD_LOCK = threading.RLock()
+_CLIPBOARD_WATCHER = None
+
+
+def _record_clipboard(text):
+    """Ajoute une entrée à l'historique du presse-papiers (déduplique la dernière)."""
+    content = str(text or "")
+    if not content.strip():
+        return None
+    if len(content) > 5000:
+        content = content[:5000]
+    with _CLIPBOARD_LOCK:
+        history = _read_json(CLIPBOARD_HISTORY_FILE, [])
+        if not isinstance(history, list):
+            history = []
+        if history and history[0].get("texte") == content:
+            return history[0]
+        entry = {
+            "texte": content,
+            "date": dt.datetime.now().strftime("%d/%m/%Y %H:%M"),
+        }
+        history.insert(0, entry)
+        del history[CLIPBOARD_HISTORY_MAX:]
+        try:
+            _write_json(CLIPBOARD_HISTORY_FILE, history)
+        except Exception:
+            return None
+        return entry
+
+
+def _clipboard_watch_loop(interval):
+    last = None
+    while True:
+        try:
+            current = _read_clipboard_native()
+            if current and current != last:
+                last = current
+                _record_clipboard(current)
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def start_clipboard_watcher(interval=1.5):
+    """Démarre (une seule fois) la surveillance du presse-papiers en tâche de fond."""
+    global _CLIPBOARD_WATCHER
+    if not IS_WINDOWS:
+        return False
+    with _CLIPBOARD_LOCK:
+        if _CLIPBOARD_WATCHER is not None and _CLIPBOARD_WATCHER.is_alive():
+            return True
+        thread = threading.Thread(
+            target=_clipboard_watch_loop,
+            args=(max(0.5, float(interval)),),
+            daemon=True,
+            name="jarvis-clipboard",
+        )
+        _CLIPBOARD_WATCHER = thread
+    thread.start()
+    return True
 
 
 def get_clipboard():
     """Lit le contenu texte du presse-papiers."""
     if not IS_WINDOWS:
         return _windows_only()
-    ok, out = _powershell("Get-Clipboard -Raw")
-    if not ok:
-        return _err(out)
-    return _ok(texte=out)
+    content = _read_clipboard_native()
+    if content is None:
+        ok, out = _powershell("Get-Clipboard -Raw")
+        if not ok:
+            return _err(out)
+        content = out
+    _record_clipboard(content)
+    start_clipboard_watcher()
+    return _ok(texte=content)
 
 
 def set_clipboard(text):
@@ -985,7 +1460,86 @@ def set_clipboard(text):
         return _err("Texte vide")
     escaped = content.replace("'", "''")
     ok, out = _powershell(f"Set-Clipboard -Value '{escaped}'")
-    return _ok(longueur=len(content)) if ok else _err(out)
+    if not ok:
+        return _err(out)
+    _record_clipboard(content)
+    start_clipboard_watcher()
+    return _ok(longueur=len(content))
+
+
+def get_clipboard_history(limit=10):
+    """Liste les derniers textes copiés (« recolle ce que j'ai copié avant »)."""
+    start_clipboard_watcher()
+    with _CLIPBOARD_LOCK:
+        history = _read_json(CLIPBOARD_HISTORY_FILE, [])
+    if not isinstance(history, list):
+        history = []
+    try:
+        limit = max(1, min(50, int(limit)))
+    except Exception:
+        limit = 10
+
+    entries = []
+    for index, item in enumerate(history[:limit], start=1):
+        texte = str(item.get("texte", ""))
+        entries.append(
+            {
+                "index": index,
+                "apercu": texte[:120] + ("..." if len(texte) > 120 else ""),
+                "longueur": len(texte),
+                "date": item.get("date", ""),
+            }
+        )
+    return _ok(
+        historique=entries,
+        count=len(entries),
+        total=len(history),
+        message="Historique du presse-papiers vide." if not entries else None,
+    )
+
+
+def paste_from_history(index=1, paste=False):
+    """Remet une entrée de l'historique dans le presse-papiers (index 1 = la plus récente)."""
+    if not IS_WINDOWS:
+        return _windows_only()
+    with _CLIPBOARD_LOCK:
+        history = _read_json(CLIPBOARD_HISTORY_FILE, [])
+    if not isinstance(history, list) or not history:
+        return _err("Historique du presse-papiers vide.")
+    try:
+        position = max(1, int(index))
+    except Exception:
+        position = 1
+    if position > len(history):
+        return _err(f"Seulement {len(history)} entrees dans l'historique.")
+
+    texte = str(history[position - 1].get("texte", ""))
+    result = set_clipboard(texte)
+    if not result.get("success"):
+        return result
+
+    colle = False
+    if paste:
+        colle = bool(press_key("v", modifiers="ctrl").get("success"))
+
+    return _ok(
+        index=position,
+        apercu=texte[:120] + ("..." if len(texte) > 120 else ""),
+        colle=colle,
+    )
+
+
+def clear_clipboard_history(confirm=False):
+    """Efface l'historique du presse-papiers (nécessite confirm=True)."""
+    if not confirm:
+        return _err("Confirmation requise pour effacer l'historique du presse-papiers.")
+    with _CLIPBOARD_LOCK:
+        try:
+            if os.path.exists(CLIPBOARD_HISTORY_FILE):
+                os.remove(CLIPBOARD_HISTORY_FILE)
+        except Exception as exc:
+            return _err(exc)
+    return _ok(action="historique_efface")
 
 
 # ===========================================================================
@@ -1064,6 +1618,11 @@ def _timer_finished(timer_id, label):
         if entry:
             entry["done"] = True
     print(f"\n[Jarvis] ⏰ Minuteur terminé : {label}")
+    # Notification visuelle en plus du bip et de la voix.
+    try:
+        show_notification("Minuteur terminé", str(label))
+    except Exception:
+        pass
     if IS_WINDOWS:
         try:
             import winsound
@@ -1185,6 +1744,66 @@ def delete_notes(confirm=False):
     except Exception as exc:
         return _err(exc)
     return _ok(action="notes_effacees")
+
+
+# ===========================================================================
+# LISTE DE TÂCHES (TODO)
+# ===========================================================================
+
+
+def add_todo(text, due="", priority="normale"):
+    """Ajoute une tâche à la liste de choses à faire."""
+    return get_default_todo_manager().add_task(text, due=due, priority=priority)
+
+
+def list_todos(status="pending", limit=20):
+    """Liste les tâches (par défaut celles qui restent à faire)."""
+    return get_default_todo_manager().list_tasks(status=status, limit=limit)
+
+
+def complete_todo(todo_id=None, text=""):
+    """Marque une tâche comme faite (par identifiant ou par libellé)."""
+    return get_default_todo_manager().complete_task(task_id=todo_id, label=text)
+
+
+def reopen_todo(todo_id=None, text=""):
+    """Remet une tâche terminée dans les choses à faire."""
+    return get_default_todo_manager().reopen_task(task_id=todo_id, label=text)
+
+
+def delete_todo(todo_id=None, text=""):
+    """Supprime définitivement une tâche."""
+    return get_default_todo_manager().delete_task(task_id=todo_id, label=text)
+
+
+def clear_todos(confirm=False, only_done=False):
+    """Vide la liste de tâches (only_done=true pour ne retirer que celles déjà faites)."""
+    return get_default_todo_manager().clear_tasks(confirm=confirm, only_done=only_done)
+
+
+# ===========================================================================
+# JOURNAL D'ACTIVITÉ & SAUVEGARDE
+# ===========================================================================
+
+
+def get_activity_log(day="aujourd'hui", limit=30):
+    """Raconte ce que Jarvis a fait (« qu'as-tu fait aujourd'hui ? »)."""
+    return get_default_activity_log().query(day=day, limit=limit)
+
+
+def clear_activity_log(confirm=False):
+    """Efface le journal d'activité local (nécessite confirm=True)."""
+    return get_default_activity_log().clear(confirm=confirm)
+
+
+def backup_data(destination=""):
+    """Exporte mémoire, routines, tâches, rappels et notes dans un fichier JSON local."""
+    return _create_backup(destination)
+
+
+def list_backups(folder=""):
+    """Liste les sauvegardes déjà réalisées."""
+    return _list_backups(folder)
 
 
 # ===========================================================================
@@ -1359,6 +1978,202 @@ def get_weather(city="Paris"):
         return _err(f"Reponse meteo illisible : {exc}")
 
 
+#: Codes météo WMO (open-meteo) traduits en français.
+WMO_CODES = {
+    0: "ciel dégagé", 1: "plutôt dégagé", 2: "partiellement nuageux", 3: "couvert",
+    45: "brouillard", 48: "brouillard givrant",
+    51: "bruine légère", 53: "bruine", 55: "bruine dense",
+    56: "bruine verglaçante", 57: "bruine verglaçante dense",
+    61: "pluie faible", 63: "pluie", 65: "pluie forte",
+    66: "pluie verglaçante", 67: "pluie verglaçante forte",
+    71: "neige faible", 73: "neige", 75: "neige forte", 77: "grains de neige",
+    80: "averses faibles", 81: "averses", 82: "fortes averses",
+    85: "averses de neige", 86: "fortes averses de neige",
+    95: "orage", 96: "orage avec grêle", 99: "orage violent avec grêle",
+}
+
+
+def _fetch_json(url, timeout=10):
+    request = urllib.request.Request(url, headers={"User-Agent": "curl/8"})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8", "replace"))
+
+
+def _forecast_from_wttr(location, days):
+    """Repli : wttr.in fournit jusqu'à 3 jours de prévision."""
+    url = f"https://wttr.in/{urllib.parse.quote(location)}?format=j1&lang=fr"
+    payload = _fetch_json(url)
+    entries = []
+    for item in payload.get("weather", [])[:days]:
+        date = dt.datetime.strptime(item["date"], "%Y-%m-%d")
+        midday = (item.get("hourly") or [{}])[len(item.get("hourly") or [{}]) // 2]
+        description = (midday.get("lang_fr", [{}]) or [{}])[0].get("value") or (
+            midday.get("weatherDesc", [{}]) or [{}]
+        )[0].get("value", "")
+        entries.append(
+            {
+                "jour": _JOURS[date.weekday()],
+                "date": date.strftime("%d/%m"),
+                "description": description,
+                "min_c": int(item.get("mintempC", 0)),
+                "max_c": int(item.get("maxtempC", 0)),
+            }
+        )
+    return entries
+
+
+def get_forecast(city="Paris", days=7):
+    """Prévisions météo jusqu'à 7 jours (open-meteo, sans clé API)."""
+    location = str(city or "Paris").strip() or "Paris"
+    try:
+        days = max(1, min(7, int(days)))
+    except Exception:
+        days = 7
+
+    try:
+        geo = _fetch_json(
+            "https://geocoding-api.open-meteo.com/v1/search?"
+            + urllib.parse.urlencode({"name": location, "count": 1, "language": "fr", "format": "json"})
+        )
+        results = geo.get("results") or []
+        if not results:
+            raise ValueError(f"ville inconnue : {location}")
+        place = results[0]
+        payload = _fetch_json(
+            "https://api.open-meteo.com/v1/forecast?"
+            + urllib.parse.urlencode(
+                {
+                    "latitude": place["latitude"],
+                    "longitude": place["longitude"],
+                    "daily": "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+                    "timezone": "auto",
+                    "forecast_days": days,
+                }
+            )
+        )
+        daily = payload.get("daily") or {}
+        entries = []
+        for index, iso_date in enumerate(daily.get("time", [])[:days]):
+            date = dt.datetime.strptime(iso_date, "%Y-%m-%d")
+            code = (daily.get("weather_code") or [None])[index]
+            entries.append(
+                {
+                    "jour": _JOURS[date.weekday()],
+                    "date": date.strftime("%d/%m"),
+                    "description": WMO_CODES.get(code, "temps variable"),
+                    "min_c": round(float((daily.get("temperature_2m_min") or [0])[index])),
+                    "max_c": round(float((daily.get("temperature_2m_max") or [0])[index])),
+                    "pluie_pourcent": (daily.get("precipitation_probability_max") or [None])[index],
+                }
+            )
+        if not entries:
+            raise ValueError("aucune prevision recue")
+        return _ok(
+            ville=place.get("name", location),
+            pays=place.get("country", ""),
+            jours=entries,
+            count=len(entries),
+            source="open-meteo",
+        )
+    except Exception as exc:
+        try:
+            entries = _forecast_from_wttr(location, min(days, 3))
+            if entries:
+                return _ok(ville=location, jours=entries, count=len(entries), source="wttr.in")
+        except Exception:
+            pass
+        return _err(f"Previsions indisponibles : {exc}")
+
+
+#: Plateformes reconnues par ``find_something_to_watch`` (pages JustWatch).
+WATCH_PROVIDERS = {
+    "netflix": "nfx",
+    "prime video": "amp",
+    "amazon": "amp",
+    "disney plus": "dnp",
+    "disney": "dnp",
+    "canal": "cpd",
+    "apple tv": "atp",
+    "ocs": "ocs",
+    "arte": "arte",
+    "crunchyroll": "cru",
+    "paramount": "pmp",
+}
+
+
+def find_something_to_watch(query="", genre="", service=""):
+    """Propose quoi regarder ce soir : ouvre la fiche ou le catalogue correspondant."""
+    title = str(query or "").strip()
+    genre_text = str(genre or "").strip()
+    provider_key, provider_code = _lookup(WATCH_PROVIDERS, service) if service else (None, None)
+
+    if title:
+        url = "https://www.justwatch.com/fr/recherche?" + urllib.parse.urlencode({"q": title})
+        intention = "fiche"
+    elif provider_code:
+        url = "https://www.justwatch.com/fr/fournisseur/" + urllib.parse.quote(
+            provider_key.replace(" ", "-")
+        )
+        intention = "catalogue"
+    elif genre_text:
+        url = "https://www.justwatch.com/fr/recherche?" + urllib.parse.urlencode(
+            {"q": f"que regarder {genre_text}"}
+        )
+        intention = "catalogue"
+    else:
+        url = "https://www.justwatch.com/fr/nouveautes"
+        intention = "nouveautes"
+
+    try:
+        webbrowser.open(url)
+    except Exception as exc:
+        return _err(exc)
+    return _ok(
+        url=url,
+        recherche=title,
+        genre=genre_text,
+        plateforme=provider_key or "",
+        intention=intention,
+    )
+
+
+def draft_email(to="", subject="", body=""):
+    """Prépare un brouillon d'email et l'ouvre dans le client de messagerie (mailto:)."""
+    recipients = [
+        address.strip()
+        for address in re.split(r"[;,\s]+", str(to or ""))
+        if address.strip()
+    ]
+    for address in recipients:
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$", address):
+            return _err(f"Adresse email invalide : {address}")
+
+    subject_text = str(subject or "").strip()[:200]
+    body_text = str(body or "").strip()[:5000]
+    if not body_text and not subject_text:
+        return _err("Rien a envoyer : precise au moins un objet ou un contenu.")
+
+    params = {}
+    if subject_text:
+        params["subject"] = subject_text
+    if body_text:
+        params["body"] = body_text
+    url = "mailto:" + urllib.parse.quote(",".join(recipients), safe="@,.")
+    if params:
+        url += "?" + urllib.parse.urlencode(params, quote_via=urllib.parse.quote)
+
+    try:
+        webbrowser.open(url)
+    except Exception as exc:
+        return _err(exc)
+    return _ok(
+        destinataires=recipients,
+        objet=subject_text,
+        corps=body_text[:200] + ("..." if len(body_text) > 200 else ""),
+        caracteres=len(body_text),
+    )
+
+
 def check_internet():
     """Vérifie la connectivité Internet."""
     start = time.time()
@@ -1449,6 +2264,83 @@ def search_files(pattern, folder="documents", limit=15):
         return _err(exc)
 
     return _ok(dossier=name, motif=pattern, fichiers=matches, count=len(matches))
+
+
+def _allowed_roots():
+    """Racines autorisées pour la lecture de fichiers."""
+    roots = []
+    for key in FOLDERS:
+        _, path = _resolve_folder(key)
+        if path:
+            roots.append(os.path.realpath(path))
+    return roots
+
+
+def _resolve_readable_file(name, folder="documents"):
+    """Trouve un fichier lisible : chemin complet autorisé, ou recherche par nom."""
+    raw = str(name or "").strip().strip('"')
+    if not raw:
+        return None, "Aucun fichier indique."
+
+    candidate = os.path.realpath(os.path.expanduser(raw))
+    if os.path.isfile(candidate):
+        roots = _allowed_roots()
+        if any(candidate.startswith(root + os.sep) or candidate == root for root in roots):
+            return candidate, None
+        return None, "Fichier hors des dossiers autorises."
+
+    found = search_files(raw, folder=folder, limit=5)
+    if not found.get("success"):
+        return None, found.get("error", "Recherche impossible.")
+    matches = found.get("fichiers") or []
+    if not matches:
+        return None, f"Aucun fichier nomme '{raw}' dans {folder}."
+    return matches[0], None
+
+
+def read_file_aloud(name, folder="documents", max_chars=4000):
+    """Lit le contenu d'un fichier texte pour que Jarvis le lise ou le résume à voix haute."""
+    path, error = _resolve_readable_file(name, folder)
+    if error:
+        return _err(error)
+
+    extension = os.path.splitext(path)[1].lower()
+    if extension not in READABLE_EXTENSIONS:
+        return _err(
+            f"Format non lisible : {extension or 'inconnu'}",
+            hint="Formats acceptes : " + ", ".join(sorted(READABLE_EXTENSIONS)),
+        )
+
+    try:
+        max_chars = max(200, min(20000, int(max_chars)))
+    except Exception:
+        max_chars = 4000
+
+    try:
+        size = os.path.getsize(path)
+        if size > 5 * 1024 * 1024:
+            return _err("Fichier trop volumineux (plus de 5 Mo).")
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            content = handle.read(max_chars + 1)
+    except Exception as exc:
+        return _err(exc)
+
+    truncated = len(content) > max_chars
+    if truncated:
+        content = content[:max_chars]
+
+    words = len(content.split())
+    return _ok(
+        fichier=os.path.basename(path),
+        chemin=path,
+        contenu=content,
+        mots=words,
+        tronque=truncated,
+        consigne=(
+            "Lis ce contenu a voix haute de facon naturelle. S'il est long ou tronque, "
+            "resume-le d'abord en quelques phrases puis propose de lire la suite."
+        ),
+    )
 
 
 # ===========================================================================
@@ -1735,7 +2627,7 @@ def cancel_reminder(reminder_id=None, confirm=False):
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
-TOOL_FUNCTIONS = {
+_TOOL_IMPLEMENTATIONS = {
     # Applications
     "open_application": open_application,
     "close_application": close_application,
@@ -1766,9 +2658,22 @@ TOOL_FUNCTIONS = {
     "restart_pc": restart_pc,
     "cancel_shutdown": cancel_shutdown,
     "set_brightness": set_brightness,
+    "sleep_pc": sleep_pc,
+    "hibernate_pc": hibernate_pc,
+    "turn_off_screen": turn_off_screen,
+    "empty_recycle_bin": empty_recycle_bin,
+    "get_folder_size": get_folder_size,
+    "show_notification": show_notification,
+    "wake_on_lan": wake_on_lan,
+    # Clavier
+    "type_text": type_text,
+    "press_key": press_key,
     # Presse-papiers
     "get_clipboard": get_clipboard,
     "set_clipboard": set_clipboard,
+    "get_clipboard_history": get_clipboard_history,
+    "paste_from_history": paste_from_history,
+    "clear_clipboard_history": clear_clipboard_history,
     # Date / heure
     "get_local_time": get_local_time,
     "get_local_date": get_local_date,
@@ -1782,6 +2687,18 @@ TOOL_FUNCTIONS = {
     "take_note": take_note,
     "read_notes": read_notes,
     "delete_notes": delete_notes,
+    # Liste de taches
+    "add_todo": add_todo,
+    "list_todos": list_todos,
+    "complete_todo": complete_todo,
+    "reopen_todo": reopen_todo,
+    "delete_todo": delete_todo,
+    "clear_todos": clear_todos,
+    # Journal d'activite & sauvegarde
+    "get_activity_log": get_activity_log,
+    "clear_activity_log": clear_activity_log,
+    "backup_data": backup_data,
+    "list_backups": list_backups,
     # Mémoire persistante
     "remember": remember,
     "recall": recall,
@@ -1814,17 +2731,60 @@ TOOL_FUNCTIONS = {
     "get_directions": get_directions,
     "translate_text": translate_text,
     "get_weather": get_weather,
+    "get_forecast": get_forecast,
+    "find_something_to_watch": find_something_to_watch,
+    "draft_email": draft_email,
     "check_internet": check_internet,
     # Fichiers
     "open_folder": open_folder,
     "list_folder": list_folder,
     "search_files": search_files,
+    "read_file_aloud": read_file_aloud,
     # Calcul & divers
     "calculate": calculate,
     "random_number": random_number,
     "flip_coin": flip_coin,
     "roll_dice": roll_dice,
     "pick_random": pick_random,
+}
+
+
+# ---------------------------------------------------------------------------
+# Journal d'activité : chaque outil appelé est consigné localement.
+# ---------------------------------------------------------------------------
+
+
+def _with_activity_log(name, function):
+    """Enveloppe un outil pour consigner son appel dans le journal local."""
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        try:
+            result = function(*args, **kwargs)
+        except Exception as exc:
+            log_action(name, kwargs, success=False, error=str(exc))
+            raise
+        try:
+            if isinstance(result, dict):
+                log_action(
+                    name,
+                    kwargs,
+                    success=bool(result.get("success", True)),
+                    error=str(result.get("error", "")),
+                )
+            else:  # pragma: no cover - tous les outils renvoient un dict
+                log_action(name, kwargs, success=True)
+        except Exception:
+            pass
+        return result
+
+    return wrapper
+
+
+#: Outils exposés à Gemini (identiques aux implémentations, mais journalisés).
+TOOL_FUNCTIONS = {
+    name: _with_activity_log(name, function)
+    for name, function in _TOOL_IMPLEMENTATIONS.items()
 }
 
 
@@ -1916,9 +2876,80 @@ TOOL_DECLARATIONS = [
         {"level": _INT},
         ["level"],
     ),
+    _decl(
+        "sleep_pc",
+        "Met le PC en veille ('mets le PC en veille'). La session reste ouverte.",
+    ),
+    _decl(
+        "hibernate_pc",
+        "Met le PC en hibernation : l'etat est enregistre sur le disque puis le PC s'eteint.",
+    ),
+    _decl(
+        "turn_off_screen",
+        "Eteint l'ecran sans verrouiller la session ('eteins l'ecran'). Un mouvement de souris le rallume.",
+    ),
+    _decl(
+        "empty_recycle_bin",
+        "Vide la corbeille Windows. Action irreversible : demande TOUJOURS une confirmation orale avant confirm=true.",
+        {"confirm": _BOOL},
+    ),
+    _decl(
+        "get_folder_size",
+        "Indique le poids d'un dossier autorise et ses plus gros elements ('combien pese Telechargements ?').",
+        {"folder": {**_STR, "description": "documents, telechargements, bureau, images, musique, videos."}},
+    ),
+    _decl(
+        "show_notification",
+        "Affiche une notification Windows (toast) en complement de la voix, utile pour un rappel ou la fin d'un minuteur.",
+        {"title": _STR, "message": _STR, "duration": _INT},
+        ["message"],
+    ),
+    _decl(
+        "wake_on_lan",
+        "Reveille un autre ordinateur du reseau local via son adresse MAC (Wake-on-LAN).",
+        {
+            "mac": {**_STR, "description": "Adresse MAC, par exemple AA:BB:CC:DD:EE:FF."},
+            "broadcast": _STR,
+            "port": _INT,
+        },
+        ["mac"],
+    ),
+    # --- Clavier -----------------------------------------------------------------
+    _decl(
+        "type_text",
+        "Tape un texte au clavier dans la fenetre active, comme si l'utilisateur l'ecrivait "
+        "('ecris bonjour dans le champ').",
+        {"text": _STR},
+        ["text"],
+    ),
+    _decl(
+        "press_key",
+        "Appuie sur une touche du clavier, avec modificateurs optionnels ('appuie sur entree', 'fais ctrl+s').",
+        {
+            "key": {**_STR, "description": "Touche : lettre, chiffre, F1-F12, entree, tab, espace, echap, suppr, fleches... Accepte aussi 'ctrl+s'."},
+            "modifiers": {**_STR, "description": "Modificateurs separes par + : ctrl, alt, maj, win."},
+            "repeat": _INT,
+        },
+        ["key"],
+    ),
     # --- Presse-papiers ---------------------------------------------------------
     _decl("get_clipboard", "Lit le texte contenu dans le presse-papiers."),
     _decl("set_clipboard", "Copie un texte dans le presse-papiers.", {"text": _STR}, ["text"]),
+    _decl(
+        "get_clipboard_history",
+        "Liste les derniers textes copies dans le presse-papiers ('qu'est-ce que j'ai copie avant ?').",
+        {"limit": _INT},
+    ),
+    _decl(
+        "paste_from_history",
+        "Remet une entree de l'historique du presse-papiers ('recolle ce que j'avais copie avant'). index=1 est la plus recente.",
+        {"index": _INT, "paste": {**_BOOL, "description": "true pour coller directement avec ctrl+v."}},
+    ),
+    _decl(
+        "clear_clipboard_history",
+        "Efface l'historique du presse-papiers. Demande une confirmation orale avant confirm=true.",
+        {"confirm": _BOOL},
+    ),
     # --- Date / heure ------------------------------------------------------------
     _decl("get_local_time", "Donne l'heure locale."),
     _decl("get_local_date", "Donne la date locale et le jour de la semaine."),
@@ -1941,6 +2972,68 @@ TOOL_DECLARATIONS = [
     _decl("take_note", "Enregistre une note datee pour l'utilisateur.", {"text": _STR}, ["text"]),
     _decl("read_notes", "Relit les dernieres notes enregistrees.", {"limit": _INT}),
     _decl("delete_notes", "Efface toutes les notes (confirmation requise).", {"confirm": _BOOL}),
+    # --- Liste de taches (todo) ------------------------------------------------------------
+    _decl(
+        "add_todo",
+        "Ajoute une tache a la liste de choses a faire ('ajoute reviser la presentation a ma todo'). "
+        "Contrairement a une note, une tache a un etat fait / a faire.",
+        {
+            "text": {**_STR, "description": "Libelle de la tache."},
+            "due": {**_STR, "description": "Echeance optionnelle : 'demain a 9h', 'vendredi', '12/03/2026'."},
+            "priority": {**_STR, "description": "haute, normale ou basse."},
+        },
+        ["text"],
+    ),
+    _decl(
+        "list_todos",
+        "Liste les taches ('qu'est-ce qu'il me reste a faire ?').",
+        {
+            "status": {**_STR, "description": "pending (par defaut), done ou all."},
+            "limit": _INT,
+        },
+    ),
+    _decl(
+        "complete_todo",
+        "Marque une tache comme faite, par identifiant ou par libelle ('marque la presentation comme faite').",
+        {"todo_id": _INT, "text": _STR},
+    ),
+    _decl(
+        "reopen_todo",
+        "Remet une tache terminee dans les choses a faire.",
+        {"todo_id": _INT, "text": _STR},
+    ),
+    _decl(
+        "delete_todo",
+        "Supprime definitivement une tache de la liste.",
+        {"todo_id": _INT, "text": _STR},
+    ),
+    _decl(
+        "clear_todos",
+        "Vide la liste de taches. Utilise only_done=true pour ne retirer que les taches faites, "
+        "sinon demande une confirmation orale avant confirm=true.",
+        {"confirm": _BOOL, "only_done": _BOOL},
+    ),
+    # --- Journal d'activite & sauvegarde ----------------------------------------------------
+    _decl(
+        "get_activity_log",
+        "Raconte les actions realisees par Jarvis ('qu'as-tu fait aujourd'hui ?').",
+        {
+            "day": {**_STR, "description": "aujourd'hui (par defaut), hier, avant-hier ou une date JJ/MM/AAAA."},
+            "limit": _INT,
+        },
+    ),
+    _decl(
+        "clear_activity_log",
+        "Efface le journal d'activite local. Demande une confirmation orale avant confirm=true.",
+        {"confirm": _BOOL},
+    ),
+    _decl(
+        "backup_data",
+        "Sauvegarde memoire, routines, taches, rappels et notes dans un fichier JSON local "
+        "('sauvegarde ta memoire').",
+        {"destination": {**_STR, "description": "Dossier ou fichier de destination, optionnel."}},
+    ),
+    _decl("list_backups", "Liste les sauvegardes deja realisees.", {"folder": _STR}),
     # --- Mémoire persistante ---------------------------------------------------------------
     _decl(
         "remember",
@@ -2123,6 +3216,31 @@ TOOL_DECLARATIONS = [
         "Donne la meteo actuelle d'une ville.",
         {"city": {**_STR, "description": "Ville, Paris par defaut."}},
     ),
+    _decl(
+        "get_forecast",
+        "Donne les previsions meteo des prochains jours (jusqu'a 7) pour une ville.",
+        {"city": {**_STR, "description": "Ville, Paris par defaut."}, "days": _INT},
+    ),
+    _decl(
+        "find_something_to_watch",
+        "Aide a choisir un film ou une serie et ouvre la fiche ou le catalogue correspondant "
+        "('que regarder ce soir ?').",
+        {
+            "query": {**_STR, "description": "Titre recherche, optionnel."},
+            "genre": {**_STR, "description": "Genre souhaite : comedie, thriller, science-fiction..."},
+            "service": {**_STR, "description": "Plateforme : netflix, prime video, disney plus, canal, apple tv..."},
+        },
+    ),
+    _decl(
+        "draft_email",
+        "Redige un brouillon d'email et l'ouvre pre-rempli dans le client de messagerie "
+        "('redige un email a Paul pour annuler la reunion'). N'envoie jamais l'email lui-meme.",
+        {
+            "to": {**_STR, "description": "Adresse(s) du destinataire."},
+            "subject": _STR,
+            "body": {**_STR, "description": "Corps du message, redige par Jarvis."},
+        },
+    ),
     _decl("check_internet", "Verifie que la connexion Internet fonctionne."),
     # --- Fichiers ------------------------------------------------------------------------------
     _decl(
@@ -2142,6 +3260,17 @@ TOOL_DECLARATIONS = [
         "Cherche des fichiers par nom dans un dossier autorise.",
         {"pattern": _STR, "folder": _STR, "limit": _INT},
         ["pattern"],
+    ),
+    _decl(
+        "read_file_aloud",
+        "Lit le contenu d'un fichier texte d'un dossier autorise pour pouvoir le lire a voix haute "
+        "ou le resumer ('lis-moi ce fichier').",
+        {
+            "name": {**_STR, "description": "Nom du fichier ou chemin complet dans un dossier autorise."},
+            "folder": {**_STR, "description": "Dossier ou chercher : documents par defaut."},
+            "max_chars": _INT,
+        },
+        ["name"],
     ),
     # --- Calcul & divers --------------------------------------------------------------------------
     _decl(

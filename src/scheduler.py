@@ -58,6 +58,16 @@ def _err(message: str, **payload) -> dict:
     return result
 
 
+def _toast(title: str, message: str) -> None:
+    """Notification Windows (toast) en plus de la console et du bip."""
+    try:  # Import tardif : src.tools importe déjà src.scheduler.
+        from .tools import show_notification
+
+        show_notification(title, message)
+    except Exception:
+        pass
+
+
 def _beep() -> None:
     try:
         import winsound
@@ -168,6 +178,7 @@ class Scheduler:
     def _notify(self, title: str, message: str) -> None:
         print(f"\n[Jarvis] 🔔 {title} : {message}")
         _beep()
+        _toast(title, message)
         with self._lock:
             hooks = list(self._notify_hooks)
         for hook in hooks:

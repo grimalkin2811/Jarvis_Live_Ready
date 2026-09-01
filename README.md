@@ -202,9 +202,49 @@ JARVIS_SCHEDULE_DATABASE_PATH=C:\\Users\\Moi\\.jarvis\\schedule.db  # optionnel
 Mettre l'une des variables à `0` désactive la fonctionnalité sans supprimer les
 données.
 
+## Liste de tâches (todo)
+
+Les notes sont un journal ; la **todo list** a en plus un état *fait / à faire*.
+Elle vit dans `~/.jarvis/todo.db` (SQLite, comme `memory.db` et `schedule.db`).
+
+| Phrase | Effet |
+|---|---|
+| « ajoute *réviser la présentation* à ma todo » | `add_todo` |
+| « ajoute *appeler le dentiste* pour demain à 9h, priorité haute » | `add_todo` avec échéance et priorité |
+| « qu'est-ce qu'il me reste à faire ? » | `list_todos` |
+| « marque la présentation comme faite » | `complete_todo` (par libellé ou par identifiant) |
+| « remets cette tâche à faire » / « supprime-la » | `reopen_todo` / `delete_todo` |
+| « vide les tâches terminées » | `clear_todos(only_done=true)` |
+
+Les tâches sont triées par priorité puis par échéance, et sont incluses dans la
+sauvegarde JSON. `JARVIS_TODO_DATABASE_PATH` permet de changer le chemin.
+
+## Journal d'activité et sauvegarde
+
+Chaque outil déclenché est consigné **localement** dans `~/.jarvis/activity.db` :
+nom de l'outil, résumé court des arguments, succès, heure. Rien ne part sur le
+réseau, les entrées de plus de 30 jours sont purgées, et les outils de simple
+lecture (heure, listes…) sont ignorés.
+
+| Phrase | Effet |
+|---|---|
+| « qu'as-tu fait aujourd'hui ? » / « et hier ? » | `get_activity_log` |
+| « efface le journal » | `clear_activity_log` (confirmation requise) |
+| « sauvegarde ta mémoire » | `backup_data` → `~/.jarvis/backups/jarvis_backup_*.json` |
+| « quelles sauvegardes existent ? » | `list_backups` |
+
+La sauvegarde rassemble mémoire, routines, tâches, rappels, notes et un extrait
+du journal dans **un seul fichier JSON lisible**, facile à copier ailleurs.
+
+```env
+JARVIS_ACTIVITY_ENABLED=0                 # désactive le journal
+JARVIS_ACTIVITY_RETENTION_DAYS=30         # durée de conservation
+JARVIS_BACKUP_DIR=D:\\Sauvegardes\\Jarvis   # dossier de sauvegarde
+```
+
 ## Fonctions
 
-Jarvis dispose de **75 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **101 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -212,23 +252,61 @@ Jarvis dispose de **75 outils** déclarés dans `src/tools.py` (voir
 | **Applications** | `open_application`, `close_application`, `is_application_running`, `list_applications`, `list_running_applications` |
 | **Audio** | `set_volume`, `volume_up`, `volume_down`, `get_volume`, `mute_audio`, `unmute_audio`, `toggle_mute` |
 | **Multimédia** | `media_play_pause`, `media_next`, `media_previous`, `media_stop` |
-| **Système** | `get_system_info`, `get_battery_status`, `get_disk_usage`, `take_screenshot`, `lock_workstation`, `show_desktop`, `shutdown_pc`, `restart_pc`, `cancel_shutdown`, `set_brightness` |
-| **Presse-papiers** | `get_clipboard`, `set_clipboard` |
+| **Système** | `get_system_info`, `get_battery_status`, `get_disk_usage`, `get_folder_size`, `take_screenshot`, `lock_workstation`, `show_desktop`, `turn_off_screen`, `sleep_pc`, `hibernate_pc`, `shutdown_pc`, `restart_pc`, `cancel_shutdown`, `set_brightness`, `empty_recycle_bin`, `show_notification`, `wake_on_lan` |
+| **Clavier** | `type_text`, `press_key` |
+| **Presse-papiers** | `get_clipboard`, `set_clipboard`, `get_clipboard_history`, `paste_from_history`, `clear_clipboard_history` |
 | **Date / heure** | `get_local_time`, `get_local_date`, `get_datetime`, `days_until` |
 | **Minuteurs** | `set_timer`, `list_timers`, `cancel_timer` |
 | **Rappels persistants** | `set_reminder`, `list_reminders`, `cancel_reminder` |
 | **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
+| **Todo** | `add_todo`, `list_todos`, `complete_todo`, `reopen_todo`, `delete_todo`, `clear_todos` |
+| **Journal & sauvegarde** | `get_activity_log`, `clear_activity_log`, `backup_data`, `list_backups` |
 | **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
-| **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
-| **Fichiers** | `open_folder`, `list_folder`, `search_files` |
+| **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `get_forecast`, `find_something_to_watch`, `draft_email`, `check_internet` |
+| **Fichiers** | `open_folder`, `list_folder`, `search_files`, `read_file_aloud` |
 | **Calcul & divers** | `calculate`, `random_number`, `flip_coin`, `roll_dice`, `pick_random` |
 
 Exemples de phrases : « ouvre YouTube », « quelle météo à Lyon ? », « mets un
 minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 3 ? », « note que je dois appeler Paul », « capture l'écran », « verrouille le
 PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
-mode travail », « rappelle-moi d'appeler le dentiste demain à 9h ».
+mode travail », « rappelle-moi d'appeler le dentiste demain à 9h », « écris
+*bonjour* dans le champ », « appuie sur entrée », « fais ctrl+s », « éteins
+l'écran », « mets le PC en veille », « vide la corbeille », « combien pèse
+Téléchargements ? », « quel temps fera-t-il cette semaine ? », « que regarder ce
+soir sur Netflix ? », « rédige un email à paul@example.com pour annuler la
+réunion », « lis-moi le fichier notes.md », « recolle ce que j'avais copié
+avant », « réveille le PC du bureau », « qu'as-tu fait aujourd'hui ? »,
+« sauvegarde ta mémoire ».
+
+### Nouveautés Windows
+
+* **Clavier** — `type_text` tape un texte Unicode dans la fenêtre active,
+  `press_key` envoie une touche de la liste blanche `KEYS` avec des
+  modificateurs (`ctrl`, `alt`, `maj`, `win`) : « fais ctrl+s ».
+* **Énergie & écran** — `sleep_pc` (veille), `hibernate_pc` (hibernation) et
+  `turn_off_screen` (écran éteint sans verrouillage) complètent
+  `shutdown_pc` / `restart_pc`.
+* **Disque** — `empty_recycle_bin` (confirmation obligatoire) et
+  `get_folder_size`, qui donne le poids d'un dossier autorisé et ses cinq plus
+  gros éléments.
+* **Notifications** — `show_notification` affiche un toast Windows ; les
+  minuteurs et les rappels en émettent désormais un automatiquement, en plus du
+  bip et de la voix.
+* **Presse-papiers** — un veilleur léger enregistre les textes copiés dans
+  `~/.jarvis/clipboard_history.json` (50 entrées max) : `get_clipboard_history`
+  les liste et `paste_from_history` en remet un dans le presse-papiers,
+  éventuellement collé directement avec `ctrl+v`.
+* **Réseau** — `wake_on_lan` envoie un paquet magique pour réveiller un autre
+  PC du réseau local.
+* **Fichiers** — `read_file_aloud` renvoie le contenu d'un fichier texte d'un
+  dossier autorisé pour que Jarvis le lise ou le résume à voix haute.
+* **Email** — `draft_email` prépare un brouillon `mailto:` pré-rempli ; Jarvis
+  rédige, l'utilisateur relit et envoie lui-même.
+* **Météo & loisirs** — `get_forecast` donne jusqu'à 7 jours de prévisions
+  (open-meteo, sans clé API, repli sur wttr.in) et `find_something_to_watch`
+  ouvre la fiche ou le catalogue JustWatch correspondant.
 
 ## Sécurité : listes blanches
 
@@ -247,9 +325,16 @@ La reconnaissance des noms est tolérante : casse, accents, tirets et petites
 phrases (« ouvre le site wikipedia ») sont acceptés. Tout ce qui n'est pas dans
 la liste blanche renvoie `success: false` — Jarvis l'annonce alors honnêtement.
 
-Les actions irréversibles (`shutdown_pc`, `restart_pc`, `delete_notes`,
-`delete_routine`) exigent un paramètre `confirm=true`, demandé oralement à
-l'utilisateur.
+Les actions irréversibles (`shutdown_pc`, `restart_pc`, `hibernate_pc`,
+`empty_recycle_bin`, `delete_notes`, `delete_routine`, `clear_todos`,
+`clear_activity_log`, `clear_clipboard_history`) exigent un paramètre
+`confirm=true`, demandé oralement à l'utilisateur. Elles sont également
+interdites comme étape de routine (`FORBIDDEN_TOOLS` dans `src/routines.py`).
+
+Le clavier est lui aussi sous liste blanche : `press_key` n'accepte que les
+touches déclarées dans `KEYS` (lettres, chiffres, F1–F12, entrée, tabulation,
+échap, flèches…) et les modificateurs de `MODIFIERS`, et `type_text` est limité
+à 2 000 caractères.
 
 ## Tests
 
