@@ -1564,7 +1564,8 @@ class MorphingOrbWidget(QWidget):
         painter.setFont(text_font)
         text_offset = 13.0 + 9.0 * hover + 3.0 * click
         label_dx = 22.0 + 4.0 * hover + 2.0 * click
-        sector_sx, sector_sy = self._sector_vector(max(0, self._menu_sector))
+        sector_index = max(0, self._menu_sector)
+        sector_sx, sector_sy = self._sector_vector(sector_index)
         if self._menu_layout_mode == "grid":
             if sector_sy > 0.0:  # menu deploye vers le bas
                 label_pos = QPointF(node.position.x() + label_dx, node.position.y())
