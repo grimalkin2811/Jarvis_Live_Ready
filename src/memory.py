@@ -243,6 +243,21 @@ class MemoryManager:
             self.last_error = str(exc)
             print(f"[Memory] Mémoire indisponible : {exc}")
 
+    def set_enabled(self, value: bool) -> None:
+        """Active/désactive la mémoire (utilisé par le menu radial).
+
+        La réactivation retente l'ouverture de la base : si SQLite était
+        indisponible au démarrage, l'utilisateur n'a pas besoin de relancer
+        Jarvis pour récupérer sa mémoire.
+        """
+        value = bool(value)
+        if value and not self.enabled:
+            self.enabled = True
+            if not self.available:
+                self._initialize()
+        else:
+            self.enabled = value
+
     def _disabled_result(self, **extra) -> dict:
         payload = {"success": False, "disabled": not self.enabled, "available": self.available}
         if self.last_error:

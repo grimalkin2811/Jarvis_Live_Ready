@@ -25,7 +25,16 @@ from dataclasses import dataclass, fields, asdict
 # ---------------------------------------------------------------------------
 
 VOICE_OPTIONS = ["Jarvis", "Aria", "Orion", "Nova", "Atlas", "Luna"]
-SHORTCUT_PRESETS = ["Default", "Compact", "Power"]
+#: Correspondance entre les noms conviviaux du menu et les voix prébuilt
+#: Gemini Live. Modifier ce mapping suffit pour proposer d'autres voix.
+GEMINI_VOICE_NAMES = {
+    "Jarvis": "Charon",
+    "Aria": "Aoede",
+    "Orion": "Orus",
+    "Nova": "Kore",
+    "Atlas": "Fenrir",
+    "Luna": "Leda",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -45,11 +54,11 @@ class MenuState:
     listen_mode: bool = False
 
     # System
-    startup: bool = True
+    startup: bool = False
+    startup_managed: bool = False
     overlay: bool = False
     always_on_top: bool = False
     transparency: int = 100
-    shortcuts: int = 0
 
     def __post_init__(self) -> None:
         for f in fields(self):
@@ -74,7 +83,7 @@ def _clamp_float(value: float, low: float, high: float) -> float:
         return low
 
 
-_BOOL_FIELDS = {"mic_enabled", "startup", "overlay", "always_on_top", "listen_mode"}
+_BOOL_FIELDS = {"mic_enabled", "startup", "startup_managed", "overlay", "always_on_top", "listen_mode"}
 
 
 def _apply_payload(state: MenuState, payload: dict) -> None:
@@ -88,6 +97,11 @@ def _apply_payload(state: MenuState, payload: dict) -> None:
                     setattr(state, f.name, int(value))
                 except (TypeError, ValueError):
                     pass
+    # Migration : l'ancien toggle « Startup » n'avait aucun effet réel. Sans
+    # action explicite de l'utilisateur (startup_managed), on repart de
+    # l'état honnête « désactivé » plutôt que d'afficher un mensonge.
+    if "startup_managed" not in payload:
+        state.startup = False
     state.__post_init__()
 
 
@@ -136,6 +150,11 @@ class LiveControls:
         self.mic_enabled = True
         self.hotword_sensitivity = 50
         self.response_mode_index = 1
+        self.tts_volume = 70
+        self.speech_speed = 50
+        self.listen_mode = False
+        self.voice_name = GEMINI_VOICE_NAMES[VOICE_OPTIONS[0]]
+        self._voice_version = 0
 
     # Mic ---------------------------------------------------------------
     def get_mic_enabled(self) -> bool:
@@ -160,6 +179,77 @@ class LiveControls:
     def set_hotword_sensitivity(self, value: int) -> None:
         with self._lock:
             self.hotword_sensitivity = _clamp_int(value, 0, 100)
+
+    # Volume de la voix (appliqué en temps réel sur la sortie audio) ----
+    def get_tts_volume(self) -> int:
+        with self._lock:
+            return self.tts_volume
+
+    def set_tts_volume(self, value: int) -> None:
+        with self._lock:
+            self.tts_volume = _clamp_int(value, 0, 100)
+
+    # Débit de parole (injecté dans le prompt système à la connexion) ---
+    def get_speech_speed(self) -> int:
+        with self._lock:
+            return self.speech_speed
+
+    def set_speech_speed(self, value: int) -> None:
+        with self._lock:
+            self.speech_speed = _clamp_int(value, 0, 100)
+
+    def get_speech_pace(self) -> str:
+        """Consigne de débit : "posé", "normal" ou "vif"."""
+        with self._lock:
+            speed = self.speech_speed
+        if speed < 35:
+            return "posé"
+        if speed > 65:
+            return "vif"
+        return "normal"
+
+    # Écoute continue (pas besoin de « Hey Jarvis ») --------------------
+    def get_listen_mode(self) -> bool:
+        with self._lock:
+            return self.listen_mode
+
+    def set_listen_mode(self, value: bool) -> None:
+        with self._lock:
+            self.listen_mode = bool(value)
+
+    # Voix Gemini Live ---------------------------------------------------
+    def get_voice_name(self) -> str:
+        with self._lock:
+            return self.voice_name
+
+    def get_voice_version(self) -> int:
+        """Incrémenté à chaque changement de voix : permet au backend de
+        détecter qu'il doit rouvrir la session pour appliquer la nouvelle
+        voix (Gemini Live ne permet pas de changer de voix en cours de
+        session)."""
+        with self._lock:
+            return self._voice_version
+
+    def set_voice_index(self, index: int) -> None:
+        with self._lock:
+            try:
+                idx = int(index) % len(VOICE_OPTIONS)
+            except (TypeError, ValueError):
+                return
+            name = GEMINI_VOICE_NAMES.get(VOICE_OPTIONS[idx], "")
+            if not name:
+                return
+            if name != self.voice_name:
+                self.voice_name = name
+                self._voice_version += 1
+
+    def set_voice_name(self, name: str) -> None:
+        """Force une voix par son nom convivial (sans bump de version :
+        utilisé au chargement initial pour synchroniser le pont)."""
+        with self._lock:
+            mapped = GEMINI_VOICE_NAMES.get(str(name), "")
+            if mapped:
+                self.voice_name = mapped
 
     # Response mode ------------------------------------------------------
     def get_response_mode_index(self) -> int:
@@ -186,3 +276,7 @@ def _sync_live(state: MenuState) -> None:
     """Pousse l'état persistant vers le pont live."""
     LIVE.set_mic_enabled(state.mic_enabled)
     LIVE.set_hotword_sensitivity(state.hotword_sensitivity)
+    LIVE.set_tts_volume(state.tts_volume)
+    LIVE.set_speech_speed(state.speech_speed)
+    LIVE.set_listen_mode(state.listen_mode)
+    LIVE.set_voice_name(VOICE_OPTIONS[state.voice_select % len(VOICE_OPTIONS)])

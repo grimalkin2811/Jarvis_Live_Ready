@@ -37,6 +37,12 @@ from . import system_actions
 
 voice_energy = 0.0
 
+#: État de présence de Jarvis, piloté par le backend vocal :
+#: "loading" (modèle en cours de chargement), "listening", "thinking",
+#: "speaking" ou "hidden" (veille). Simple chaîne : l'écriture depuis un
+#: autre thread est atomique et sûre.
+presence_state = "loading"
+
 
 def set_voice_energy(value: float) -> None:
     """Permet au backend (Gemini Live) de piloter la réactivité de l'orbe.
@@ -45,6 +51,14 @@ def set_voice_energy(value: float) -> None:
     """
     global voice_energy
     voice_energy = clamp(float(value), 0.0, 1.0)
+
+
+def set_presence_state(state: str) -> None:
+    """Informe l'orbe de l'état vocal courant (thread-safe)."""
+    global presence_state
+    value = str(state or "hidden").strip().lower()
+    allowed = {"loading", "listening", "thinking", "speaking", "hidden"}
+    presence_state = value if value in allowed else "hidden"
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -108,8 +122,8 @@ MENU_SPECS = [
             MenuItemSpec("Voice Select", "chips"),
             MenuItemSpec("Speech Speed", "slider"),
             MenuItemSpec("Mic Toggle", "toggle"),
-            MenuItemSpec("Hotword Sens.", "meter"),
-            MenuItemSpec("Listen Mode", "toggle"),
+            MenuItemSpec("Hotword Sens.", "slider"),
+            MenuItemSpec("Always Listening", "toggle"),
             MenuItemSpec("Audio Test", "pulse"),
         ],
         reveal_scale=0.92,
@@ -125,12 +139,11 @@ MENU_SPECS = [
         body=QColor(12, 20, 32),
         items=[
             MenuItemSpec("Startup", "toggle"),
-            MenuItemSpec("Overlay", "toggle"),
             MenuItemSpec("Always on Top", "toggle"),
             MenuItemSpec("Transparency", "slider"),
-            MenuItemSpec("Shortcuts", "chips"),
-            MenuItemSpec("Permissions", "status"),
             MenuItemSpec("Response Mode", "meter"),
+            MenuItemSpec("Reset Settings", "pulse"),
+            MenuItemSpec("Quit", "pulse"),
         ],
         reveal_scale=0.86,
         branch_bias=1.05,
@@ -144,13 +157,9 @@ MENU_SPECS = [
         accent=QColor(190, 220, 255),
         body=QColor(10, 16, 30),
         items=[
-            MenuItemSpec("Chat History", "card"),
-            MenuItemSpec("Long-term Memory", "card"),
-            MenuItemSpec("Temp Memory", "card"),
-            MenuItemSpec("Clear Cache", "buttonless"),
-            MenuItemSpec("Context Summary", "card"),
+            MenuItemSpec("Long-term Memory", "toggle"),
+            MenuItemSpec("Memory Count", "status"),
             MenuItemSpec("Model State", "status"),
-            MenuItemSpec("Saved Threads", "meter"),
         ],
         reveal_scale=1.00,
         branch_bias=1.28,
@@ -185,7 +194,7 @@ MENU_SPECS = [
 # ---------------------------------------------------------------------------
 
 #: Nombre maximum de routines affichées dans le menu radial.
-ROUTINE_SLOTS = 5
+ROUTINE_SLOTS = 6
 
 #: Libellés fixes du menu Routines, toujours présents en fin de liste.
 ROUTINE_STATIC_ITEMS = [
@@ -236,7 +245,7 @@ class MorphingOrbWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
 
-        self.setWindowTitle("Jarvis — Morphing Orb Prototype")
+        self.setWindowTitle("Jarvis")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.resize(1100, 760)
         self.setMouseTracking(True)
@@ -252,6 +261,7 @@ class MorphingOrbWidget(QWidget):
         self._base_radius_default = 110.0
         self._appearance_state_path = os.path.join(os.path.dirname(__file__), "appearance_state.json")
         self.appearance_state = appearance_actions.load_state(self._appearance_state_path)
+        self._appearance_signature = None
         self._apply_appearance_state()
         self._system_state_path = os.path.join(os.path.dirname(__file__), "system_state.json")
         self.system_state = system_actions.load_state(self._system_state_path)
@@ -261,7 +271,8 @@ class MorphingOrbWidget(QWidget):
         self.current_center = QPointF(self.center)
         self.cursor = QPointF(self.center)
 
-        self.base_radius = self._base_radius_default
+        # self.base_radius est défini par _apply_appearance_state() ci-dessus
+        # (il dépend de blob_scale).
 
         self.time = 0.0
         self.pulse = 0.0
@@ -274,6 +285,10 @@ class MorphingOrbWidget(QWidget):
         self._cursor_speed = 0.0
         self._halo_energy = 0.0
         self._deform_energy = 0.0
+        # Énergie liée à l'état vocal (écoute / parole) pour un retour
+        # visuel immédiat, même sans niveau micro.
+        self._presence_energy = 0.0
+        self._mic_mute_factor = 1.0
         self._menu_sector = -1
         self._menu_candidate = -1
         self._menu_candidate_time = 0.0
@@ -285,12 +300,11 @@ class MorphingOrbWidget(QWidget):
         self._menu_hot_node = -1
         self._menu_action_flash = ""
         self._menu_action_flash_time = -1.0
-        self._menu_toggle_state: dict[str, bool] = {}
         self._menu_layout_mode = "line"
         self._routines_mtime = -1.0
         self._routines_checked_at = -10.0
         self._routines_cache: dict[str, str] = {}
-        self._menu_hold_seconds = 0.38
+        self._menu_hold_seconds = 0.30
         self._menu_release_seconds = 0.18
         self._menu_exit_seconds = 0.24
         # Distance-based close + sector switching: interaction du menu radial.
@@ -299,8 +313,24 @@ class MorphingOrbWidget(QWidget):
         self._menu_drag_index = -1
         self._menu_drag_axis = ""
         self._menu_drag_start_x = 0.0
+        self._menu_drag_start_y = 0.0
         self._menu_drag_start_value = 0
+        self._menu_drag_perp = (1.0, 0.0)
         self._menu_wheel_index = -1
+        # Focus clavier dans le menu ouvert (navigation flèches + Entrée).
+        self._menu_focus_index = -1
+        # Vrai quand le menu a été ouvert par raccourci clavier : il reste
+        # affiché jusqu'à fermeture explicite, sans dépendre de la souris.
+        self._menu_keyboard_open = False
+        # Cache des valeurs « coûteuses » (SQLite / disque) : le rendu tourne
+        # à ~60 FPS, on ne doit pas interroger la base à chaque image.
+        self._status_cache: dict[str, tuple[float, str]] = {}
+        # Sauvegarde de l'état menu « débouncée » : pendant le glissement
+        # d'un slider, on n'écrit pas le JSON à chaque image.
+        self._menu_state_dirty = False
+        self._menu_state_last_save = -10.0
+        # Curseur pointeur au survol d'une cible cliquable.
+        self._pointer_cursor_active = False
         # État interactif persistant du menu.
         self._menu_state_path = os.path.join(os.path.dirname(__file__), "menu_state.json")
         self.menu_state = menu_state.load_state(self._menu_state_path)
@@ -309,7 +339,7 @@ class MorphingOrbWidget(QWidget):
         self._menu_open_lateral = self.base_radius * 1.15
 
         # SHAPE
-        self.num_points = 96
+        self.num_points = 84
         self.points: List[BlobPoint] = []
 
         for i in range(self.num_points):
@@ -348,6 +378,37 @@ class MorphingOrbWidget(QWidget):
         self.time += dt
         self._apply_appearance_state()
         self.pulse = 0.5 + 0.5 * math.sin(self.time * 1.8 + voice_energy * 0.6)
+
+        # Sauvegarde débouncée de l'état du menu (glissement de slider…).
+        if (
+            self._menu_state_dirty
+            and (self.time - self._menu_state_last_save) > 0.5
+        ):
+            self._save_menu_state(force=True)
+
+        # Nettoyage du flash d'action (indépendant de l'état du menu : le
+        # flash doit aussi disparaître quand aucun menu n'est ouvert).
+        if self._menu_action_flash_time >= 0.0:
+            if (self.time - self._menu_action_flash_time) > 2.2:
+                self._menu_action_flash = ""
+                self._menu_action_flash_time = -1.0
+
+        # Énergie liée à l'état vocal : l'orbe respire plus fort quand Jarvis
+        # écoute ou parle, et s'atténue quand le micro est coupé.
+        presence_targets = {
+            "listening": 0.45,
+            "thinking": 0.60,
+            "speaking": 0.90,
+        }
+        try:
+            mic_on = menu_state.LIVE.get_mic_enabled()
+        except Exception:
+            mic_on = True
+        presence_target = presence_targets.get(presence_state, 0.0)
+        if not mic_on:
+            presence_target = 0.0
+        self._presence_energy = lerp(self._presence_energy, presence_target, 0.06)
+        self._mic_mute_factor = lerp(self._mic_mute_factor, 1.0 if mic_on else 0.55, 0.08)
 
         # CURSOR VECTOR (pre-update)
         dx = self.cursor.x() - self.current_center.x()
@@ -507,7 +568,7 @@ class MorphingOrbWidget(QWidget):
             and menu_gate >= 0.12
         )
 
-        if self._menu_sector >= 0:
+        if self._menu_sector >= 0 and not self._menu_keyboard_open:
             # Fermeture par l'interaction radiale :
             # revenir vers l'orbite ou partir loin ferme ; rester dans un secteur
             # (ou en surgir) conserve le menu et permet de changer de menu.
@@ -534,9 +595,20 @@ class MorphingOrbWidget(QWidget):
                 self._menu_candidate = -1
 
         if stable_intent:
+            # Une intention souris claire reprend la main sur le menu épinglé
+            # au clavier (permet de changer de menu à la souris).
+            self._menu_keyboard_open = False
             self._menu_sector = sector
             active_spec = MENU_SPECS[sector]
             self._menu_last_stable_time = self.time
+            self._menu_reveal = lerp(self._menu_reveal, active_spec.reveal_scale, 0.10)
+            self._menu_alpha = lerp(self._menu_alpha, 1.0, 0.12)
+        elif self._menu_keyboard_open and self._menu_sector >= 0:
+            # Menu ouvert par raccourci clavier : il reste affiché jusqu'à
+            # fermeture explicite (Échap, clic droit) — la position de la
+            # souris ne doit pas le refermer aussitôt.
+            self._menu_last_stable_time = self.time
+            active_spec = MENU_SPECS[self._menu_sector]
             self._menu_reveal = lerp(self._menu_reveal, active_spec.reveal_scale, 0.10)
             self._menu_alpha = lerp(self._menu_alpha, 1.0, 0.12)
         else:
@@ -712,6 +784,7 @@ class MorphingOrbWidget(QWidget):
                 + self._cursor_speed * 0.34
                 + self._deform_energy * 0.46
                 + voice_energy * 0.78
+                + self._presence_energy * 0.55
             )
             self._halo_energy = lerp(self._halo_energy, clamp(halo_target, 0.0, 1.65), 0.08)
 
@@ -744,8 +817,14 @@ class MorphingOrbWidget(QWidget):
                     item = it
                     break
             if spec is not None and item is not None and self._menu_is_slider(spec, item):
-                delta = pos.x() - self._menu_drag_start_x
-                factor = 100.0 / 140.0  # 140 px de glissement = 100% de variation
+                # Glissement projeté sur l'axe perpendiculaire au secteur :
+                # le geste reste naturel que le menu soit déployé vers le
+                # haut, le bas, la gauche ou la droite.
+                perp_x, perp_y = self._menu_drag_perp
+                delta = (pos.x() - self._menu_drag_start_x) * perp_x + (
+                    pos.y() - self._menu_drag_start_y
+                ) * perp_y
+                factor = 100.0 / 220.0  # 220 px de glissement = 100% de variation
                 value = self._menu_drag_start_value + int(round(delta * factor))
                 self._menu_set_slider(spec, item, value)
                 self._menu_action_flash = f"{item.label}: {self._menu_slider_value(spec, item)}%"
@@ -754,12 +833,22 @@ class MorphingOrbWidget(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, event):
-        self._menu_drag_index = -1
-        self._menu_drag_axis = ""
+        if self._menu_drag_index >= 0:
+            # Fin de glissement : on force la sauvegarde immédiate.
+            self._menu_drag_index = -1
+            self._menu_drag_axis = ""
+            self._save_menu_state(force=True)
         self.update()
         super().mouseReleaseEvent(event)
 
     def mousePressEvent(self, event):
+        # Clic droit : ferme le menu radial ouvert (geste d'annulation).
+        if event.button() == Qt.RightButton:
+            if self._menu_sector >= 0 or self._menu_alpha > 0.05:
+                self._close_radial_menu()
+                event.accept()
+                return
+
         if event.button() == Qt.LeftButton and self._menu_nodes:
             hit = self._menu_hit_test(event.position())
             if hit is not None:
@@ -769,7 +858,11 @@ class MorphingOrbWidget(QWidget):
                     self._menu_drag_index = index
                     self._menu_drag_axis = item.label
                     self._menu_drag_start_x = event.position().x()
+                    self._menu_drag_start_y = event.position().y()
                     self._menu_drag_start_value = self._menu_slider_value(spec, item)
+                    sector_index = MENU_SPECS.index(spec)
+                    sx, sy = self._sector_vector(sector_index)
+                    self._menu_drag_perp = (-sy, sx)
                     node.click_amount = 0.5
                 else:
                     node.click_amount = 1.0
@@ -783,7 +876,14 @@ class MorphingOrbWidget(QWidget):
 
     def wheelEvent(self, event):
         if self._menu_nodes:
-            node = self._menu_hot_node
+            direction = 1 if event.angleDelta().y() > 0 else -1
+            # Le nœud actif est celui du focus clavier s'il existe, sinon
+            # celui survolé par la souris.
+            node = (
+                self._menu_focus_index
+                if 0 <= self._menu_focus_index < len(self._menu_nodes)
+                else self._menu_hot_node
+            )
             if node >= 0 and node < len(self._menu_nodes):
                 target = self._menu_nodes[node]
                 spec = self._spec_for_name(target.section)
@@ -795,14 +895,14 @@ class MorphingOrbWidget(QWidget):
                         break
                 if spec is not None and item is not None:
                     if self._menu_is_slider(spec, item):
-                        step = 5 if event.angleDelta().y() > 0 else -5
+                        step = 2 * direction
                         self._menu_set_slider(spec, item, self._menu_slider_value(spec, item) + step)
                         self._menu_action_flash = f"{item.label}: {self._menu_slider_value(spec, item)}%"
                         self._menu_action_flash_time = self.time
                         event.accept()
                         return
                     if self._menu_is_option(spec, item):
-                        self._menu_cycle_option(spec, item)
+                        self._menu_cycle_option(spec, item, step=direction)
                         self._menu_action_flash = f"{item.label}: {self._menu_value(spec, item)}"
                         self._menu_action_flash_time = self.time
                         event.accept()
@@ -818,7 +918,9 @@ class MorphingOrbWidget(QWidget):
         for index, node in enumerate(self._menu_nodes):
             if node.visible_amount <= 0.05:
                 continue
-            hit_radius = node.radius * (1.45 + 0.20 * node.visible_amount)
+            # Zone de clic confortable (~19-21 px) : les micro-cibles de 10 px
+            # du prototype rendaient les clics trop difficiles (loi de Fitts).
+            hit_radius = node.radius * 1.45 + 7.0
             distance = math.hypot(cursor_x - node.position.x(), cursor_y - node.position.y())
             if distance <= hit_radius and distance < best_distance:
                 best_index = index
@@ -837,12 +939,67 @@ class MorphingOrbWidget(QWidget):
         return best_index, node, spec, item
 
     def keyPressEvent(self, event):
+        # Échap : ferme d'abord le menu radial ouvert ; ce n'est que s'il
+        # n'y a plus rien à fermer qu'Échap quitte Jarvis. On évite ainsi
+        # les fermetures accidentelles de l'application.
         if event.key() == Qt.Key_Escape:
+            if self._menu_sector >= 0 or self._menu_alpha > 0.05:
+                self._close_radial_menu()
+                return
             appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
             system_actions.save_state(self.system_state, self._system_state_path)
-            self._save_menu_state()
+            self._save_menu_state(force=True)
             self.close()
             return
+
+        # Raccourci « M » : couper/rétablir le micro sans ouvrir le menu.
+        if event.text().lower() == "m" and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            st = self.menu_state
+            new_value = not st.mic_enabled
+            st.mic_enabled = new_value
+            menu_state.LIVE.set_mic_enabled(new_value)
+            self._save_menu_state()
+            self._flash(f"Micro : {'activé' if new_value else 'coupé'}")
+            return
+
+        # Touches 1..9 : ouvrir directement le menu radial correspondant.
+        digit = event.key() - Qt.Key_1
+        if 0 <= digit < len(MENU_SPECS) and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            self._open_radial_menu(digit)
+            self._flash(f"{MENU_SPECS[digit].name}")
+            return
+
+        # Navigation clavier du menu ouvert : flèches + Entrée/Espace.
+        if self._menu_nodes and self._menu_sector >= 0:
+            key = event.key()
+            if key in (Qt.Key_Up, Qt.Key_Left, Qt.Key_Down, Qt.Key_Right):
+                step = -1 if key in (Qt.Key_Up, Qt.Key_Left) else 1
+                if self._menu_layout_mode == "line":
+                    # Menu déployé vers la gauche/droite : les nœuds sont
+                    # empilés verticalement, Haut/Bas sont donc l'axe naturel.
+                    step = -1 if key in (Qt.Key_Up, Qt.Key_Down) else step
+                count = len(self._menu_nodes)
+                base = self._menu_focus_index if self._menu_focus_index >= 0 else self._menu_hot_node
+                if base < 0:
+                    # Premier appui : sélection du premier item sans avancer.
+                    self._menu_focus_index = 0
+                else:
+                    self._menu_focus_index = (base + step) % count
+                event.accept()
+                return
+            if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+                index = (
+                    self._menu_focus_index
+                    if self._menu_focus_index >= 0
+                    else self._menu_hot_node
+                )
+                if 0 <= index < len(self._menu_nodes):
+                    node = self._menu_nodes[index]
+                    node.click_amount = 1.0
+                    if node.callback is not None:
+                        node.callback()
+                    event.accept()
+                    return
 
         # toggle debug printing
         if event.key() == Qt.Key_D:
@@ -860,8 +1017,61 @@ class MorphingOrbWidget(QWidget):
     def closeEvent(self, event):
         appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
         system_actions.save_state(self.system_state, self._system_state_path)
-        self._save_menu_state()
+        self._save_menu_state(force=True)
         super().closeEvent(event)
+
+    # ------------------------------------------------------------------
+    # Helpers d'interaction (flash d'action, ouverture/fermeture clavier)
+    # ------------------------------------------------------------------
+    def _flash(self, message: str) -> None:
+        """Affiche un retour d'action au-dessus de l'orbe.
+
+        C'est le seul canal de confirmation visuelle des clics menu : sans
+        lui, l'utilisateur ne sait pas si son action a été prise en compte.
+        """
+        self._menu_action_flash = str(message)[:80]
+        self._menu_action_flash_time = self.time
+
+    def _close_radial_menu(self) -> None:
+        """Ferme le menu radial ouvert (Échap ou clic droit)."""
+        self._menu_sector = -1
+        self._menu_candidate = -1
+        self._menu_focus_index = -1
+        self._menu_drag_index = -1
+        self._menu_keyboard_open = False
+        self.update()
+
+    def _open_radial_menu(self, sector: int) -> None:
+        """Ouvre le menu radial demandé (raccourcis clavier 1..N)."""
+        if not (0 <= sector < len(MENU_SPECS)):
+            return
+        self._menu_sector = sector
+        self._menu_candidate = sector
+        self._menu_candidate_time = self.time
+        self._menu_last_stable_time = self.time
+        self._menu_focus_index = -1
+        self._menu_keyboard_open = True
+        self._sync_menu_nodes(MENU_SPECS[sector])
+        self.update()
+
+    def _cached_status(self, key: str, producer, ttl: float = 1.0) -> str:
+        """Valeur statique coûteuse (SQLite, disque) mise en cache.
+
+        Le rendu appelle ces valeurs à chaque image (~60 FPS) : sans cache,
+        on interrogerait la base soixante fois par seconde.
+        """
+        cached = self._status_cache.get(key)
+        if cached is not None and (self.time - cached[0]) < ttl:
+            return cached[1]
+        try:
+            value = str(producer())
+        except Exception:
+            value = "?"
+        self._status_cache[key] = (self.time, value)
+        return value
+
+    def _invalidate_status_cache(self) -> None:
+        self._status_cache.clear()
 
     # =========================================================
     # GEOMETRY
@@ -943,18 +1153,18 @@ class MorphingOrbWidget(QWidget):
 
     def _menu_node_radius(self, item: MenuItemSpec) -> float:
         radii = {
-            "toggle": 7.5,
-            "slider": 7.0,
-            "meter": 6.8,
-            "status": 6.6,
-            "card": 6.5,
-            "chips": 6.8,
-            "pulse": 7.2,
-            "swatches": 7.0,
-            "palette": 7.0,
-            "buttonless": 6.4,
+            "toggle": 8.8,
+            "slider": 8.4,
+            "meter": 8.2,
+            "status": 8.0,
+            "card": 7.9,
+            "chips": 8.2,
+            "pulse": 8.6,
+            "swatches": 8.4,
+            "palette": 8.4,
+            "buttonless": 7.8,
         }
-        return radii.get(item.kind, 6.8)
+        return radii.get(item.kind, 8.2)
 
     def _spec_for_name(self, name: str) -> MenuSpec | None:
         for spec in MENU_SPECS:
@@ -996,49 +1206,43 @@ class MorphingOrbWidget(QWidget):
             return "On" if st.mic_enabled else "Off"
         if label == "Hotword Sens.":
             return f"{st.hotword_sensitivity}%"
-        if label == "Listen Mode":
+        if label == "Always Listening":
             return "On" if st.listen_mode else "Off"
         return ""
 
     def _system_value(self, label: str) -> str:
         st = self.menu_state
         if label == "Startup":
-            return "On" if st.startup else "Off"
-        if label == "Overlay":
-            return "On" if st.overlay else "Off"
+            def _startup():
+                return "On" if system_actions.startup_status() else "Off"
+            return self._cached_status("startup", _startup, ttl=5.0)
         if label == "Always on Top":
             return "On" if st.always_on_top else "Off"
         if label == "Transparency":
             return f"{st.transparency}%"
-        if label == "Shortcuts":
-            return menu_state.SHORTCUT_PRESETS[st.shortcuts % len(menu_state.SHORTCUT_PRESETS)]
-        if label == "Permissions":
-            return "OK"
         if label == "Response Mode":
             return self.system_state.response_mode_label
+        if label == "Reset Settings":
+            return "↺"
+        if label == "Quit":
+            return "⏻"
         return ""
 
     def _memory_value(self, label: str) -> str:
-        if label == "Clear Cache":
-            return "Clear"
-        if label == "Long-term Memory":
-            try:
+        if label == "Memory Count":
+            def _count():
                 from src.memory import get_default_memory_manager
                 result = get_default_memory_manager().list_memories(limit=500)
                 if result.get("success"):
                     return str(result.get("count", 0))
-                return "Off"
-            except Exception:
-                return "?"
+                return "0"
+            return self._cached_status("memory_count", _count)
         if label == "Model State":
-            try:
+            def _state():
                 from src.memory import get_default_memory_manager
                 manager = get_default_memory_manager()
                 return "On" if manager.enabled and manager.available else "Off"
-            except Exception:
-                return "?"
-        if label == "Saved Threads":
-            return "0"
+            return self._cached_status("memory_state", _state)
         return ""
 
     def _menu_value(self, spec: MenuSpec, item: MenuItemSpec) -> str:
@@ -1088,13 +1292,12 @@ class MorphingOrbWidget(QWidget):
         if label == "No routine":
             return "—"
         if label == "Reminders":
-            try:
+            def _count():
                 from src.scheduler import get_default_scheduler
 
                 result = get_default_scheduler().list_reminders(limit=100)
                 return str(result.get("count", 0)) if result.get("success") else "Off"
-            except Exception:
-                return "?"
+            return self._cached_status("reminders_count", _count)
 
         cached = self._routines_cache.get(label)
         if cached is not None:
@@ -1130,7 +1333,9 @@ class MorphingOrbWidget(QWidget):
                     message = f"{name} : {result.get('error') or 'échec partiel'}"
             except Exception as exc:
                 message = f"{name} : {exc}"
-            self._menu_action_flash = message[:60]
+            # Écriture cross-thread tolérée (simple assignation, protégée
+            # par le GIL) : le flash sera affiché par la prochaine image.
+            self._menu_action_flash = message[:80]
             self._menu_action_flash_time = self.time
 
         threading.Thread(target=_worker, name="jarvis-routine", daemon=True).start()
@@ -1149,21 +1354,26 @@ class MorphingOrbWidget(QWidget):
     def _menu_is_option(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
         return (spec.name, item.label) in {
             ("Voice", "Voice Select"),
-            ("System", "Shortcuts"),
         }
 
     def _menu_toggle_value(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
         name, label = spec.name, item.label
         if name == "Voice" and label == "Mic Toggle":
             return self.menu_state.mic_enabled
-        if name == "Voice" and label == "Listen Mode":
+        if name == "Voice" and label == "Always Listening":
             return self.menu_state.listen_mode
         if name == "System" and label == "Startup":
-            return self.menu_state.startup
-        if name == "System" and label == "Overlay":
-            return self.menu_state.overlay
+            # État réel (fichier de démarrage présent ou non), mis en cache :
+            # cette valeur est lue à chaque image pour le rendu.
+            return self._cached_status("startup_bool", system_actions.startup_status, ttl=5.0) == "True"
         if name == "System" and label == "Always on Top":
             return self.menu_state.always_on_top
+        if name == "Memory" and label == "Long-term Memory":
+            def _enabled():
+                from src.memory import get_default_memory_manager
+                manager = get_default_memory_manager()
+                return bool(manager.enabled and manager.available)
+            return self._cached_status("memory_enabled", _enabled) == "True"
         return False
 
     def _menu_set_toggle(self, spec: MenuSpec, item: MenuItemSpec, value: bool) -> None:
@@ -1172,15 +1382,34 @@ class MorphingOrbWidget(QWidget):
         if name == "Voice" and label == "Mic Toggle":
             self.menu_state.mic_enabled = value
             menu_state.LIVE.set_mic_enabled(value)
-        elif name == "Voice" and label == "Listen Mode":
+        elif name == "Voice" and label == "Always Listening":
             self.menu_state.listen_mode = value
+            menu_state.LIVE.set_listen_mode(value)
+            self._flash(
+                "Écoute continue : activée (plus besoin de dire Hey Jarvis)"
+                if value
+                else "Écoute continue : désactivée (« Hey Jarvis » à nouveau requis)"
+            )
         elif name == "System" and label == "Startup":
-            self.menu_state.startup = value
-        elif name == "System" and label == "Overlay":
-            self.menu_state.overlay = value
+            result = system_actions.set_startup(value)
+            self.menu_state.startup = bool(result.get("success") and value)
+            self.menu_state.startup_managed = True
+            self._invalidate_status_cache()
+            if not result.get("success"):
+                self._flash(f"Lancement auto : {result.get('error', 'indisponible')}")
+                return
+            self._flash("Lancement avec Windows : " + ("activé" if value else "désactivé"))
         elif name == "System" and label == "Always on Top":
             self.menu_state.always_on_top = value
             self._apply_always_on_top(value)
+        elif name == "Memory" and label == "Long-term Memory":
+            try:
+                from src.memory import get_default_memory_manager
+                get_default_memory_manager().set_enabled(value)
+            except Exception:
+                pass
+            self._invalidate_status_cache()
+            self._flash("Mémoire longue durée : " + ("activée" if value else "désactivée"))
         self._save_menu_state()
 
     def _menu_slider_value(self, spec: MenuSpec, item: MenuItemSpec) -> int:
@@ -1200,8 +1429,12 @@ class MorphingOrbWidget(QWidget):
         value = max(0, min(100, int(value)))
         if name == "Voice" and label == "TTS Volume":
             self.menu_state.tts_volume = value
+            # Appliqué immédiatement sur la sortie audio.
+            menu_state.LIVE.set_tts_volume(value)
         elif name == "Voice" and label == "Speech Speed":
             self.menu_state.speech_speed = value
+            # Injecté dans le prompt système de la prochaine session.
+            menu_state.LIVE.set_speech_speed(value)
         elif name == "Voice" and label == "Hotword Sens.":
             self.menu_state.hotword_sensitivity = value
             menu_state.LIVE.set_hotword_sensitivity(value)
@@ -1210,12 +1443,15 @@ class MorphingOrbWidget(QWidget):
             self._apply_transparency(value)
         self._save_menu_state()
 
-    def _menu_cycle_option(self, spec: MenuSpec, item: MenuItemSpec) -> None:
+    def _menu_cycle_option(self, spec: MenuSpec, item: MenuItemSpec, step: int = 1) -> None:
         name, label = spec.name, item.label
         if name == "Voice" and label == "Voice Select":
-            self.menu_state.voice_select = (self.menu_state.voice_select + 1) % len(menu_state.VOICE_OPTIONS)
-        elif name == "System" and label == "Shortcuts":
-            self.menu_state.shortcuts = (self.menu_state.shortcuts + 1) % len(menu_state.SHORTCUT_PRESETS)
+            count = len(menu_state.VOICE_OPTIONS)
+            current = self.menu_state.voice_select % count
+            self.menu_state.voice_select = (current + step) % count
+            # La nouvelle voix demande une reconnexion de la session Live :
+            # le backend la détecte via LIVE.get_voice_version().
+            menu_state.LIVE.set_voice_index(self.menu_state.voice_select)
         self._save_menu_state()
 
     # ------------------------------------------------------------------
@@ -1235,18 +1471,81 @@ class MorphingOrbWidget(QWidget):
             pass
 
     def _audio_test(self) -> None:
-        """Émet un signal sonore de test court (bip système)."""
+        """Émet un bip de test synthétisé (sinus doux), avec repli sur le
+        bip système si l'audio multimédia n'est pas disponible."""
         try:
-            QApplication.beep()
+            self._play_test_tone()
         except Exception:
-            pass
+            try:
+                QApplication.beep()
+            except Exception:
+                pass
         self.pulse = 1.0
 
-    def _clear_cache(self) -> None:
-        self._menu_toggle_state.clear()
+    def _play_test_tone(self) -> None:
+        import math as _math
+        import struct
+        import tempfile
+        import wave
 
-    def _save_menu_state(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QSoundEffect
+
+        if getattr(self, "_test_sound_path", None) is None:
+            rate = 24000
+            duration = 0.22
+            samples = []
+            n = int(rate * duration)
+            for i in range(n):
+                # Enveloppe douce pour éviter les clics audibles.
+                envelope = _math.sin(_math.pi * i / n) ** 2
+                value = int(12000 * envelope * _math.sin(2 * _math.pi * 880.0 * i / rate))
+                samples.append(struct.pack("<h", value))
+            handle = tempfile.NamedTemporaryFile(
+                suffix=".wav", prefix="jarvis_test_", delete=False
+            )
+            try:
+                with wave.open(handle, "wb") as wav:
+                    wav.setnchannels(1)
+                    wav.setsampwidth(2)
+                    wav.setframerate(rate)
+                    wav.writeframes(b"".join(samples))
+                handle.close()
+                self._test_sound_path = handle.name
+            except Exception:
+                handle.close()
+                raise
+
+        effect = QSoundEffect(self)
+        effect.setSource(QUrl.fromLocalFile(self._test_sound_path))
+        effect.setVolume(0.6)
+        effect.play()
+        # Référence gardée vive le temps de la lecture.
+        self._test_effect = effect
+
+    def _reset_settings(self) -> None:
+        """Réinitialise les réglages interactifs du menu (valeurs par défaut)."""
+        self.menu_state = menu_state.MenuState()
         menu_state.save_state(self.menu_state, self._menu_state_path)
+        self._apply_always_on_top(self.menu_state.always_on_top)
+        self._apply_transparency(self.menu_state.transparency)
+        self._invalidate_status_cache()
+        self._flash("Réglages réinitialisés")
+
+    def _save_menu_state(self, force: bool = False) -> None:
+        """Sauvegarde l'état du menu, débouncée pendant les interactions.
+
+        Un glissement de slider génère des dizaines d'appels par seconde :
+        on écrit au plus toutes les 0,5 s, et immédiatement à la fin du
+        glissement ou à la fermeture (`force=True`).
+        """
+        if not force:
+            if (self.time - self._menu_state_last_save) < 0.5:
+                self._menu_state_dirty = True
+                return
+        menu_state.save_state(self.menu_state, self._menu_state_path)
+        self._menu_state_last_save = self.time
+        self._menu_state_dirty = False
 
     def _menu_callback_for(self, spec: MenuSpec, item: MenuItemSpec) -> Callable[[], None]:
         if spec.name == "Appearance":
@@ -1255,40 +1554,67 @@ class MorphingOrbWidget(QWidget):
         def _callback() -> None:
             name, label = spec.name, item.label
             if self._menu_is_slider(spec, item):
-                self._menu_action_flash = f"{label}: {self._menu_slider_value(spec, item)}%"
+                self._flash(f"{label}: {self._menu_slider_value(spec, item)}%")
             elif self._menu_is_option(spec, item):
                 self._menu_cycle_option(spec, item)
-                self._menu_action_flash = f"{label}: {self._menu_value(spec, item)}"
+                extra = ""
+                if name == "Voice" and label == "Voice Select":
+                    extra = " — reconnexion…"
+                self._flash(f"{label}: {self._menu_value(spec, item)}{extra}")
             elif item.kind == "toggle":
                 current = self._menu_toggle_value(spec, item)
                 self._menu_set_toggle(spec, item, not current)
-                self._menu_action_flash = f"{label}: {'On' if not current else 'Off'}"
+                # Les toggles riches affichent leur propre message explicite
+                # via _flash ; on n'écrase pas leur libellé.
+                if label in {
+                    "Always Listening",
+                    "Startup",
+                    "Long-term Memory",
+                }:
+                    pass
+                else:
+                    new_value = not current
+                    messages = {
+                        "Mic Toggle": ("Micro : activé", "Micro : coupé"),
+                        "Always on Top": (
+                            "Toujours au premier plan : activé",
+                            "Toujours au premier plan : désactivé",
+                        ),
+                    }
+                    if label in messages:
+                        self._flash(messages[label][0 if new_value else 1])
+                    else:
+                        self._flash(f"{label}: {'On' if new_value else 'Off'}")
             elif name == "Voice" and label == "Audio Test":
                 self._audio_test()
-                self._menu_action_flash = f"{label} ▶"
+                self._flash(f"{label} ▶")
             elif name == "System" and label == "Response Mode":
                 system_actions.cycle_response_mode(self.system_state)
                 system_actions.save_state(self.system_state, self._system_state_path)
                 menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
-                self._menu_action_flash = f"Response: {self.system_state.response_mode_label}"
-            elif name == "Memory" and label == "Clear Cache":
-                self._clear_cache()
-                self._menu_action_flash = "Cache cleared"
+                self._flash(f"Réponses : {self.system_state.response_mode_label}")
+            elif name == "System" and label == "Reset Settings":
+                self._reset_settings()
+            elif name == "System" and label == "Quit":
+                self._flash("À bientôt !")
+                self.close()
             elif name == "Routines" and label == "Reload":
                 self._routines_mtime = -1.0
                 self._routines_checked_at = -10.0
                 self._routines_cache = {}
-                self._menu_action_flash = "Routines rechargées"
+                self._invalidate_status_cache()
+                self._flash("Routines rechargées")
             elif name == "Routines" and label in {"No routine", "Reminders"}:
-                self._menu_action_flash = label
+                if label == "Reminders":
+                    count = self._menu_value(spec, item)
+                    self._flash(f"Rappels actifs : {count} (demandez-les à la voix)")
+                else:
+                    self._flash("Aucune routine — créez-la à la voix")
             elif name == "Routines":
-                self._menu_action_flash = f"{label} …"
+                self._flash(f"{label} …")
                 self._run_routine_async(label)
-            elif name == "Memory":
-                self._menu_action_flash = item.label
             else:
-                self._menu_action_flash = item.label
-            self._menu_action_flash_time = self.time
+                self._flash(item.label)
 
         return _callback
 
@@ -1309,12 +1635,24 @@ class MorphingOrbWidget(QWidget):
             action(self.appearance_state)
             self._apply_appearance_state()
             appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
-            self._menu_action_flash = f"{item.label}: {self._appearance_value(item.label)}"
-            self._menu_action_flash_time = self.time
+            self._flash(f"{item.label}: {self._appearance_value(item.label)}")
         return _callback
 
     def _apply_appearance_state(self) -> None:
         state = self.appearance_state
+        # Appelé à chaque frame par tick() : on ne recrée les QColor que si
+        # l'état d'apparence a réellement changé.
+        signature = (
+            state.theme_name,
+            round(state.glow_intensity, 3),
+            round(state.blob_scale, 3),
+            round(state.time_scale, 3),
+            state.minimal_mode,
+            state.cinematic_mode,
+        )
+        if signature == self._appearance_signature:
+            return
+        self._appearance_signature = signature
         self.base_radius = self._base_radius_default * state.blob_scale
         self.glow_color = QColor(state.glow_color)
         self.bg = QColor(state.bg_color)
@@ -1371,9 +1709,13 @@ class MorphingOrbWidget(QWidget):
             if all(node.visible_amount < 0.02 for node in self._menu_nodes):
                 self._menu_nodes.clear()
             self._menu_hot_node = -1
+            self._menu_focus_index = -1
+            self._set_pointer_cursor(False)
             return
 
         self._sync_menu_nodes(spec)
+        if not (0 <= self._menu_focus_index < len(self._menu_nodes)):
+            self._menu_focus_index = -1
         reveal = clamp(self._menu_reveal, 0.0, 1.25)
         alpha = clamp(self._menu_alpha, 0.0, 1.0)
         anchor, sx, sy, perp_x, perp_y = self._menu_anchor(spec, reveal)
@@ -1387,9 +1729,9 @@ class MorphingOrbWidget(QWidget):
         hover_index = -1
         hover_score = -1.0
         count_mid = (count - 1) * 0.5
-        spacing = 18.0 + 2.0 * spec.branch_bias
+        spacing = 20.0 + 2.0 * spec.branch_bias
         if self._menu_layout_mode == "line":
-            spacing += 14.0
+            spacing += 16.0
         curve_strength = 7.0 + 5.0 * reveal
 
         for index, node in enumerate(self._menu_nodes):
@@ -1399,7 +1741,7 @@ class MorphingOrbWidget(QWidget):
                 col = index % columns
                 row = index // columns
                 col_offset = (col - 0.5) * 126.0
-                row_offset = (row - (rows - 1) * 0.5) * 42.0
+                row_offset = (row - (rows - 1) * 0.5) * 46.0
                 target = QPointF(
                     anchor.x() + perp_x * col_offset + sx * (34.0 + row * 5.0 + curve_strength),
                     anchor.y() + perp_y * col_offset + sy * (34.0 + row * 5.0 + curve_strength) + row_offset,
@@ -1417,20 +1759,31 @@ class MorphingOrbWidget(QWidget):
             node.click_amount = lerp(node.click_amount, 0.0, 0.12)
 
             dist = math.hypot(self.cursor.x() - node.position.x(), self.cursor.y() - node.position.y())
-            hit_radius = node.radius * (1.45 + 0.18 * node.visible_amount)
+            hit_radius = node.radius * 1.45 + 7.0
             hover_target = clamp(1.0 - (dist / max(hit_radius, 1.0)), 0.0, 1.0)
             node.hover_amount = lerp(node.hover_amount, hover_target, 0.18)
 
-            if node.hover_amount > hover_score:
+            # Un nœud n'est « chaud » que s'il est réellement survolé :
+            # sinon le premier nœud de la liste gardait un focus fantôme
+            # (la molette modifiait alors un réglage sans survol).
+            if node.hover_amount > hover_score and node.hover_amount > 0.05:
                 hover_score = node.hover_amount
                 hover_index = index
 
         self._menu_hot_node = hover_index
+        self._set_pointer_cursor(hover_index >= 0)
 
-        if self._menu_action_flash_time >= 0.0:
-            if (self.time - self._menu_action_flash_time) > 0.7:
-                self._menu_action_flash = ""
-                self._menu_action_flash_time = -1.0
+    def _set_pointer_cursor(self, active: bool) -> None:
+        """Curseur « main » au survol d'une cible cliquable."""
+        if active == self._pointer_cursor_active:
+            return
+        self._pointer_cursor_active = active
+        try:
+            from PySide6.QtGui import QCursor
+
+            self.setCursor(QCursor(Qt.PointingHandCursor if active else Qt.ArrowCursor))
+        except Exception:
+            pass
 
     def _draw_organic_menu_v2(self, painter: QPainter):
         spec = self._menu_spec()
@@ -1482,6 +1835,10 @@ class MorphingOrbWidget(QWidget):
 
         item = self._item_for(spec, node.label)
         hover = clamp(node.hover_amount, 0.0, 1.0)
+        # Le nœud portant le focus clavier est mis en évidence comme s'il
+        # était survolé (navigation flèches + Entrée).
+        if index == self._menu_focus_index:
+            hover = max(hover, 0.85)
         click = clamp(node.click_amount, 0.0, 1.0)
         line_alpha = int((52 + 120 * hover + 80 * click) * visible)
         node_alpha = int((130 + 90 * hover + 60 * click) * visible)
@@ -1603,10 +1960,131 @@ class MorphingOrbWidget(QWidget):
     # DRAWING
     # =========================================================
 
+    def _draw_action_flash(self, painter: QPainter) -> None:
+        """Retour d'action : pastille de confirmation au-dessus de l'orbe.
+
+        Sans ce feedback, un clic dans le menu radial ne donnait aucune
+        confirmation visuelle (« est-ce que ça a marché ? »).
+        """
+        message = self._menu_action_flash
+        if not message or self._menu_action_flash_time < 0.0:
+            return
+        age = self.time - self._menu_action_flash_time
+        duration = 2.2
+        if age > duration or age < 0.0:
+            return
+        fade = 1.0
+        if age < 0.12:
+            fade = age / 0.12  # apparition rapide
+        elif age > duration - 0.6:
+            fade = max(0.0, (duration - age) / 0.6)
+
+        state = self.appearance_state
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        font = QFont("Segoe UI", 10)
+        font.setLetterSpacing(QFont.AbsoluteSpacing, 0.7)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        text_w = metrics.horizontalAdvance(message)
+        text_h = metrics.height()
+        pad_x = 14.0
+        pad_y = 7.0
+        cx = self.current_center.x()
+        cy = self.current_center.y() - self.base_radius - 44.0
+        rect = QRectF(
+            cx - (text_w + 2 * pad_x) / 2.0,
+            cy - (text_h + 2 * pad_y) / 2.0,
+            text_w + 2 * pad_x,
+            text_h + 2 * pad_y,
+        )
+        alpha = int(215 * fade)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(8, 16, 26, alpha))
+        painter.drawRoundedRect(rect, rect.height() / 2.0, rect.height() / 2.0)
+        border = QColor(
+            state.glow_color.red(),
+            state.glow_color.green(),
+            state.glow_color.blue(),
+            int(150 * fade),
+        )
+        painter.setPen(QPen(border, 1.2))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(rect, rect.height() / 2.0, rect.height() / 2.0)
+        text_color = QColor(
+            state.text_color.red(),
+            state.text_color.green(),
+            state.text_color.blue(),
+            int(245 * fade),
+        )
+        painter.setPen(text_color)
+        painter.drawText(rect, Qt.AlignCenter, message)
+        painter.restore()
+
+    def _draw_status_label(self, painter: QPainter) -> None:
+        """Indicateur discret d'état sous l'orbe : initialisation, écoute,
+        réponse, veille ou micro coupé. L'utilisateur sait toujours où il
+        en est sans regarder la console."""
+        try:
+            mic_on = menu_state.LIVE.get_mic_enabled()
+        except Exception:
+            mic_on = True
+
+        state = self.appearance_state
+        if not mic_on:
+            label = "MICRO COUPÉ"
+            dot_color = QColor(255, 140, 130)
+        elif presence_state == "loading":
+            label = "INITIALISATION…"
+            dot_color = QColor(160, 170, 190)
+        elif presence_state == "listening":
+            label = "À L'ÉCOUTE"
+            dot_color = QColor(state.glow_color)
+        elif presence_state == "thinking":
+            label = "RÉFLEXION…"
+            dot_color = QColor(state.glow_color)
+        elif presence_state == "speaking":
+            label = "RÉPONSE EN COURS"
+            dot_color = QColor(state.glow_color).lighter(130)
+        else:
+            return
+
+        # Discret : alpha qui respire doucement.
+        alpha = int(120 + 40 * self.pulse)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        font = QFont("Segoe UI", 8)
+        font.setLetterSpacing(QFont.AbsoluteSpacing, 2.0)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        text_w = metrics.horizontalAdvance(label)
+        cx = self.current_center.x()
+        cy = self.current_center.y() + self.base_radius + 40.0
+
+        dot = QColor(dot_color)
+        dot.setAlpha(alpha)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(dot)
+        painter.drawEllipse(QPointF(cx - text_w / 2.0 - 12.0, cy), 3.0, 3.0)
+
+        text_color = QColor(
+            state.text_color.red(),
+            state.text_color.green(),
+            state.text_color.blue(),
+            alpha,
+        )
+        painter.setPen(text_color)
+        painter.drawText(
+            QRectF(cx - text_w / 2.0, cy - metrics.height() / 2.0, text_w + 4.0, metrics.height()),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            label,
+        )
+        painter.restore()
+
     def _draw_glow(self, painter: QPainter, path: QPainterPath):
 
         state = self.appearance_state
-        halo = clamp(self._halo_energy * state.glow_intensity, 0.0, 1.85)
+        halo = clamp(self._halo_energy * state.glow_intensity * self._mic_mute_factor, 0.0, 1.85)
         voice = clamp(voice_energy, 0.0, 1.0)
 
         layers = [
@@ -1631,8 +2109,9 @@ class MorphingOrbWidget(QWidget):
     def _draw_inner(self, painter: QPainter, path: QPainterPath):
 
         state = self.appearance_state
-        halo = clamp(self._halo_energy * state.glow_intensity, 0.0, 1.85)
+        halo = clamp(self._halo_energy * state.glow_intensity * self._mic_mute_factor, 0.0, 1.85)
         voice = clamp(voice_energy, 0.0, 1.0)
+        presence = clamp(self._presence_energy, 0.0, 1.0)
 
         gradient = QRadialGradient(
             self.current_center,
@@ -1648,12 +2127,17 @@ class MorphingOrbWidget(QWidget):
         painter.setBrush(gradient)
         painter.drawPath(path)
 
-        core_radius = self.base_radius * (0.22 + 0.04 * voice) + 8 * self.pulse + 6.0 * halo
+        core_radius = (
+            self.base_radius * (0.22 + 0.04 * voice + 0.05 * presence)
+            + 8 * self.pulse
+            + 6.0 * halo
+            + 10.0 * presence
+        )
 
         core = QPainterPath()
         core.addEllipse(self.current_center, core_radius, core_radius)
 
-        painter.setBrush(QColor(state.glow_color.red(), state.glow_color.green(), state.glow_color.blue(), int(150 + 55 * halo + 30 * voice)))
+        painter.setBrush(QColor(state.glow_color.red(), state.glow_color.green(), state.glow_color.blue(), int(150 + 55 * halo + 30 * voice + 40 * presence)))
         painter.drawPath(core)
 
     def _draw_organic_menu(self, painter: QPainter):
@@ -1678,12 +2162,17 @@ class MorphingOrbWidget(QWidget):
             self._draw_glow(painter, path)
             self._draw_inner(painter, path)
             self._draw_organic_menu_v2(painter)
+            self._draw_status_label(painter)
+            self._draw_action_flash(painter)
         finally:
             painter.end()
 
 
 def main() -> int:
     app = QApplication(sys.argv)
+    # Démo standalone : aucun backend vocal ne suivra, on repart en veille
+    # plutôt que d'afficher « INITIALISATION… » pour toujours.
+    set_presence_state("hidden")
     window = MorphingOrbWidget()
     window.showFullScreen()
     return app.exec()

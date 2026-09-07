@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 
 # Modes de réponse de Jarvis (verbosité). Adapté à Gemini Live :
 # la valeur sélectionnée est injectée dans le prompt système au moment
@@ -12,6 +13,53 @@ RESPONSE_MODES = [
     {"label": "Équilibré", "description": "Réponses naturelles et détaillées."},
     {"label": "Détaillé", "description": "Explications complètes et pédagogiques."},
 ]
+
+
+def _startup_launcher_path() -> Path:
+    """Chemin du lanceur Jarvis dans le dossier de démarrage Windows."""
+    appdata = os.environ.get("APPDATA", "")
+    if not appdata:
+        return Path()
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Jarvis.bat"
+
+
+def startup_status() -> bool:
+    """Vrai si Jarvis est réellement configuré pour démarrer avec Windows."""
+    try:
+        return _startup_launcher_path().is_file()
+    except Exception:
+        return False
+
+
+def set_startup(enabled: bool) -> dict:
+    """Active/désactive le lancement de Jarvis au démarrage de Windows.
+
+    Crée ou supprime un petit .bat dans le dossier ``Startup`` du profil.
+    Sur les autres systèmes, l'action échoue proprement : l'UI affiche alors
+    un message honnête au lieu de prétendre que le réglage a été appliqué.
+    """
+    try:
+        launcher = _startup_launcher_path()
+        if os.name != "nt" or not str(launcher):
+            return {
+                "success": False,
+                "error": "Lancement automatique disponible uniquement sur Windows",
+            }
+        jarvis_bat = Path(__file__).resolve().parents[1] / "Jarvis.bat"
+        if not jarvis_bat.is_file():
+            return {"success": False, "error": "Jarvis.bat introuvable"}
+        if enabled:
+            content = (
+                "@echo off\r\n"
+                f'start "" "{jarvis_bat}" --ui\r\n'
+            )
+            launcher.parent.mkdir(parents=True, exist_ok=True)
+            launcher.write_text(content, encoding="ascii")
+        elif launcher.is_file():
+            launcher.unlink()
+        return {"success": True, "enabled": enabled}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 @dataclass

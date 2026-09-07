@@ -40,19 +40,29 @@ class AudioIO:
     # Anti-double-détection
     WAKE_COOLDOWN_SECONDS = 1.0
 
+    # Avance audio maximale tolérée dans la file de sortie (en secondes).
+    # Au-delà, les blocs les plus anciens sont retirés : la voix de Jarvis
+    # reste ainsi synchronisée même si le réseau envoie par rafales.
+    MAX_QUEUED_SECONDS = 5.0
+
     def __init__(self, on_input, presence_hook=None, voice_hook=None,
-                 mic_enabled=None, wake_threshold=None):
+                 mic_enabled=None, wake_threshold=None,
+                 volume_provider=None, listen_mode_provider=None):
         self.on_input = on_input
 
         # Hooks optionnels pour l'UI (voir src/ui.py).
-        # presence_hook(state) : "listening" | "hidden"
+        # presence_hook(state) : "loading" | "listening" | "hidden"
         # voice_hook(level)     : 0.0 .. 1.0 (niveau d'entrée micro)
         # mic_enabled()         : bool — micro coupé/rétabli depuis le menu.
         # wake_threshold()      : float — sensibilité du wake word depuis le menu.
+        # volume_provider()     : int 0..100 — volume de la voix Jarvis.
+        # listen_mode_provider(): bool — écoute continue (sans wake word).
         self.presence_hook = presence_hook
         self.voice_hook = voice_hook
         self.mic_enabled = mic_enabled
         self.wake_threshold = wake_threshold
+        self.volume_provider = volume_provider
+        self.listen_mode_provider = listen_mode_provider
         self._last_voice_emit = 0.0
 
         self.running = False
@@ -94,6 +104,15 @@ class AudioIO:
             * self.CHANNELS
             * self.SAMPLE_WIDTH
             * 0.10
+        )
+
+        # Nombre d'octets actuellement en file (pour plafonner la latence).
+        self._queued_bytes = 0
+        self._max_queued_bytes = int(
+            self.OUTPUT_RATE
+            * self.CHANNELS
+            * self.SAMPLE_WIDTH
+            * self.MAX_QUEUED_SECONDS
         )
 
         # =====================================================
@@ -189,8 +208,15 @@ class AudioIO:
 
         self.wake_thread.start()
 
-        print("[Jarvis] En veille.")
-        print('[Jarvis] Dites "Hey Jarvis".')
+        # L'état « initialisation » de l'UI prend fin ici : Jarvis est prêt,
+        # en veille jusqu'au prochain « Hey Jarvis » (ou en écoute continue).
+        self._emit_presence("hidden")
+
+        if self._listen_mode_active():
+            print("[Jarvis] Écoute continue active. Parle directement.")
+        else:
+            print("[Jarvis] En veille.")
+            print('[Jarvis] Dites "Hey Jarvis".')
 
     # =========================================================
     # CALLBACK MICRO
@@ -291,8 +317,18 @@ class AudioIO:
             # MODE VEILLE
             # =================================================
 
-            if self._detect_wake_word(pcm):
-                self._wake()
+            self._handle_idle_block(pcm)
+
+    def _handle_idle_block(self, pcm) -> None:
+        """En veille : réveil automatique (écoute continue) ou wake word."""
+        # Écoute continue activée depuis le menu : Jarvis se réveille
+        # tout seul et reste actif sans exiger « Hey Jarvis ».
+        if self._listen_mode_active():
+            self._wake()
+            return
+
+        if self._detect_wake_word(pcm):
+            self._wake()
 
     # =========================================================
     # DÉTECTION DU WAKE WORD
@@ -305,6 +341,15 @@ class AudioIO:
             return bool(self.mic_enabled())
         except Exception:
             return True
+
+    def _listen_mode_active(self) -> bool:
+        """Écoute continue demandée depuis le menu (pas de wake word)."""
+        if self.listen_mode_provider is None:
+            return False
+        try:
+            return bool(self.listen_mode_provider())
+        except Exception:
+            return False
 
     def _detect_wake_word(self, pcm):
 
@@ -474,6 +519,15 @@ class AudioIO:
 
         if time.monotonic() >= self.follow_up_until:
 
+            # Écoute continue : la fenêtre de conversation se renouvelle
+            # indéfiniment tant que le mode reste actif.
+            if self._listen_mode_active():
+                self.follow_up_until = (
+                    time.monotonic()
+                    + self.FOLLOW_UP_SECONDS
+                )
+                return
+
             self.awake = False
             self._emit_presence("hidden")
 
@@ -505,6 +559,7 @@ class AudioIO:
 
                 try:
                     chunk = self.q.get_nowait()
+                    self._queued_bytes -= len(chunk)
                     self.buffer.extend(chunk)
 
                 except queue.Empty:
@@ -533,6 +588,7 @@ class AudioIO:
                     * (needed - available)
                 )
 
+                self._queued_bytes -= available
                 self.buffer.clear()
 
             # Données suffisantes
@@ -540,19 +596,61 @@ class AudioIO:
 
                 outdata[:] = self.buffer[:needed]
 
+                self._queued_bytes -= needed
                 del self.buffer[:needed]
+
+        if self._queued_bytes < 0:
+            self._queued_bytes = 0
 
     # =========================================================
     # AUDIO REÇU DE GEMINI
     # =========================================================
+
+    def _output_volume(self) -> float:
+        """Volume de sortie (0.0 .. 1.0), lu en temps réel depuis le menu."""
+        if self.volume_provider is None:
+            return 1.0
+        try:
+            vol = int(self.volume_provider())
+        except Exception:
+            return 1.0
+        vol = max(0, min(100, vol))
+        # Courbe perceptuelle : 50 % du curseur ≈ un tiers du gain réel.
+        return (vol / 100.0) ** 1.6
+
+    def _apply_gain(self, pcm: bytes, gain: float) -> bytes:
+        try:
+            samples = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+            samples = np.clip(samples * gain, -32768, 32767)
+            return samples.astype(np.int16).tobytes()
+        except Exception:
+            return pcm
 
     def play(self, pcm):
 
         if not pcm or not self.running:
             return
 
+        gain = self._output_volume()
+        data = bytes(pcm)
+        if gain < 0.995:
+            data = self._apply_gain(data, gain)
+
         with self.lock:
-            self.q.put(bytes(pcm))
+            # Plafonner l'avance audio : si la file dépasse quelques secondes
+            # (réseau en rafales, lecture suspendue), on retire les blocs les
+            # plus anciens pour que la voix reste synchronisée.
+            while (
+                self._queued_bytes + len(data) > self._max_queued_bytes
+                and not self.q.empty()
+            ):
+                try:
+                    dropped = self.q.get_nowait()
+                    self._queued_bytes -= len(dropped)
+                except queue.Empty:
+                    break
+            self.q.put(data)
+            self._queued_bytes += len(data)
 
     # =========================================================
     # INTERRUPTION DE GEMINI
@@ -563,6 +661,7 @@ class AudioIO:
         with self.lock:
 
             self.buffer.clear()
+            self._queued_bytes = 0
 
             while True:
 
@@ -585,6 +684,7 @@ class AudioIO:
 
         self.running = False
         self.audio_started = False
+        self._emit_presence("hidden")
 
         # Micro
         if self.ins:
