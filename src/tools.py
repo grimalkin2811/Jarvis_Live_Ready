@@ -40,6 +40,9 @@ import webbrowser
 
 from .memory import get_default_memory_manager
 from .routines import get_default_routine_manager
+from .routine_actions import (
+    notify_user, show_reminder_briefing, check_battery_alert, check_disk_alert,
+)
 from .scheduler import get_default_scheduler
 
 # ---------------------------------------------------------------------------
@@ -1799,6 +1802,11 @@ TOOL_FUNCTIONS = {
     "update_routine": update_routine,
     "delete_routine": delete_routine,
     "list_routine_tools": list_routine_tools,
+    # Notifications et routines préconfigurées
+    "notify_user": notify_user,
+    "show_reminder_briefing": show_reminder_briefing,
+    "check_battery_alert": check_battery_alert,
+    "check_disk_alert": check_disk_alert,
     # Rappels persistants
     "set_reminder": set_reminder,
     "list_reminders": list_reminders,
@@ -1991,6 +1999,27 @@ TOOL_DECLARATIONS = [
         "Efface toute la memoire durable. Demande TOUJOURS une confirmation orale avant confirm=true.",
         {"confirm": _BOOL},
     ),
+    # --- Notifications locales ------------------------------------------------------------
+    _decl(
+        "notify_user", "Affiche immediatement une notification locale (sans rappel differe).",
+        {"message": _STR, "title": _STR}, ["message"],
+    ),
+    _decl(
+        "show_reminder_briefing",
+        "Affiche un resume des rappels Jarvis a venir (pas un agenda externe). "
+        "Fonctionne meme sans rappel enregistre.",
+        {"period": {**_STR, "enum": ["today", "tomorrow", "week"]}},
+    ),
+    _decl(
+        "check_battery_alert",
+        "Notifie si la batterie est a 20 % ou moins, non branchee, au plus une fois par heure. "
+        "Reste silencieux sans batterie ou si elle est en charge.",
+    ),
+    _decl(
+        "check_disk_alert",
+        "Notifie si le disque du dossier utilisateur a moins de 10 % libres, au plus une fois "
+        "par jour. Ne supprime aucun fichier.",
+    ),
     # --- Routines --------------------------------------------------------------------------
     _decl(
         "create_routine",
@@ -2018,7 +2047,7 @@ TOOL_DECLARATIONS = [
         {"name": _STR},
         ["name"],
     ),
-    _decl("list_routines", "Liste les routines enregistrees et leur planification."),
+    _decl("list_routines", "Liste les routines personnelles et les 10 routines preconfigurees, avec leur activation et planification."),
     _decl(
         "describe_routine",
         "Detaille les etapes et la planification d'une routine.",
@@ -2028,7 +2057,8 @@ TOOL_DECLARATIONS = [
     _decl(
         "update_routine",
         "Modifie une routine existante : etapes, description, planification ou activation. "
-        "Utilise schedule='aucune' pour retirer un declenchement automatique.",
+        "Pour activer/desactiver une routine preconfiguree, passe uniquement name et enabled=true/false : "
+        "ses horaires et actions sont deja prets. Utilise schedule='aucune' pour retirer une planification.",
         {
             "name": _STR,
             "steps": _STR,

@@ -497,7 +497,17 @@ def parse_schedule(text) -> dict | None:
         clean_days = sorted({int(d) for d in days if isinstance(d, int) or str(d).isdigit()} & set(range(7)))
         if not clean_days:
             clean_days = list(range(7))
-        return {"time": f"{hour:02d}:{minute:02d}", "days": clean_days}
+        schedule = {"time": f"{hour:02d}:{minute:02d}", "days": clean_days}
+        # Ne pas transformer une plage répétée invalide en horaire unique.
+        if "interval_minutes" in text or "end_time" in text:
+            interval = text.get("interval_minutes")
+            if isinstance(interval, bool) or not isinstance(interval, int) or not 5 <= interval <= 1440:
+                return None
+            end = parse_schedule({"time": text.get("end_time"), "days": clean_days})
+            if end is None or end["time"] < schedule["time"]:
+                return None
+            schedule.update(interval_minutes=interval, end_time=end["time"])
+        return schedule
 
     normalized = normalize(text)
     if not normalized:
@@ -529,6 +539,10 @@ def describe_schedule(schedule: dict | None) -> str:
         return "aucune"
     days = schedule.get("days") or []
     time_text = schedule.get("time", "??:??")
+    if schedule.get("interval_minutes"):
+        day_text = describe_schedule({"time": time_text, "days": days}).rsplit(" à ", 1)[0]
+        return (f"{day_text}, toutes les {schedule['interval_minutes']} min "
+                f"de {time_text} à {schedule['end_time']}")
     day_set = set(days)
     if day_set == set(range(7)):
         return f"tous les jours à {time_text}"

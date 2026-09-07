@@ -31,6 +31,7 @@ from .scheduler import start_default_scheduler
 from UI import appearance_actions
 from UI import menu_state
 from UI.screen_halo_overlay import ScreenHaloOverlay
+from UI.notification_bridge import NotificationBridge
 
 
 def _ui_dir() -> Path:
@@ -256,10 +257,16 @@ def _build_tray_icon(on_activate, on_quit):
         menu = QMenu()
         show_action = menu.addAction("Afficher Jarvis")
         show_action.triggered.connect(on_activate)
+        from UI.routines_dialog import show_routines_dialog
+        routines_action = menu.addAction("Routines…")
+        routines_action.triggered.connect(lambda: show_routines_dialog())
         menu.addSeparator()
         quit_action = menu.addAction("Quitter Jarvis")
         quit_action.triggered.connect(on_quit)
         tray.setContextMenu(menu)
+        # Qt ne prend pas possession du QMenu : le garder vivant garantit
+        # l'accès aux interrupteurs aussi en mode overlay, sans fenêtre.
+        tray._jarvis_menu = menu
         tray.show()
         return tray
     except Exception:
@@ -308,7 +315,6 @@ def run_ui(mode: str = "desktop") -> int:
         window.showFullScreen()
 
         presence_hook = jarvis_menu.set_presence_state
-        voice_thread = _start_voice(config, presence_hook, voice_hook, stop_event)
 
         def _activate() -> None:
             window.showFullScreen()
@@ -333,7 +339,7 @@ def run_ui(mode: str = "desktop") -> int:
         bridge.presence_changed.connect(router.handle_presence)
 
         voice_hook = None
-        voice_thread = _start_voice(config, bridge.presence_changed.emit, voice_hook, stop_event)
+        presence_hook = bridge.presence_changed.emit
 
         # En mode overlay, il n'y a aucune fenêtre interactive : sans icône
         # de notification, il n'existe aucun moyen propre de quitter.
@@ -343,9 +349,15 @@ def run_ui(mode: str = "desktop") -> int:
             print("[Jarvis] Aucune icône de notification disponible : "
                   "utilise Ctrl+C dans cette console pour quitter.")
 
+    # Brancher les notifications AVANT de démarrer le planificateur vocal :
+    # les rappels échus au lancement sont visibles même si l'orbe est en veille.
+    notification_bridge = NotificationBridge(tray)
+    voice_thread = _start_voice(config, presence_hook, voice_hook, stop_event)
+
     def _shutdown() -> None:
         stop_event.set()
         voice_thread.join(timeout=3.0)
+        notification_bridge.close()
 
     app.aboutToQuit.connect(_shutdown)
 

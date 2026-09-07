@@ -22,6 +22,7 @@ import os
 import sqlite3
 import threading
 
+from . import notifications
 from .timeparse import (
     describe_schedule,
     format_datetime,
@@ -57,15 +58,6 @@ def _err(message: str, **payload) -> dict:
     result.update(payload)
     return result
 
-
-def _beep() -> None:
-    try:
-        import winsound
-
-        for _ in range(2):
-            winsound.Beep(880, 220)
-    except Exception:
-        pass
 
 
 class Scheduler:
@@ -129,6 +121,10 @@ class Scheduler:
                     )
                     """
                 )
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS notification_cooldowns "
+                    "(key TEXT PRIMARY KEY, sent_at TEXT NOT NULL)"
+                )
             self.available = True
             self.last_error = None
         except Exception as exc:
@@ -165,9 +161,8 @@ class Scheduler:
 
         return get_default_routine_manager()
 
-    def _notify(self, title: str, message: str) -> None:
-        print(f"\n[Jarvis] 🔔 {title} : {message}")
-        _beep()
+    def _notify(self, title: str, message: str) -> str:
+        channel = notifications.publish(title, message)
         with self._lock:
             hooks = list(self._notify_hooks)
         for hook in hooks:
@@ -175,6 +170,49 @@ class Scheduler:
                 hook(title, message)
             except Exception:
                 pass
+        return channel
+
+    def notify(self, title, message, *, cooldown_key=None, cooldown_seconds=0) -> dict:
+        """Notification locale, avec anti-spam persistant pour les alertes PC."""
+        title = str(title or "Jarvis").strip()[:63]
+        message = str(message or "").strip()
+        if not message:
+            return _err("Message de notification vide.")
+        if cooldown_key:
+            if not self._ready():
+                return self._unavailable()
+            now = dt.datetime.now()
+            try:
+                with self._connect() as conn:
+                    cursor = conn.execute(
+                        "INSERT INTO notification_cooldowns (key, sent_at) VALUES (?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET sent_at = excluded.sent_at "
+                        "WHERE notification_cooldowns.sent_at <= ?",
+                        (cooldown_key, now.strftime(_ISO),
+                         (now - dt.timedelta(seconds=cooldown_seconds)).strftime(_ISO)),
+                    )
+                    claimed = cursor.rowcount == 1
+            except Exception as exc:
+                return _err(f"Notification impossible : {exc}")
+            if not claimed:
+                return _ok(notification=False, raison="Alerte déjà envoyée récemment.")
+        channel = self._notify(title, message)
+        return _ok(notification=True, titre=title, message=message, canal=channel)
+
+    def _notify_routine_result(self, name: str, result: dict, late="") -> None:
+        if result.get("disabled"):
+            return  # Un rappel visant une routine désactivée ne la relance pas.
+        if result.get("success") and result.get("notification_handled"):
+            return  # Pas de « routine exécutée » en plus d'un message utile.
+        if result.get("success"):
+            message = f"{name} exécutée{late}"
+        else:
+            reason = result.get("error") or next(
+                (entry.get("error") for entry in result.get("echecs", []) if entry.get("error")),
+                "échec partiel",
+            )
+            message = f"{name} : {reason}{late}"
+        self._notify("Routine planifiée", message)
 
     # ------------------------------------------------------------------
     # Rappels
@@ -279,6 +317,43 @@ class Scheduler:
             )
         return _ok(rappels=reminders, count=len(reminders))
 
+    def reminder_occurrences(self, start: dt.datetime, end: dt.datetime) -> dict:
+        """Rappels d'une période, y compris les futures occurrences récurrentes.
+
+        Lecture seule : les briefings ne marquent rien comme lu/terminé et
+        ne déplacent pas les échéances dans la base.
+        """
+        if not self._ready():
+            return self._unavailable()
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM reminders WHERE status = 'pending' AND due_at < ? ORDER BY due_at",
+                    (end.strftime(_ISO),),
+                ).fetchall()
+            items = []
+            for row in rows:
+                try:
+                    moment = dt.datetime.strptime(row["due_at"], _ISO)
+                except ValueError:
+                    continue
+                recurrence = row["recurrence"] or ""
+                # Rattrapage arithmétique pour les répétitions les plus denses.
+                seconds = {"hourly": 3600, "daily": 86400, "weekly": 604800}.get(recurrence)
+                if moment < start and seconds:
+                    skipped = int((start - moment).total_seconds() // seconds)
+                    moment += dt.timedelta(seconds=skipped * seconds)
+                while moment is not None and moment < start:
+                    moment = next_occurrence(moment, recurrence)
+                while moment is not None and moment < end:
+                    items.append({"id": row["id"], "texte": row["text"],
+                                  "echeance_iso": moment.strftime(_ISO)})
+                    moment = next_occurrence(moment, recurrence)
+            items.sort(key=lambda item: item["echeance_iso"])
+            return _ok(rappels=items, count=len(items))
+        except Exception as exc:
+            return _err(f"Lecture des rappels impossible : {exc}")
+
     def cancel_reminder(self, reminder_id=None, confirm=False) -> dict:
         if not self._ready():
             return self._unavailable()
@@ -335,8 +410,7 @@ class Scheduler:
         if routine_name:
             try:
                 result = self._routines().run_routine(routine_name)
-                status = "exécutée" if result.get("success") else "partiellement exécutée"
-                self._notify("Routine planifiée", f"{routine_name} {status}{late}")
+                self._notify_routine_result(routine_name, result, late)
             except Exception as exc:
                 self._notify("Routine planifiée", f"{routine_name} a échoué : {exc}")
         else:
@@ -408,21 +482,34 @@ class Scheduler:
             except Exception:
                 continue
 
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            try:
+                target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                interval = schedule.get("interval_minutes")
+                if interval:
+                    end_hour, end_minute = map(int, schedule["end_time"].split(":"))
+                    end = target.replace(hour=end_hour, minute=end_minute)
+                    # Au retour de veille, seule la dernière échéance peut
+                    # partir : pas de rafale pour toutes les pauses manquées.
+                    slot = int((min(now, end) - target).total_seconds() // (interval * 60))
+                    if slot < 0:
+                        continue
+                    target += dt.timedelta(minutes=slot * interval)
+            except (ValueError, TypeError, KeyError):
+                continue
             elapsed = (now - target).total_seconds()
             if not (0 <= elapsed <= ROUTINE_GRACE_SECONDS):
                 continue
 
-            key = f"{routine['name']}|{target.strftime('%Y-%m-%d %H:%M')}"
+            identity = f"preset:{routine['preset_id']}" if routine.get("preset_id") else routine["name"]
+            key = f"{identity}|{target.strftime('%Y-%m-%d %H:%M')}"
             if not self._claim_routine_fire(key):
                 continue
 
             try:
                 result = self._routines().run_routine(routine["name"])
-                status = "exécutée" if result.get("success") else "partiellement exécutée"
             except Exception as exc:
-                status = f"en échec ({exc})"
-            self._notify("Routine planifiée", f"{routine['name']} {status}")
+                result = _err(str(exc))
+            self._notify_routine_result(routine["name"], result)
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -454,6 +541,11 @@ class Scheduler:
         if thread is not None:
             thread.join(timeout=2.0)
 
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._thread is not None and self._thread.is_alive()
+
     def status(self) -> dict:
         pending = self.list_reminders(limit=100)
         try:
@@ -461,7 +553,7 @@ class Scheduler:
         except Exception:
             scheduled = []
         return _ok(
-            actif=self._thread is not None and self._thread.is_alive(),
+            actif=self.running,
             disponible=self.available,
             rappels_en_attente=pending.get("count", 0) if pending.get("success") else 0,
             routines_planifiees=[
