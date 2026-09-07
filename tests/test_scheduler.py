@@ -27,7 +27,7 @@ class SchedulerTestCase(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         routines.set_tool_registry(tools.TOOL_FUNCTIONS, tools.TOOL_DECLARATIONS)
-        self.routines = routines.RoutineManager(os.path.join(self._dir.name, "routines.json"))
+        self.routines = routines.RoutineManager(os.path.join(self._dir.name, "routines.json"), include_presets=False)
         self.scheduler = scheduler_module.Scheduler(
             os.path.join(self._dir.name, "schedule.db"),
             routine_manager=self.routines,

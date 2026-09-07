@@ -41,6 +41,7 @@ import re
 import threading
 import time
 
+from .routine_presets import builtin_routines
 from .timeparse import describe_schedule, normalize, parse_schedule
 
 DEFAULT_DATA_DIR = os.environ.get(
@@ -337,12 +338,17 @@ class RoutineManager:
     boîte à outils de Jarvis.
     """
 
-    def __init__(self, path: str | os.PathLike | None = None, enabled: bool = True) -> None:
+    def __init__(
+        self, path: str | os.PathLike | None = None, enabled: bool = True,
+        *, include_presets: bool = True,
+    ) -> None:
         self.path = str(path or DEFAULT_ROUTINES_PATH)
         self.enabled = bool(enabled)
         self._lock = threading.RLock()
         self.last_error: str | None = None
         self._on_run = None
+        if self.enabled and include_presets:
+            self.install_presets()
 
     # -- Hooks ---------------------------------------------------------
     def set_run_hook(self, hook) -> None:
@@ -353,8 +359,9 @@ class RoutineManager:
     def _empty(self) -> dict:
         return {"version": 1, "routines": []}
 
-    def _load(self) -> dict:
+    def _load(self, *, sanitize: bool = True) -> dict:
         if not os.path.exists(self.path):
+            self.last_error = None
             return self._empty()
         try:
             with open(self.path, "r", encoding="utf-8") as handle:
@@ -368,7 +375,10 @@ class RoutineManager:
         routines = payload.get("routines")
         if not isinstance(routines, list):
             routines = []
-        payload["routines"] = [self._sanitize(item) for item in routines if isinstance(item, dict)]
+        payload["routines"] = [
+            self._sanitize(item) if sanitize else dict(item)
+            for item in routines if isinstance(item, dict)
+        ]
         payload["routines"] = [item for item in payload["routines"] if item]
         self.last_error = None
         return payload
@@ -395,15 +405,64 @@ class RoutineManager:
             return None
         steps, _ = parse_steps(item.get("steps"))
         schedule = parse_schedule(item.get("schedule")) if item.get("schedule") else None
+        try:
+            run_count = max(0, int(item.get("run_count") or 0))
+        except (TypeError, ValueError):
+            run_count = 0
         return {
+            **item,
             "name": name,
+            "preset_id": str(item.get("preset_id") or ""),
             "description": str(item.get("description") or "").strip(),
             "enabled": bool(item.get("enabled", True)),
             "schedule": schedule,
             "steps": steps,
             "last_run": item.get("last_run") or None,
-            "run_count": int(item.get("run_count") or 0),
+            "run_count": run_count,
         }
+
+    def install_presets(self) -> dict:
+        """Ajout idempotent, sans écraser une routine ni réactiver un choix.
+
+        Le journal d'installation survit à une suppression explicite : une
+        routine supprimée ne réapparaît pas au prochain lancement. Les presets
+        ne consomment pas les 50 emplacements de routines personnelles.
+        """
+        if not self.enabled:
+            return _err("Routines désactivées.")
+        with self._lock:
+            # Migration additive : les étapes/horaires personnels sont conservés
+            # tels quels, même s'ils nécessitent un outil actuellement absent.
+            payload = self._load(sanitize=False)
+            if self.last_error:
+                # Ne jamais remplacer un fichier illisible par le catalogue.
+                return _err(self.last_error)
+            installed = payload.get("installed_presets", [])
+            installed = set(x for x in installed if isinstance(x, str)) if isinstance(installed, list) else set()
+            previous = set(installed)
+            existing_ids = {str(item.get("preset_id") or "") for item in payload["routines"]}
+            names = {normalize(item.get("name")) for item in payload["routines"]}
+            added = []
+            for preset in builtin_routines():
+                preset_id = preset["preset_id"]
+                if preset_id in installed:
+                    continue
+                if preset_id not in existing_ids:
+                    # Même un homonyme personnel doit rester intact.
+                    base_name = preset["name"]
+                    suffix = 1
+                    while normalize(preset["name"]) in names:
+                        preset["name"] = f"{base_name} (Jarvis{'' if suffix == 1 else ' ' + str(suffix)})"
+                        suffix += 1
+                    payload["routines"].append(preset)
+                    names.add(normalize(preset["name"]))
+                    added.append(preset["name"])
+                installed.add(preset_id)
+            if installed != previous or added:
+                payload["installed_presets"] = sorted(installed)
+                if not self._save(payload):
+                    return _err(self.last_error or "Sauvegarde impossible.")
+            return _ok(installees=added)
 
     # -- Recherche ------------------------------------------------------
     def _find(self, payload: dict, name: str) -> dict | None:
@@ -414,12 +473,17 @@ class RoutineManager:
         for routine in routines:
             if normalize(routine["name"]) == target:
                 return routine
+        for routine in routines:
+            if normalize(routine.get("preset_id")) == target:
+                return routine
         # Correspondance tolérante : « lance mode travail » → « mode travail ».
+        matches = []
         for routine in routines:
             candidate = normalize(routine["name"])
             if candidate and (candidate in target or target in candidate):
-                return routine
-        return None
+                matches.append(routine)
+        # « pause » ne doit pas activer arbitrairement l'une des trois pauses.
+        return matches[0] if len(matches) == 1 else None
 
     def mtime(self) -> float:
         try:
@@ -436,6 +500,7 @@ class RoutineManager:
         routines = [
             {
                 "name": item["name"],
+                "preset_id": item.get("preset_id", ""),
                 "description": item["description"],
                 "enabled": item["enabled"],
                 "etapes": len(item["steps"]),
@@ -456,6 +521,7 @@ class RoutineManager:
             return _err(f"Routine introuvable : {name}.", disponibles=[r["name"] for r in payload["routines"]])
         return _ok(
             nom=routine["name"],
+            preset_id=routine.get("preset_id", ""),
             description=routine["description"],
             active=routine["enabled"],
             planification=describe_schedule(routine["schedule"]),
@@ -494,10 +560,14 @@ class RoutineManager:
 
         with self._lock:
             payload = self._load()
-            if len(payload["routines"]) >= MAX_ROUTINES:
-                return _err(f"Trop de routines (maximum {MAX_ROUTINES}).")
+            if self.last_error:
+                return _err(self.last_error)
+            if sum(not item.get("preset_id") for item in payload["routines"]) >= MAX_ROUTINES:
+                return _err(f"Trop de routines personnelles (maximum {MAX_ROUTINES}).")
             existing = self._find(payload, clean_name)
-            if existing is not None and normalize(existing["name"]) == normalize(clean_name):
+            if existing is not None and normalize(clean_name) in {
+                normalize(existing["name"]), normalize(existing.get("preset_id")),
+            }:
                 return _err(
                     f"La routine « {existing['name']} » existe déjà. Utilise update_routine pour la modifier.",
                     existe=True,
@@ -602,6 +672,11 @@ class RoutineManager:
                 return _err(f"Routine introuvable : {name}.", disponibles=[r["name"] for r in payload["routines"]])
             steps = list(routine["steps"])
             routine_name = routine["name"]
+            if not routine["enabled"] and not dry_run:
+                return _err(
+                    f"La routine « {routine_name} » est désactivée. Active-la d'abord.",
+                    disabled=True,
+                )
 
         if not steps:
             return _err(f"La routine « {routine_name} » ne contient aucune étape.")
@@ -612,6 +687,7 @@ class RoutineManager:
         functions, _ = _registry()
         results = []
         succeeded = 0
+        notification_handled = False
 
         for index, step in enumerate(steps, start=1):
             tool = step["tool"]
@@ -638,7 +714,12 @@ class RoutineManager:
             if not isinstance(outcome, dict):
                 outcome = {"success": True, "resultat": outcome}
 
-            entry = {"etape": index, "outil": tool, "success": bool(outcome.get("success", True))}
+            # Garder le contenu réel pour la voix et éviter une notification
+            # générique en plus de celle émise (ou volontairement supprimée)
+            # par une étape de notification/alerte conditionnelle.
+            notification_handled = notification_handled or "notification" in outcome
+            entry = {"etape": index, "outil": tool,
+                     "success": bool(outcome.get("success", True)), "resultat": outcome}
             if not entry["success"]:
                 entry["error"] = outcome.get("error", "échec")
             results.append(entry)
@@ -661,6 +742,7 @@ class RoutineManager:
             etapes_totales=len(steps),
             echecs=failed,
             details=results,
+            notification_handled=notification_handled,
         )
         result["success"] = not failed
 

@@ -23,7 +23,7 @@ class RoutineTestCase(unittest.TestCase):
     def setUp(self):
         self._dir = tempfile.TemporaryDirectory()
         self.path = os.path.join(self._dir.name, "routines.json")
-        self.manager = routines.RoutineManager(self.path)
+        self.manager = routines.RoutineManager(self.path, include_presets=False)
         routines.set_tool_registry(tools.TOOL_FUNCTIONS, tools.TOOL_DECLARATIONS)
 
     def tearDown(self):

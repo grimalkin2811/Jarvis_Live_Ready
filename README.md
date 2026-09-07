@@ -49,7 +49,7 @@ réglages :
 | **Interrupt Word** | Active/désactive l'interruption vocale (dire « stop » coupe Jarvis). |
 | **Stop Speaking** | Coupe immédiatement la réponse en cours. |
 | **Audio Test** | Émet un bip de test synthétisé. |
-| **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. |
+| **Routines** | `Catalogue` affiche toutes les routines et leurs interrupteurs ; les noms du menu lancent les macros personnelles actives. `Reload` recharge le fichier. |
 
 Les réglages sont conservés dans `UI/menu_state.json` au redémarrage — ils
 s'appliquent aussi au mode console.
@@ -193,7 +193,64 @@ Une routine est un **enchaînement d'outils nommé et rejouable**. Elle ne peut
 rien faire de plus que ce que Jarvis sait déjà faire : la liste blanche est
 préservée, et les outils destructeurs y sont interdits.
 
-### Créer et lancer
+### 10 routines préconfigurées — un seul interrupteur
+
+Le catalogue est ajouté **automatiquement**, y compris sur une installation
+existante. Toutes les routines sont **désactivées par défaut** : rien ne se
+lance avant votre accord. Aucun compte, logiciel tiers, ville, chemin ou horaire
+à renseigner, et aucun appel Gemini supplémentaire pour les exécuter.
+
+**Pour activer/désactiver :**
+
+- **Orbe (`--ui`) :** menu **Routines → Catalogue** (touche `5`, puis `Catalogue`).
+- **Orbe ou overlay (`--desktop`) :** icône Jarvis dans la zone de notification → **Routines…**.
+- **À la voix, tous les modes :** « Active la routine hydratation » / « Désactive
+  la routine pause visuelle ». Jarvis utilise `update_routine(name=..., enabled=true/false)`
+  sans demander de configuration.
+
+Le panneau défile pour rendre **toutes** les routines accessibles, pas seulement
+les six raccourcis de macros personnelles du menu radial. Chaque carte affiche
+l'effet exact, les horaires et l'état enregistré. Une activation par la voix se
+reflète aussi dans le panneau.
+
+| Routine | Déclenchement préconfiguré (heure locale du PC) | Effet réel |
+|---|---|---|
+| **Briefing du matin** | Lun–ven, 9 h | Date et prochains rappels Jarvis de la journée, ou « aucun rappel prévu ». |
+| **Hydratation** | Tous les jours, toutes les 2 h de 10 h à 18 h | Notification pour penser à boire de l'eau. |
+| **Pause visuelle** | Lun–ven, toutes les 20 min de 9 h 20 à 17 h 40 | Invitation à regarder au loin pendant 20 secondes. |
+| **Pause active** | Lun–ven, toutes les heures de 9 h 55 à 17 h 55 | Invitation à changer de position ou marcher un peu, sans verrouiller le PC. |
+| **Pause déjeuner** | Lun–ven, 12 h 30 | Notification de pause, sans fermer ni réduire de fenêtre. |
+| **Fin de journée** | Lun–ven, 18 h | Checklist : enregistrer son travail, noter la suite, déconnecter. Aucune extinction automatique. |
+| **Préparer demain** | Tous les jours, 20 h 30 | Prochains rappels Jarvis du lendemain, récurrences incluses. |
+| **Revue hebdomadaire** | Vendredi, 17 h | Prochains rappels sur sept jours, aujourd'hui inclus. |
+| **Batterie faible** | Vérification toutes les 5 min | Alerte à ≤ 20 %, uniquement débranché ; au plus une notification par heure. Silencieuse sans batterie. |
+| **Espace disque** | Vérification toutes les heures | Alerte sous 10 % d'espace libre sur le disque du dossier utilisateur ; au plus une notification par 24 h. Aucun fichier supprimé. |
+
+Les briefings affichent jusqu'à trois échéances, puis le nombre restant. Ils
+lisent uniquement les **rappels locaux Jarvis**, pas un agenda Google/Outlook.
+Ils fonctionnent aussi si aucun rappel n'a encore été créé et ne modifient pas
+les rappels existants.
+
+Les notifications sont visibles dans la zone de notification Windows (ou une
+carte non modale si la zone n'est pas disponible), même lorsque Jarvis est en
+veille. En mode console Windows, des bulles natives sont envoyées en arrière-plan ;
+le texte reste aussi dans la console. Les réglages de notifications de Windows
+peuvent masquer les bulles. Les alertes batterie/disque ne produisent **aucun
+message quand tout va bien**, et leur anti-spam survit au redémarrage.
+
+**Jarvis doit rester ouvert**, avec les routines et le planificateur actifs.
+L'activation sauvegarde simplement le choix ; les actions se déclenchent ensuite
+selon les horaires. Le PC n'est jamais réveillé : une échéance de plus de cinq
+minutes est ignorée, sans rafale de rattrapage. Désactiver une routine empêche
+également son lancement manuel et les rappels qui la ciblent.
+
+Les choix sont conservés dans `~/.jarvis/routines.json`. L'installation ne
+remplace pas vos macros personnelles ni leurs modifications ; en cas d'homonyme,
+le preset reçoit un suffixe `(Jarvis)`. Une routine explicitement supprimée à la
+voix ne réapparaît pas au redémarrage. Le catalogue livré est défini dans
+`src/routine_presets.py` ; aucune copie ou import manuel n'est nécessaire.
+
+### Créer et lancer ses propres routines
 
 - « Crée une routine *mode travail* qui ouvre VS Code, met le volume à 30 et
   ouvre Spotify. »
@@ -234,6 +291,12 @@ Les routines vivent dans un fichier JSON **lisible et modifiable à la main** :
 la main est rechargé automatiquement (l'orbe le détecte en moins d'une seconde,
 ou via `Reload` dans le menu Routines).
 
+Une plage répétée peut aussi utiliser `end_time` et `interval_minutes`, par
+exemple `{"time": "09:20", "end_time": "17:40", "interval_minutes": 20,
+"days": [0, 1, 2, 3, 4]}`. Les bornes sont incluses, sans passage de minuit ;
+l'intervalle est un entier de 5 à 1 440 minutes. Les horaires simples existants
+restent compatibles.
+
 À la voix ou en ligne de commande, les étapes acceptent aussi une syntaxe
 compacte, plus facile à dicter :
 
@@ -248,7 +311,7 @@ open_application(vscode); wait(2); set_volume(30); open_website(spotify)
 | **Liste blanche** | Une étape ne peut appeler qu'un outil existant de `TOOL_FUNCTIONS`. |
 | **Outils interdits** | `shutdown_pc`, `restart_pc`, `delete_notes`, `clear_memory`, `forget`, `delete_memory`, `update_memory`, `run_routine` (pas de récursion) et les outils de gestion des routines. |
 | **Refus explicite** | Une étape interdite fait **échouer** la création, plutôt que d'être retirée en silence : tu ne peux pas croire posséder une routine qui n'en fait pas autant qu'annoncé. |
-| **Limites** | 25 étapes par routine, 50 routines, pause de 60 secondes maximum. |
+| **Limites** | 25 étapes par routine, 50 routines personnelles (en plus des 10 presets), pause de 60 secondes maximum. |
 | **Non bloquant** | Une étape en échec est rapportée mais n'interrompt pas la routine ; depuis l'orbe, l'exécution a lieu hors du thread graphique. |
 
 `list_routine_tools` renvoie à tout moment la liste des outils autorisés.
@@ -296,7 +359,7 @@ données.
 
 ## Fonctions
 
-Jarvis dispose de **75 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **79 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -308,6 +371,7 @@ Jarvis dispose de **75 outils** déclarés dans `src/tools.py` (voir
 | **Presse-papiers** | `get_clipboard`, `set_clipboard` |
 | **Date / heure** | `get_local_time`, `get_local_date`, `get_datetime`, `days_until` |
 | **Minuteurs** | `set_timer`, `list_timers`, `cancel_timer` |
+| **Notifications locales** | `notify_user`, `show_reminder_briefing`, `check_battery_alert`, `check_disk_alert` |
 | **Rappels persistants** | `set_reminder`, `list_reminders`, `cancel_reminder` |
 | **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
@@ -352,5 +416,9 @@ python -m unittest discover tests
 Les tests sont multiplateformes et ne déclenchent aucune action réelle
 (ni ouverture d'application, ni navigateur). Les tests mémoire, routines et
 rappels utilisent des fichiers et des bases SQLite temporaires, et ne
-nécessitent pas de clé Gemini réelle.
+nécessitent pas de clé Gemini réelle. Les tests des presets couvrent les dix
+routines, la migration sans écrasement, la persistance des interrupteurs, les
+plages horaires, les alertes conditionnelles et l'anti-spam. Le panneau et le
+relais de notifications Qt sont testés offscreen (clavier, défilement,
+thread graphique, erreur d'écriture), sans afficher de bulle Windows réelle.
 

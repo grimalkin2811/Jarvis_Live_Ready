@@ -80,6 +80,7 @@ class BlobPoint:
 class MenuItemSpec:
     label: str
     kind: str
+    routine_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -195,11 +196,12 @@ MENU_SPECS = [
 # Menu Routines (construit dynamiquement : il reflète le fichier routines.json)
 # ---------------------------------------------------------------------------
 
-#: Nombre maximum de routines affichées dans le menu radial.
+#: Nombre maximum de raccourcis de macros personnelles dans le menu radial.
 ROUTINE_SLOTS = 6
 
-#: Libellés fixes du menu Routines, toujours présents en fin de liste.
+#: Contrôles fixes autour des raccourcis de macros personnelles.
 ROUTINE_STATIC_ITEMS = [
+    MenuItemSpec("Catalogue", "buttonless"),
     MenuItemSpec("Reminders", "status"),
     MenuItemSpec("Reload", "buttonless"),
 ]
@@ -213,7 +215,10 @@ def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
         result = get_default_routine_manager().list_routines()
         if not result.get("success"):
             return []
-        return [str(item["name"])[:22] for item in result.get("routines", [])][:limit]
+        # Les dix presets ont leur panneau défilant : ne pas les tronquer
+        # aux six raccourcis réservés ici aux macros personnelles actives.
+        return [str(item["name"]) for item in result.get("routines", [])
+                if not item.get("preset_id") and item.get("enabled")][:limit]
     except Exception:
         return []
 
@@ -221,10 +226,8 @@ def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
 def build_routines_spec() -> MenuSpec:
     """Construit le menu Routines à partir des routines réellement définies."""
     names = _routine_names()
-    items = [MenuItemSpec(name, "pulse") for name in names]
-    if not items:
-        items = [MenuItemSpec("No routine", "status")]
-    items = items + ROUTINE_STATIC_ITEMS
+    items = [MenuItemSpec(name[:22], "pulse", routine_name=name) for name in names]
+    items = [ROUTINE_STATIC_ITEMS[0]] + items + ROUTINE_STATIC_ITEMS[1:]
     return MenuSpec(
         name="Routines",
         icon="▷",
@@ -1298,6 +1301,13 @@ class MorphingOrbWidget(QWidget):
         self._routines_cache = {}
 
     def _routines_value(self, label: str) -> str:
+        if label == "Catalogue":
+            def _count():
+                from src.routines import get_default_routine_manager
+                result = get_default_routine_manager().list_routines()
+                items = result.get("routines", [])
+                return f"{sum(bool(item.get('enabled')) for item in items)}/{len(items)}"
+            return self._cached_status("routines_count", _count)
         if label == "Reload":
             return "↻"
         if label == "No routine":
@@ -1591,7 +1601,14 @@ class MorphingOrbWidget(QWidget):
 
         def _callback() -> None:
             name, label = spec.name, item.label
-            if self._menu_is_slider(spec, item):
+            if name == "Routines" and item.routine_name:
+                self._flash(f"{label} …")
+                self._run_routine_async(item.routine_name)
+            elif name == "Routines" and label == "Catalogue":
+                from .routines_dialog import show_routines_dialog
+                self._close_radial_menu()
+                show_routines_dialog(self)
+            elif self._menu_is_slider(spec, item):
                 self._flash(f"{label}: {self._menu_slider_value(spec, item)}%")
             elif self._menu_is_option(spec, item):
                 self._menu_cycle_option(spec, item)
