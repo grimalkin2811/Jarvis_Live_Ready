@@ -84,6 +84,16 @@ async def run_headless():
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
 
+        # Routines preconfigurees : ajoutees au premier lancement, jamais ecrasees.
+        try:
+            from .routines import install_default_presets
+
+            presets = install_default_presets()
+            if presets.get("success") and presets.get("nombre"):
+                print(f"[Routines] {presets['nombre']} routine(s) preconfiguree(s) ajoutee(s).")
+        except Exception as exc:
+            print(f"[Routines] Installation impossible : {exc}")
+
         audio = AudioIO(
             mic,
             volume_provider=MENU_LIVE.get_tts_volume if MENU_LIVE else None,

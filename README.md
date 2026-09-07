@@ -49,7 +49,7 @@ réglages :
 | **Interrupt Word** | Active/désactive l'interruption vocale (dire « stop » coupe Jarvis). |
 | **Stop Speaking** | Coupe immédiatement la réponse en cours. |
 | **Audio Test** | Émet un bip de test synthétisé. |
-| **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. |
+| **Routines** | Clic sur un nom de routine pour l'activer/la désactiver (vert = active) ; `Lancer` exécute la routine survolée ; `Presets` réinstalle les routines préconfigurées ; `Reload` recharge le fichier. |
 
 Les réglages sont conservés dans `UI/menu_state.json` au redémarrage — ils
 s'appliquent aussi au mode console.
@@ -203,6 +203,49 @@ préservée, et les outils destructeurs y sont interdits.
 - « Planifie le mode travail en semaine à 9h. »
 - « Supprime la routine cinéma. » (demande une confirmation)
 
+### Routines préconfigurées (presets)
+
+Jarvis arrive avec **13 routines prêtes à l'emploi**. Elles sont ajoutées à
+`~/.jarvis/routines.json` au premier lancement, **désactivées** : rien ne se
+déclenche tant que tu ne les as pas activées. Ensuite, elles tournent toutes
+seules à l'heure dite — il n'y a rien d'autre à faire que de les activer ou de
+les désactiver.
+
+| Routine | Déclenchement | Ce qu'elle fait |
+|---|---|---|
+| **réveil** | tous les jours 07:30 | rétablit le son, volume 45, ouvre Radio France |
+| **journal du matin** | en semaine 08:00 | Google Agenda, Gmail, puis France Info |
+| **mode travail** | en semaine 09:00 | VS Code, GitHub, volume 30 |
+| **pomodoro** | en semaine 09:30 | coupe le son, dégage le bureau, minuteur 50 min |
+| **pause café** | en semaine 11:00 | remet le son, dégage le bureau, minuteur 5 min |
+| **déjeuner** | en semaine 12:30 | coupe le son, dégage le bureau, minuteur 45 min |
+| **reprise d'après-midi** | en semaine 13:30 | remet le son (35) et rouvre VS Code |
+| **bilan du soir** | en semaine 17:45 | dégage le bureau, note les 3 priorités du lendemain, ouvre Trello |
+| **mode détente** | tous les jours 19:30 | ferme Teams et Slack, volume 55, ouvre YouTube |
+| **nuit calme** | tous les jours 23:00 | arrête la lecture, volume 10, dégage le bureau |
+| **mode gaming** | vendredi et samedi 21:00 | lance Steam, volume 70 |
+| **entretien du PC** | samedi 10:00 | ouvre Téléchargements puis le nettoyage de disque |
+| **préparation de la semaine** | dimanche 18:00 | Google Agenda, Trello, note les objectifs |
+
+Trois façons de les activer — à toi de choisir :
+
+- **À la voix** : « Jarvis, active la routine mode travail. », « désactive la
+  routine pomodoro », « lance la routine bilan du soir ».
+- **Depuis l'orbe** : menu `Routines` (touche `5`) → clic sur le nom d'une
+  routine pour l'activer/la désactiver (vert = active, l'heure affichée est
+  celle du déclenchement, `⏸` = désactivée). `Lancer` exécute la routine
+  survolée immédiatement, `Presets` réinstalle celles qui manqueraient.
+- **À la main** : édite `~/.jarvis/routines.json` et passe `"enabled": true`.
+
+Règles respectées par ces presets : uniquement des outils de la liste blanche,
+aucune action destructrice, et **jamais de réécriture de ton travail** — une
+routine préconfigurée que tu as modifiée (étapes, heure, nom) n'est plus
+réinstallée ni écrasée ; une routine que tu as supprimée ne revient pas, sauf
+si tu relances explicitement `Presets` (ou `install_default_presets(restore=True)`).
+
+Comme toute routine planifiée, un preset ne se déclenche que si **Jarvis tourne
+à ce moment-là** (fenêtre de rattrapage : 5 minutes après l'heure prévue).
+
 ### Stockage
 
 Les routines vivent dans un fichier JSON **lisible et modifiable à la main** :
@@ -287,6 +330,7 @@ Dans `.env` :
 ```env
 JARVIS_ROUTINES_ENABLED=1
 JARVIS_REMINDERS_ENABLED=1
+JARVIS_PRESET_ROUTINES=1            # routines preconfigurees (0 = ne rien ajouter)
 JARVIS_ROUTINES_PATH=C:\\Users\\Moi\\.jarvis\\routines.json      # optionnel
 JARVIS_SCHEDULE_DATABASE_PATH=C:\\Users\\Moi\\.jarvis\\schedule.db  # optionnel
 ```
@@ -350,7 +394,7 @@ python -m unittest discover tests
 ```
 
 Les tests sont multiplateformes et ne déclenchent aucune action réelle
-(ni ouverture d'application, ni navigateur). Les tests mémoire, routines et
-rappels utilisent des fichiers et des bases SQLite temporaires, et ne
-nécessitent pas de clé Gemini réelle.
+(ni ouverture d'application, ni navigateur). Les tests mémoire, routines,
+routines préconfigurées et rappels utilisent des fichiers et des bases SQLite
+temporaires, et ne nécessitent pas de clé Gemini réelle.
 

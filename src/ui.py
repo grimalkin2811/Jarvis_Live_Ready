@@ -37,6 +37,18 @@ def _ui_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "UI"
 
 
+def _install_presets(restore: bool = False) -> None:
+    """Ajoute les routines préconfigurées manquantes (silencieux si rien à faire)."""
+    try:
+        from .routines import install_default_presets
+
+        result = install_default_presets(restore=restore)
+        if result.get("success") and result.get("nombre"):
+            print(f"[Routines] {result['nombre']} routine(s) preconfiguree(s) ajoutee(s).")
+    except Exception as exc:  # pragma: no cover - ne doit jamais bloquer l'UI
+        print(f"[Routines] Installation impossible : {exc}")
+
+
 class PresenceBridge(QObject):
     """Signal émis depuis n'importe quel thread, délivré dans le thread Qt."""
 
@@ -129,6 +141,9 @@ def _run_voice_loop(
             start_default_scheduler()
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
+
+        # Routines preconfigurees : ajoutees au premier lancement, jamais ecrasees.
+        _install_presets()
 
         audio = AudioIO(
             mic,

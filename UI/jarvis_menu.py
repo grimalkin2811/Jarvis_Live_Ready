@@ -198,14 +198,27 @@ MENU_SPECS = [
 #: Nombre maximum de routines affichées dans le menu radial.
 ROUTINE_SLOTS = 6
 
+#: Plafond de lecture du fichier (les routines sont affichées page par page).
+ROUTINE_MAX = 60
+
 #: Libellés fixes du menu Routines, toujours présents en fin de liste.
 ROUTINE_STATIC_ITEMS = [
     MenuItemSpec("Reminders", "status"),
+    MenuItemSpec("Lancer", "buttonless"),
+    MenuItemSpec("Presets", "buttonless"),
     MenuItemSpec("Reload", "buttonless"),
 ]
 
+#: Libellés d'action (ni une routine, ni déclinables en toggle).
+ROUTINE_ACTION_LABELS = {"Reminders", "Lancer", "Presets", "Reload", "No routine"}
 
-def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
+
+def _is_routine_label(label: str) -> bool:
+    """Vrai si le libellé correspond à une routine (et non à une action)."""
+    return label not in ROUTINE_ACTION_LABELS and not label.startswith("Page ")
+
+
+def _routine_names(limit: int = ROUTINE_SLOTS, offset: int = 0) -> List[str]:
     """Noms des routines enregistrées, sans jamais faire échouer l'UI."""
     try:
         from src.routines import get_default_routine_manager
@@ -213,18 +226,26 @@ def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
         result = get_default_routine_manager().list_routines()
         if not result.get("success"):
             return []
-        return [str(item["name"])[:22] for item in result.get("routines", [])][:limit]
+        return [str(item["name"])[:22] for item in result.get("routines", [])][offset:offset + limit]
     except Exception:
         return []
 
 
-def build_routines_spec() -> MenuSpec:
+def build_routines_spec(page: int = 0) -> MenuSpec:
     """Construit le menu Routines à partir des routines réellement définies."""
-    names = _routine_names()
-    items = [MenuItemSpec(name, "pulse") for name in names]
+    names = _routine_names(limit=ROUTINE_MAX)
+    pages = max(1, math.ceil(len(names) / ROUTINE_SLOTS))
+    page = max(0, int(page)) % pages
+    visible = names[page * ROUTINE_SLOTS:(page + 1) * ROUTINE_SLOTS]
+
+    # Chaque routine est un toggle : un clic l'active ou la désactive.
+    items = [MenuItemSpec(name, "toggle") for name in visible]
     if not items:
         items = [MenuItemSpec("No routine", "status")]
-    items = items + ROUTINE_STATIC_ITEMS
+    actions = list(ROUTINE_STATIC_ITEMS)
+    if pages > 1:
+        actions.append(MenuItemSpec(f"Page {page + 1}/{pages}", "buttonless"))
+    items = items + actions
     return MenuSpec(
         name="Routines",
         icon="▷",
@@ -306,6 +327,12 @@ class MorphingOrbWidget(QWidget):
         self._routines_mtime = -1.0
         self._routines_checked_at = -10.0
         self._routines_cache: dict[str, str] = {}
+        # Menu Routines : page courante, état activé/désactivé et routine
+        # survolée (cible de l'action « Lancer »).
+        self._routine_page = 0
+        self._routine_enabled: dict[str, bool] = {}
+        self._routine_states_loaded = False
+        self._routine_focus_name: str | None = None
         self._menu_hold_seconds = 0.30
         self._menu_release_seconds = 0.18
         self._menu_exit_seconds = 0.24
@@ -992,6 +1019,8 @@ class MorphingOrbWidget(QWidget):
                     self._menu_focus_index = 0
                 else:
                     self._menu_focus_index = (base + step) % count
+                # Au clavier aussi, on retient la routine sélectionnée.
+                self._track_routine_focus(self._menu_spec(), self._menu_focus_index)
                 event.accept()
                 return
             if key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
@@ -1284,22 +1313,43 @@ class MorphingOrbWidget(QWidget):
         try:
             from src.routines import get_default_routine_manager
 
-            mtime = get_default_routine_manager().mtime()
+            manager = get_default_routine_manager()
+            mtime = manager.mtime()
         except Exception:
             return
-        if mtime == self._routines_mtime:
+        if mtime == self._routines_mtime and self._routine_states_loaded:
             return
         self._routines_mtime = mtime
+        self._routine_states_loaded = True
+        self._routines_cache = {}
+        try:
+            result = manager.list_routines()
+            self._routine_enabled = {
+                str(item["name"])[:22]: bool(item.get("enabled"))
+                for item in result.get("routines", [])
+            }
+        except Exception:
+            pass
+        self._rebuild_routines_menu()
+
+    def _rebuild_routines_menu(self) -> None:
+        """Reconstruit le menu Routines (page courante conservée)."""
         try:
             index = next(i for i, spec in enumerate(MENU_SPECS) if spec.name == "Routines")
         except StopIteration:
             return
-        MENU_SPECS[index] = build_routines_spec()
+        MENU_SPECS[index] = build_routines_spec(self._routine_page)
         self._routines_cache = {}
 
     def _routines_value(self, label: str) -> str:
         if label == "Reload":
             return "↻"
+        if label == "Lancer":
+            return "▷"
+        if label == "Presets":
+            return "✚"
+        if label.startswith("Page "):
+            return label.split(" ", 1)[1]
         if label == "No routine":
             return "—"
         if label == "Reminders":
@@ -1322,13 +1372,78 @@ class MorphingOrbWidget(QWidget):
                 if str(item["name"])[:22] == label:
                     planning = str(item.get("planification") or "aucune")
                     hour = re.search(r"\d{1,2}:\d{2}", planning)
-                    # Une routine planifiée affiche son heure, sinon un simple « lire ».
-                    value = f"⏱ {hour.group(0)}" if hour else "▶"
+                    # Une routine activée affiche son heure, sinon un « ⏸ »
+                    # (désactivée) ou un simple « ▶ » (sans planification).
+                    active = bool(item.get("enabled"))
+                    if hour:
+                        value = f"{'⏱' if active else '⏸'} {hour.group(0)}"
+                    else:
+                        value = "▶" if active else "⏸"
                     break
         except Exception:
             value = "▶"
         self._routines_cache[label] = value
         return value
+
+    def _toggle_routine(self, label: str, value: bool) -> None:
+        """Active/désactive une routine (son déclenchement automatique)."""
+        try:
+            from src.routines import get_default_routine_manager
+
+            result = get_default_routine_manager().update_routine(label, enabled=value)
+        except Exception as exc:
+            self._flash(f"{label} : {exc}")
+            return
+        if not result.get("success"):
+            self._flash(f"{label} : {result.get('error') or 'échec'}")
+            return
+
+        # Mise à jour immédiate : le rendu ne doit pas attendre le rechargement.
+        self._routine_enabled[label] = value
+        self._routines_cache = {}
+        self._routines_mtime = -1.0
+        self._routines_checked_at = -10.0
+
+        planning = str(result.get("planification") or "aucune")
+        if value:
+            suffix = f" — {planning}" if planning != "aucune" else ""
+            self._flash(f"Routine « {label} » activée{suffix}")
+        else:
+            self._flash(f"Routine « {label} » désactivée")
+
+    def _restore_presets(self) -> None:
+        """Réinstalle les routines préconfigurées manquantes (hors thread Qt)."""
+
+        def _worker() -> None:
+            try:
+                from src.routines import install_default_presets
+
+                result = install_default_presets(restore=True)
+                if result.get("success"):
+                    count = int(result.get("nombre") or 0)
+                    message = f"Presets : {count} ajouté(s)" if count else "Presets : déjà en place"
+                else:
+                    message = f"Presets : {result.get('error') or 'indisponible'}"
+            except Exception as exc:
+                message = f"Presets : {exc}"
+            self._menu_action_flash = message[:80]
+            self._menu_action_flash_time = self.time
+            self._routine_page = 0
+            self._routines_mtime = -1.0
+            self._routines_checked_at = -10.0
+
+        threading.Thread(target=_worker, name="jarvis-presets", daemon=True).start()
+        self._flash("Presets …")
+
+    def _track_routine_focus(self, spec: MenuSpec | None, index: int) -> None:
+        """Mémorise la routine survolée/sélectionnée (cible de « Lancer »)."""
+        if spec is None or spec.name != "Routines":
+            return
+        if index < 0 or index >= len(self._menu_nodes):
+            return
+        label = self._menu_nodes[index].label
+        if _is_routine_label(label):
+            self._routine_focus_name = label
 
     def _run_routine_async(self, name: str) -> None:
         """Lance une routine hors du thread Qt : l'orbe ne doit jamais figer."""
@@ -1387,6 +1502,10 @@ class MorphingOrbWidget(QWidget):
                 manager = get_default_memory_manager()
                 return bool(manager.enabled and manager.available)
             return self._cached_status("memory_enabled", _enabled) == "True"
+        # Routines : état activé/désactivé, lu dans un cache (pas de lecture
+        # de fichier à chaque image).
+        if name == "Routines" and _is_routine_label(label):
+            return bool(self._routine_enabled.get(label, False))
         return False
 
     def _menu_set_toggle(self, spec: MenuSpec, item: MenuItemSpec, value: bool) -> None:
@@ -1431,6 +1550,8 @@ class MorphingOrbWidget(QWidget):
                 pass
             self._invalidate_status_cache()
             self._flash("Mémoire longue durée : " + ("activée" if value else "désactivée"))
+        elif name == "Routines" and _is_routine_label(label):
+            self._toggle_routine(label, value)
         self._save_menu_state()
 
     def _menu_slider_value(self, spec: MenuSpec, item: MenuItemSpec) -> int:
@@ -1609,7 +1730,7 @@ class MorphingOrbWidget(QWidget):
                     "Interrupt Word",
                     "Startup",
                     "Long-term Memory",
-                }:
+                } or (name == "Routines" and _is_routine_label(label)):
                     pass
                 else:
                     new_value = not current
@@ -1642,9 +1763,23 @@ class MorphingOrbWidget(QWidget):
             elif name == "Routines" and label == "Reload":
                 self._routines_mtime = -1.0
                 self._routines_checked_at = -10.0
+                self._routine_states_loaded = False
                 self._routines_cache = {}
                 self._invalidate_status_cache()
                 self._flash("Routines rechargées")
+            elif name == "Routines" and label == "Presets":
+                self._restore_presets()
+            elif name == "Routines" and label.startswith("Page "):
+                self._routine_page += 1
+                self._rebuild_routines_menu()
+                self._flash("Routines : page suivante")
+            elif name == "Routines" and label == "Lancer":
+                target = self._routine_focus_name or next(iter(_routine_names(1)), None)
+                if not target:
+                    self._flash("Aucune routine à lancer")
+                else:
+                    self._flash(f"{target} …")
+                    self._run_routine_async(target)
             elif name == "Routines" and label in {"No routine", "Reminders"}:
                 if label == "Reminders":
                     count = self._menu_value(spec, item)
@@ -1813,6 +1948,8 @@ class MorphingOrbWidget(QWidget):
 
         self._menu_hot_node = hover_index
         self._set_pointer_cursor(hover_index >= 0)
+        # Mémorise la routine survolée : l'action « Lancer » s'en sert.
+        self._track_routine_focus(spec, hover_index)
 
     def _set_pointer_cursor(self, active: bool) -> None:
         """Curseur « main » au survol d'une cible cliquable."""

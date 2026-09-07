@@ -31,6 +31,11 @@ Les étapes peuvent aussi être décrites par une mini-syntaxe très pratique à
 dicter, acceptée par les outils vocaux ::
 
     open_application(vscode); wait(2); set_volume(30); open_website(spotify)
+
+Enfin, Jarvis livre un catalogue de **routines préconfigurées**
+(``src/routine_presets.py`` : réveil, mode travail, pomodoro, nuit calme…),
+ajoutées désactivées au premier lancement puis laissées à la main de
+l'utilisateur — voir ``install_presets`` / ``install_default_presets``.
 """
 
 from __future__ import annotations
@@ -41,6 +46,7 @@ import re
 import threading
 import time
 
+from .routine_presets import preset_names, sync_presets
 from .timeparse import describe_schedule, normalize, parse_schedule
 
 DEFAULT_DATA_DIR = os.environ.get(
@@ -680,6 +686,57 @@ class RoutineManager:
             payload = self._load()
         return [item for item in payload["routines"] if item["enabled"] and item["schedule"]]
 
+    # -- Routines préconfigurées --------------------------------------
+    def install_presets(self, restore: bool = False) -> dict:
+        """Ajoute les routines préconfigurées manquantes.
+
+        Ne modifie **jamais** une routine existante : un preset déjà présent
+        (même renommé ou réécrit par l'utilisateur) est laissé tel quel, et un
+        preset supprimé n'est pas réinstallé — sauf avec ``restore=True``.
+        """
+        if not self.enabled:
+            return _err("Routines désactivées.")
+
+        with self._lock:
+            payload = self._load()
+            missing, meta = sync_presets(payload, restore=restore)
+            unchanged = not missing and payload.get("presets") == meta
+            if unchanged:
+                return _ok(
+                    ajoutees=[],
+                    nombre=0,
+                    deja_en_place=True,
+                    total=len(payload["routines"]),
+                    catalogue=preset_names(),
+                )
+
+            refused: list[str] = []
+            added: list[str] = []
+            for routine in missing:
+                if len(payload["routines"]) >= MAX_ROUTINES:
+                    break
+                steps, errors = parse_steps(routine["steps"])
+                if fatal_errors(errors) or not steps:
+                    refused.append(routine["name"])
+                    continue
+                routine = dict(routine)
+                routine["steps"] = steps
+                payload["routines"].append(routine)
+                added.append(routine["name"])
+
+            payload["presets"] = meta
+            if not self._save(payload):
+                return _err(self.last_error or "Sauvegarde impossible.")
+
+        return _ok(
+            ajoutees=added,
+            nombre=len(added),
+            refusees=refused,
+            total=len(payload["routines"]),
+            catalogue=preset_names(),
+            fichier=self.path,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Instance par défaut
@@ -708,3 +765,17 @@ def set_default_routine_manager(manager: RoutineManager | None) -> None:
     global _DEFAULT_MANAGER
     with _DEFAULT_LOCK:
         _DEFAULT_MANAGER = manager
+
+
+def install_default_presets(restore: bool = False) -> dict:
+    """Installe les routines préconfigurées du gestionnaire par défaut.
+
+    Appelé au démarrage de Jarvis (console et orbe). Ne lève jamais
+    d'exception : une installation impossible n'empêche pas Jarvis de tourner.
+    """
+    if os.environ.get("JARVIS_PRESET_ROUTINES", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return _err("Routines préconfigurées désactivées.", desactive=True)
+    try:
+        return get_default_routine_manager().install_presets(restore=restore)
+    except Exception as exc:
+        return _err(str(exc))
