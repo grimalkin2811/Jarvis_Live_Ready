@@ -69,9 +69,10 @@ class ScreenHaloOverlay(QWidget):
         self._fade_animation.setDuration(260)
         self._fade_animation.finished.connect(self._on_fade_finished)
 
+        # Timer de pulsation : démarré uniquement quand l'overlay est visible
+        # (voir _animate_to / show_overlay), suspendu une fois masqué.
         self._pulse_timer = QTimer(self)
         self._pulse_timer.timeout.connect(self._tick)
-        self._pulse_timer.start(16)
 
     def _tick(self) -> None:
         self._phase = (self._phase + 0.045) % (math.tau * 8.0)
@@ -81,6 +82,10 @@ class ScreenHaloOverlay(QWidget):
     def _on_fade_finished(self) -> None:
         if self._animation_target <= 0.0 and self._overlay_intensity <= 0.001:
             super().hide()
+            # Overlay totalement invisible : on suspend le timer de pulsation
+            # pour ne pas réveiller le CPU 60 fois par seconde pour rien.
+            if self._pulse_timer.isActive():
+                self._pulse_timer.stop()
 
     def _animate_to(self, target: float, duration: int = 260, presence_state: str | None = None) -> None:
         target = _clamp(target, 0.0, 1.0)
@@ -90,6 +95,8 @@ class ScreenHaloOverlay(QWidget):
 
         if target > 0.0 and not self.isVisible():
             self.show_overlay()
+        if target > 0.0 and not self._pulse_timer.isActive():
+            self._pulse_timer.start(16)
 
         self._fade_animation.stop()
         self._fade_animation.setDuration(duration)
@@ -100,6 +107,8 @@ class ScreenHaloOverlay(QWidget):
     def show_overlay(self) -> None:
         super().showFullScreen()
         self.raise_()
+        if not self._pulse_timer.isActive():
+            self._pulse_timer.start(16)
 
     def show_listening(self) -> None:
         self._animate_to(0.62, duration=220, presence_state="listening")
@@ -109,6 +118,11 @@ class ScreenHaloOverlay(QWidget):
 
     def show_speaking(self) -> None:
         self._animate_to(1.0, duration=220, presence_state="speaking")
+
+    def show_idle(self) -> None:
+        """Halo discret permanent (affichage manuel depuis la zone de
+        notification) : Jarvis est présent mais en veille."""
+        self._animate_to(0.30, duration=320, presence_state="idle")
 
     def hide_overlay(self) -> None:
         self._animate_to(0.0, duration=280, presence_state="hidden")

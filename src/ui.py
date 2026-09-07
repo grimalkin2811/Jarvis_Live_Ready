@@ -19,12 +19,13 @@ import threading
 import traceback
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
 from .audio import AudioIO
 from .config import load_config
-from .gemini_live import GeminiLive
+from .gemini_live import AuthError, GeminiLive
 from .memory import MemoryManager, set_default_memory_manager
 from .scheduler import start_default_scheduler
 from UI import appearance_actions
@@ -99,6 +100,12 @@ def _run_voice_loop(
 
     async def _main():
         nonlocal gemini, audio
+        # Tant que le modèle wake word n'est pas chargé, l'UI affiche un état
+        # « initialisation » : l'utilisateur sait qu'il ne doit pas parler
+        # dans le vide.
+        if presence_hook is not None:
+            presence_hook("loading")
+
         memory_manager = MemoryManager(
             config.memory_database_path,
             enabled=config.memory_enabled,
@@ -119,6 +126,8 @@ def _run_voice_loop(
             voice_hook=voice_hook,
             mic_enabled=menu_state.LIVE.get_mic_enabled,
             wake_threshold=menu_state.LIVE.get_wake_threshold,
+            volume_provider=menu_state.LIVE.get_tts_volume,
+            listen_mode_provider=menu_state.LIVE.get_listen_mode,
         )
         gemini = GeminiLive(
             config.api_key,
@@ -129,6 +138,9 @@ def _run_voice_loop(
             on_interrupted=audio.clear_output,
             on_speaking=lambda: _on_speaking(audio, presence_hook),
             response_mode_provider=menu_state.response_mode_label_from_live,
+            voice_provider=menu_state.LIVE.get_voice_name,
+            voice_version_provider=menu_state.LIVE.get_voice_version,
+            speech_pace_provider=menu_state.LIVE.get_speech_pace,
             memory_manager=memory_manager,
         )
 
@@ -137,23 +149,33 @@ def _run_voice_loop(
         print("Pret. Parle dans le micro.")
 
         while not stop_event.is_set():
+            gemini.reconnect_requested = False
             try:
                 await gemini.connect()
                 await gemini.receive_loop()
             except asyncio.CancelledError:
                 break
+            except AuthError as exc:
+                print(f"\n[Jarvis] {exc}")
+                print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
+                break
             except Exception:
-                print("\n[Jarvis] Connexion perdue ou erreur:")
-                traceback.print_exc()
-                audio.awake = False
-                if presence_hook is not None:
-                    presence_hook("hidden")
-                try:
-                    audio.wake_model.reset()
-                except Exception:
+                if gemini.reconnect_requested:
+                    # Fermeture volontaire (changement de voix) : on
+                    # reconnexionne immédiatement, en silence.
                     pass
-                print("[Jarvis] Reconnexion dans 5 secondes...")
-                await asyncio.sleep(5)
+                else:
+                    print("\n[Jarvis] Connexion perdue ou erreur:")
+                    traceback.print_exc()
+                    audio.awake = False
+                    if presence_hook is not None:
+                        presence_hook("hidden")
+                    try:
+                        audio.wake_model.reset()
+                    except Exception:
+                        pass
+                    print("[Jarvis] Reconnexion dans 5 secondes...")
+                    await asyncio.sleep(5)
             else:
                 await asyncio.sleep(0.1)
             finally:
@@ -161,6 +183,8 @@ def _run_voice_loop(
                     await gemini.close()
                 except Exception:
                     pass
+            if gemini.reconnect_requested and not stop_event.is_set():
+                continue
 
     try:
         loop.run_until_complete(_main())
@@ -186,29 +210,102 @@ def _start_voice(config, presence_hook, voice_hook, stop_event) -> threading.Thr
     return thread
 
 
-def run_ui(mode: str = "desktop") -> int:
-    config = load_config()
+def _build_tray_icon(on_activate, on_quit):
+    """Icône de zone de notification : moyen visible et fiable de quitter
+    Jarvis, indispensable en mode --desktop où aucune fenêtre ne réagit à
+    Échap."""
+    try:
+        from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return None
+
+        pixmap = QPixmap(64, 64)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(70, 180, 255))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(10, 10, 44, 44)
+        painter.setBrush(QColor(225, 250, 255))
+        painter.drawEllipse(24, 24, 16, 16)
+        painter.end()
+
+        tray = QSystemTrayIcon(QIcon(pixmap))
+        tray.setToolTip("Jarvis — assistant vocal")
+        menu = QMenu()
+        show_action = menu.addAction("Afficher Jarvis")
+        show_action.triggered.connect(on_activate)
+        menu.addSeparator()
+        quit_action = menu.addAction("Quitter Jarvis")
+        quit_action.triggered.connect(on_quit)
+        tray.setContextMenu(menu)
+        tray.show()
+        return tray
+    except Exception:
+        return None
+
+
+def run_ui(mode: str = "desktop") -> int:
     app = QApplication(sys.argv)
+
+    try:
+        config = load_config()
+    except Exception as exc:
+        print(f"[Jarvis] {exc}")
+        try:
+            from PySide6.QtWidgets import QMessageBox
+
+            box = QMessageBox()
+            box.setIcon(QMessageBox.Critical)
+            box.setWindowTitle("Jarvis — configuration manquante")
+            box.setText(str(exc))
+            box.setInformativeText(
+                "Lance setup.bat pour créer le fichier .env "
+                "(nom, clé Gemini API)."
+            )
+            box.exec()
+        except Exception:
+            pass
+        return 1
 
     appearance_state = appearance_actions.load_state(
         str(_ui_dir() / "appearance_state.json")
     )
 
     stop_event = threading.Event()
+    tray = None
 
     if mode == "ui":
+        from UI import jarvis_menu
         from UI.jarvis_menu import MorphingOrbWidget
 
-        # L'orbe réagit au niveau micro (énergie vocale).
+        # L'orbe réagit au niveau micro (énergie vocale) et à l'état vocal.
         voice_bridge = VoiceEnergyRouter()
         voice_hook = voice_bridge.handle_level
 
         window = MorphingOrbWidget()
         window.showFullScreen()
 
-        # Pas d'overlay halo en mode ui : l'orbe joue ce rôle.
-        voice_thread = _start_voice(config, None, voice_hook, stop_event)
+        presence_hook = jarvis_menu.set_presence_state
+        voice_thread = _start_voice(config, presence_hook, voice_hook, stop_event)
+
+        def _activate() -> None:
+            window.showFullScreen()
+            window.raise_()
+            window.activateWindow()
+
+        tray = _build_tray_icon(_activate, app.quit)
+
+        def _persist_orb_state() -> None:
+            # Quit via la zone de notification : closeEvent n'est pas
+            # déclenché automatiquement, on force la sauvegarde.
+            try:
+                window.close()
+            except Exception:
+                pass
+
+        app.aboutToQuit.connect(_persist_orb_state)
     else:
         overlay = ScreenHaloOverlay(appearance_state)
         bridge = PresenceBridge()
@@ -218,18 +315,36 @@ def run_ui(mode: str = "desktop") -> int:
         voice_hook = None
         voice_thread = _start_voice(config, bridge.presence_changed.emit, voice_hook, stop_event)
 
+        # En mode overlay, il n'y a aucune fenêtre interactive : sans icône
+        # de notification, il n'existe aucun moyen propre de quitter.
+        app.setQuitOnLastWindowClosed(False)
+        tray = _build_tray_icon(overlay.show_idle, app.quit)
+        if tray is None:
+            print("[Jarvis] Aucune icône de notification disponible : "
+                  "utilise Ctrl+C dans cette console pour quitter.")
+
     def _shutdown() -> None:
         stop_event.set()
         voice_thread.join(timeout=3.0)
 
     app.aboutToQuit.connect(_shutdown)
 
-    print("[Jarvis] Interface démarrée. Échap pour quitter (mode ui).")
+    if mode == "ui":
+        print("[Jarvis] Interface démarrée. Échap pour quitter, "
+              "clic droit sur l'icône de notification pour afficher/quitter.")
+    else:
+        print("[Jarvis] Overlay démarré. Icône de notification → Quitter "
+              "(ou Ctrl+C dans cette console).")
 
     try:
         return app.exec()
     finally:
         _shutdown()
+        if tray is not None:
+            try:
+                tray.hide()
+            except Exception:
+                pass
 
 
 def main() -> int:

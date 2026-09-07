@@ -15,12 +15,35 @@ Exemples :
 import argparse
 import asyncio
 import sys
+from pathlib import Path
 
 from .audio import AudioIO
 from .config import load_config
-from .gemini_live import GeminiLive
+from .gemini_live import AuthError, GeminiLive
 from .memory import MemoryManager, set_default_memory_manager
 from .scheduler import start_default_scheduler
+
+# Pont vers les réglages du menu radial. Il est optionnel : sans PySide6
+# (mode console minimal), Jarvis fonctionne avec les valeurs par défaut.
+try:
+    from UI.menu_state import LIVE as MENU_LIVE
+    from UI.menu_state import response_mode_label_from_live as MENU_RESPONSE_MODE
+except Exception:  # pragma: no cover - PySide6 absent
+    MENU_LIVE = None
+    MENU_RESPONSE_MODE = None
+
+
+def _load_menu_bridge() -> None:
+    """Charge les réglages du menu radial (UI/menu_state.json) pour que la
+    voix, le volume, le micro, etc. restent cohérents entre le mode console
+    et le mode orbe. Échoue silencieusement en cas d'absence."""
+    try:
+        from UI import menu_state as ms
+
+        path = Path(__file__).resolve().parent.parent / "UI" / "menu_state.json"
+        ms.load_state(str(path))
+    except Exception:
+        pass
 
 
 async def run_headless():
@@ -28,6 +51,8 @@ async def run_headless():
         config = load_config()
     except Exception as exc:
         raise RuntimeError("La configuration Jarvis est manquante. Relance setup.bat.") from exc
+
+    _load_menu_bridge()
 
     loop = asyncio.get_running_loop()
     gemini = None
@@ -54,7 +79,13 @@ async def run_headless():
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
 
-        audio = AudioIO(mic)
+        audio = AudioIO(
+            mic,
+            volume_provider=MENU_LIVE.get_tts_volume if MENU_LIVE else None,
+            listen_mode_provider=MENU_LIVE.get_listen_mode if MENU_LIVE else None,
+            mic_enabled=MENU_LIVE.get_mic_enabled if MENU_LIVE else None,
+            wake_threshold=MENU_LIVE.get_wake_threshold if MENU_LIVE else None,
+        )
         gemini = GeminiLive(
             config.api_key,
             config.model,
@@ -63,6 +94,10 @@ async def run_headless():
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
             on_speaking=audio.begin_speaking,
+            response_mode_provider=MENU_RESPONSE_MODE,
+            voice_provider=MENU_LIVE.get_voice_name if MENU_LIVE else None,
+            voice_version_provider=MENU_LIVE.get_voice_version if MENU_LIVE else None,
+            speech_pace_provider=MENU_LIVE.get_speech_pace if MENU_LIVE else None,
             memory_manager=memory_manager,
         )
 
@@ -71,22 +106,30 @@ async def run_headless():
         print("Pret. Parle dans le micro. Ctrl+C pour arreter.")
 
         while True:
+            gemini.reconnect_requested = False
             try:
                 await gemini.connect()
                 await gemini.receive_loop()
             except (asyncio.CancelledError, KeyboardInterrupt):
                 break
+            except AuthError as exc:
+                print(f"\n[Jarvis] {exc}")
+                print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
+                break
             except Exception as exc:
                 import traceback
-                print(f"\n[Jarvis] Connexion perdue ou erreur:")
-                traceback.print_exc()
-                audio.awake = False
-                try:
-                    audio.wake_model.reset()
-                except Exception:
+                if gemini.reconnect_requested:
                     pass
-                print("[Jarvis] Reconnexion dans 5 secondes...")
-                await asyncio.sleep(5)
+                else:
+                    print(f"\n[Jarvis] Connexion perdue ou erreur:")
+                    traceback.print_exc()
+                    audio.awake = False
+                    try:
+                        audio.wake_model.reset()
+                    except Exception:
+                        pass
+                    print("[Jarvis] Reconnexion dans 5 secondes...")
+                    await asyncio.sleep(5)
             else:
                 # Reconnexion immédiate et silencieuse après une fermeture normale
                 # pour préserver l'état éveillé et la fenêtre de 8 secondes de l'utilisateur.

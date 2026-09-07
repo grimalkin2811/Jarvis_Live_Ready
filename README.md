@@ -18,6 +18,23 @@ Jarvis propose désormais une interface reprenant l'orbe morphing de `grimalkin2
 | `Jarvis.bat --ui` | Orbe morphing interactif + menus radiaux + assistant vocal. |
 | `Jarvis.bat --desktop` | Overlay halo plein écran (transparent aux clics) reflétant l'état : écoute / parole / veille. |
 
+### Retour visuel permanent
+
+L'orbe reflète en continu l'état de Jarvis, sans regarder la console :
+
+* un libellé discret sous l'orbe indique **INITIALISATION…** (chargement du
+  modèle), **À L'ÉCOUTE**, **RÉFLEXION…**, **RÉPONSE EN COURS** ou
+  **MICRO COUPÉ** ;
+* l'orbe respire plus fort quand Jarvis écoute ou parle, et s'atténue quand
+  le micro est coupé ;
+* chaque action dans un menu affiche une **pastille de confirmation** au-dessus
+  de l'orbe (ex. `Micro : coupé`, `mode travail ✓`) — vous savez toujours si
+  votre clic a été pris en compte ;
+* l'icône de notification (tray) permet d'afficher Jarvis ou de le quitter
+  proprement, y compris en mode `--desktop` qui n'a pas de fenêtre interactive.
+
+### Menus radiaux
+
 En mode `--ui`, survole les bords de l'orbe pour déplier les menus radiaux
 (Voice, System, Memory, Appearance, Routines) et interagis directement avec les
 réglages :
@@ -25,15 +42,43 @@ réglages :
 | Contrôle | Interaction |
 |---|---|
 | **Toggles** | Clic pour activer/désactiver (indicateur vert = actif). |
-| **Sliders** (TTS, Vitesse, Hotword, Transparence) | Glisse à la souris ou molette pour ajuster la valeur ; une barre affiche le niveau. |
-| **Options** (Voice Select, Shortcuts) | Clic ou molette pour parcourir les choix. |
+| **Sliders** (Volume, Vitesse, Hotword, Transparence) | Glisse à la souris (l'axe s'adapte au menu) ou molette (pas fin de 2 %) ; une barre affiche le niveau. |
+| **Options** (Voice Select) | Clic ou molette (dans les deux sens) pour parcourir les choix. |
 | **Response Mode** | Clic pour changer le mode de réponse (injecté dans le prompt Gemini). |
 | **Mic Toggle** | Coupe/rétablit le micro en direct. |
-| **Audio Test** | Émet un bip de test. |
+| **Audio Test** | Émet un bip de test synthétisé. |
 | **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. |
 
-Les réglages sont conservés dans `UI/menu_state.json` au redémarrage.
-`Échap` pour quitter.
+Les réglages sont conservés dans `UI/menu_state.json` au redémarrage — ils
+s'appliquent aussi au mode console.
+
+### Raccourcis clavier (mode `--ui`)
+
+| Touche | Effet |
+|---|---|
+| `1` … `5` | Ouvre directement le menu radial correspondant. |
+| Flèches / `Entrée` | Navigue dans le menu ouvert et active l'item sélectionné. |
+| `M` | Coupe/rétablit le micro instantanément. |
+| `Échap` | Ferme d'abord le menu ouvert ; un second appui quitte Jarvis. |
+| Clic droit | Ferme le menu radial ouvert. |
+
+### Réglages réellement appliqués
+
+Chaque contrôle du menu agit vraiment :
+
+| Réglage | Effet |
+|---|---|
+| **TTS Volume** | Gain audio appliqué en temps réel sur la voix de Jarvis. |
+| **Voice Select** | Change la voix prébuilt Gemini (reconnexion automatique et silencieuse de la session). |
+| **Speech Speed** | Consigne de débit injectée dans le prompt système (posé / normal / vif). |
+| **Always Listening** | Écoute continue : Jarvis reste actif sans dire « Hey Jarvis » (désactivé par défaut). |
+| **Startup** | Crée/supprime réellement le lanceur dans le dossier de démarrage Windows. |
+| **Long-term Memory** | Active/désactive la mémoire persistante en direct. |
+| **Reset Settings** | Remet les réglages du menu à leurs valeurs par défaut. |
+
+Les compteurs (mémoire, rappels, routines) sont lus au plus une fois par
+seconde et mis en cache : le rendu de l'orbe reste fluide (~60 FPS) sans
+solliciter SQLite à chaque image.
 
 ## Mémoire persistante locale
 
