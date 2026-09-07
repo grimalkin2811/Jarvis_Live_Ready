@@ -289,6 +289,16 @@ def run_ui(mode: str = "desktop") -> int:
             pass
         return 1
 
+    # Routines préconfigurées : installées avant la première construction du
+    # menu radial, sans jamais écraser les routines existantes
+    # (JARVIS_PRESET_ROUTINES=0 pour refuser).
+    try:
+        from .routines import install_default_presets
+
+        install_default_presets()
+    except Exception as exc:
+        print(f"[Jarvis] Routines préconfigurées ignorées : {exc}")
+
     appearance_state = appearance_actions.load_state(
         str(_ui_dir() / "appearance_state.json")
     )

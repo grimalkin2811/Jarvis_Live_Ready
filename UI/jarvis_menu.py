@@ -196,7 +196,8 @@ MENU_SPECS = [
 # ---------------------------------------------------------------------------
 
 #: Nombre maximum de routines affichées dans le menu radial.
-ROUTINE_SLOTS = 6
+#: Les autres restent disponibles à la voix (« lance la routine bonjour »).
+ROUTINE_SLOTS = 8
 
 #: Libellés fixes du menu Routines, toujours présents en fin de liste.
 ROUTINE_STATIC_ITEMS = [
@@ -1322,6 +1323,10 @@ class MorphingOrbWidget(QWidget):
                 if str(item["name"])[:22] == label:
                     planning = str(item.get("planification") or "aucune")
                     hour = re.search(r"\d{1,2}:\d{2}", planning)
+                    if not item.get("enabled", True):
+                        # Routine désactivée : elle ne s'exécute plus.
+                        value = f"⏸ {hour.group(0)}" if hour else "⏸"
+                        break
                     # Une routine planifiée affiche son heure, sinon un simple « lire ».
                     value = f"⏱ {hour.group(0)}" if hour else "▶"
                     break

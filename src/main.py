@@ -54,6 +54,20 @@ async def run_headless():
 
     _load_menu_bridge()
 
+    # Routines préconfigurées : ajoutées une première fois, sans jamais
+    # écraser les routines existantes (JARVIS_PRESET_ROUTINES=0 pour refuser).
+    try:
+        from .routines import install_default_presets
+
+        result = install_default_presets()
+        if result.get("success") and result.get("installees"):
+            print(
+                f"[Jarvis] {len(result['installees'])} routines préconfigurées disponibles "
+                '(« quelles sont mes routines ? »).'
+            )
+    except Exception as exc:
+        print(f"[Jarvis] Routines préconfigurées ignorées : {exc}")
+
     loop = asyncio.get_running_loop()
     gemini = None
     audio = None

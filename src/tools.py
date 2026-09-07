@@ -1705,6 +1705,11 @@ def list_routine_tools():
     return _ok(outils=available_tools(), interdits=sorted(FORBIDDEN_TOOLS))
 
 
+def restore_preset_routines():
+    """Réinstalle les routines préconfigurées supprimées ou manquantes."""
+    return get_default_routine_manager().install_presets(force=True)
+
+
 # ===========================================================================
 # RAPPELS PERSISTANTS
 # ===========================================================================
@@ -1728,7 +1733,6 @@ def list_reminders(limit=20):
 def cancel_reminder(reminder_id=None, confirm=False):
     """Annule un rappel (ou tous, avec confirmation)."""
     return get_default_scheduler().cancel_reminder(reminder_id=reminder_id, confirm=confirm)
-
 
 
 # ===========================================================================
@@ -1799,6 +1803,7 @@ TOOL_FUNCTIONS = {
     "update_routine": update_routine,
     "delete_routine": delete_routine,
     "list_routine_tools": list_routine_tools,
+    "restore_preset_routines": restore_preset_routines,
     # Rappels persistants
     "set_reminder": set_reminder,
     "list_reminders": list_reminders,
@@ -2047,6 +2052,12 @@ TOOL_DECLARATIONS = [
     _decl(
         "list_routine_tools",
         "Liste les outils utilisables comme etape d'une routine, et ceux qui sont interdits.",
+    ),
+    _decl(
+        "restore_preset_routines",
+        "Reinstalle les routines preconfigurees livrees avec Jarvis (bonjour, mode travail, focus, "
+        "reunion, bonne nuit, reveil...) qui manquent ou ont ete supprimees. "
+        "Les routines existantes ne sont jamais ecrasees.",
     ),
     # --- Rappels persistants ---------------------------------------------------------------
     _decl(

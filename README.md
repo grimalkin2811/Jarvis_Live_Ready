@@ -49,7 +49,7 @@ réglages :
 | **Interrupt Word** | Active/désactive l'interruption vocale (dire « stop » coupe Jarvis). |
 | **Stop Speaking** | Coupe immédiatement la réponse en cours. |
 | **Audio Test** | Émet un bip de test synthétisé. |
-| **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. |
+| **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. `⏱` = planifiée, `⏸` = désactivée, `▶` = manuelle. |
 
 Les réglages sont conservés dans `UI/menu_state.json` au redémarrage — ils
 s'appliquent aussi au mode console.
@@ -203,6 +203,50 @@ préservée, et les outils destructeurs y sont interdits.
 - « Planifie le mode travail en semaine à 9h. »
 - « Supprime la routine cinéma. » (demande une confirmation)
 
+### Routines préconfigurées
+
+Jarvis est livré avec **14 routines prêtes à l'emploi**, installées
+automatiquement dans `~/.jarvis/routines.json` au premier lancement. Rien à
+configurer : elles n'utilisent que des outils autorisés, sans clé API ni
+chemin particulier. Elles se modifient, se suppriment et se replanifient
+exactement comme tes propres routines, et une préconfiguration supprimée ne
+revient pas au redémarrage.
+
+| Routine | Ce qu'elle fait | Planification | Active par défaut |
+|---|---|---|---|
+| `mode travail` | Ouvre VS Code puis volume à 30 % | — | ✅ |
+| `focus` | Coupe le son + minuteur de 25 min | — | ✅ |
+| `réunion` | Son coupé, bureau nettoyé + minuteur de 45 min | — | ✅ |
+| `pause café` | Rétablit le son + minuteur de 5 min | — | ✅ |
+| `capture` | Capture d'écran + ouvre le dossier Images | — | ✅ |
+| `musique` | Ouvre Spotify (web) + volume à 40 % | — | ✅ |
+| `actualités` | Ouvre France Info puis Le Monde | — | ✅ |
+| `bonjour` | Briefing : heure, date, météo, dernières notes | — | ✅ |
+| `bilan système` | Internet, batterie, disque, ressources du PC | — | ✅ |
+| `je pars` | Stoppe la musique, coupe le son, verrouille la session | — | ✅ |
+| `je reviens` | Rétablit le son + redonne l'heure | — | ✅ |
+| `mode cinéma` | Bureau nettoyé + volume à 80 % | — | ✅ |
+| `bonne nuit` | Musique stoppée, volume et luminosité au minimum, session verrouillée | tous les jours à 23h30 | ⛔️ à activer |
+| `réveil` | Son rétabli, volume à 20 %, actualités ouvertes | tous les jours à 7h30 | ⛔️ à activer |
+
+Rien ne se déclenche tout seul : les deux routines planifiées sont livrées
+**désactivées** — c'est toi qui décide de les activer.
+
+- « Lance le mode travail. » / « Jarvis, bonjour ! »
+- « Active la routine réveil. » — le déclenchement automatique s'arme.
+- « Désactive la routine bonne nuit. » — elle ne s'exécute plus du tout.
+- « Réinstalle les routines préconfigurées. » — récupère celles supprimées
+  (`restore_preset_routines`, sans jamais écraser les routines existantes).
+
+Une routine **désactivée** refuse de s'exécuter, à la voix comme
+automatiquement — Jarvis le dit et propose de l'activer. Pour couper
+uniquement le déclenchement horaire, dis plutôt « retire la planification
+du réveil ». Dans le menu radial, `⏱ 07:30` signale une routine planifiée
+active, `⏸` une routine désactivée, `▶` une routine manuelle.
+
+Variable d'environnement : `JARVIS_PRESET_ROUTINES=0` désactive l'installation
+automatique des préconfigurations sans toucher au fichier existant.
+
 ### Stockage
 
 Les routines vivent dans un fichier JSON **lisible et modifiable à la main** :
@@ -232,7 +276,10 @@ Les routines vivent dans un fichier JSON **lisible et modifiable à la main** :
 
 `days` suit la convention Python : lundi = 0, dimanche = 6. Un fichier édité à
 la main est rechargé automatiquement (l'orbe le détecte en moins d'une seconde,
-ou via `Reload` dans le menu Routines).
+ou via `Reload` dans le menu Routines). Une routine préconfigurée porte le
+marqueur `"preset": true` ; le tableau `presets_removed` (s'il existe) retient
+les préconfigurations que tu as supprimées pour qu'elles ne reviennent pas au
+prochain démarrage.
 
 À la voix ou en ligne de commande, les étapes acceptent aussi une syntaxe
 compacte, plus facile à dicter :
@@ -309,7 +356,7 @@ Jarvis dispose de **75 outils** déclarés dans `src/tools.py` (voir
 | **Date / heure** | `get_local_time`, `get_local_date`, `get_datetime`, `days_until` |
 | **Minuteurs** | `set_timer`, `list_timers`, `cancel_timer` |
 | **Rappels persistants** | `set_reminder`, `list_reminders`, `cancel_reminder` |
-| **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
+| **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools`, `restore_preset_routines` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
 | **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |

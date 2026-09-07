@@ -62,6 +62,7 @@ FORBIDDEN_TOOLS = {
     "update_routine",
     "delete_routine",
     "run_routine",
+    "restore_preset_routines",
     "cancel_reminder",
 }
 
@@ -403,6 +404,7 @@ class RoutineManager:
             "steps": steps,
             "last_run": item.get("last_run") or None,
             "run_count": int(item.get("run_count") or 0),
+            "preset": bool(item.get("preset", False)),
         }
 
     # -- Recherche ------------------------------------------------------
@@ -438,6 +440,7 @@ class RoutineManager:
                 "name": item["name"],
                 "description": item["description"],
                 "enabled": item["enabled"],
+                "predefinie": bool(item.get("preset")),
                 "etapes": len(item["steps"]),
                 "planification": describe_schedule(item["schedule"]),
                 "derniere_execution": item["last_run"],
@@ -458,6 +461,7 @@ class RoutineManager:
             nom=routine["name"],
             description=routine["description"],
             active=routine["enabled"],
+            predefinie=bool(routine.get("preset")),
             planification=describe_schedule(routine["schedule"]),
             etapes=steps_to_text(routine["steps"]),
             nombre_etapes=len(routine["steps"]),
@@ -587,9 +591,121 @@ class RoutineManager:
                     nom=routine["name"],
                 )
             payload["routines"] = [item for item in payload["routines"] if item is not routine]
+            self._forget_preset(payload, routine["name"])
             if not self._save(payload):
                 return _err(self.last_error or "Sauvegarde impossible.")
         return _ok(nom=routine["name"], supprimee=True)
+
+    # -- Routines préconfigurées ----------------------------------------
+    @staticmethod
+    def _preset_names() -> set[str]:
+        """Noms normalisés des routines préconfigurées (sans écraser l'import)."""
+        try:
+            from .routine_presets import PRESET_ROUTINES
+        except Exception:  # pragma: no cover - le module fait partie du paquet
+            return set()
+        return {
+            normalize(preset.get("name"))
+            for preset in PRESET_ROUTINES
+            if str(preset.get("name") or "").strip()
+        }
+
+    def _forget_preset(self, payload: dict, name: str) -> None:
+        """Note qu'une préconfiguration a été supprimée : elle ne doit pas
+        revenir au prochain démarrage (sauf réinstallation explicite)."""
+        key = normalize(name)
+        if not key or key not in self._preset_names():
+            return
+        removed = payload.get("presets_removed")
+        if not isinstance(removed, list):
+            removed = []
+        if key not in {normalize(entry) for entry in removed}:
+            removed.append(key)
+        payload["presets_removed"] = removed
+
+    def install_presets(self, force: bool = False) -> dict:
+        """Ajoute les routines préconfigurées manquantes au fichier.
+
+        * une routine existante de même nom (utilisateur ou déjà installée)
+          n'est **jamais** écrasée ;
+        * une préconfiguration supprimée par l'utilisateur ne revient pas,
+          sauf si ``force=True`` (réinstallation explicite) ;
+        * un fichier illisible n'est jamais réécrit : on préfère échouer
+          plutôt qu'écraser un fichier maladroitement édité à la main.
+        """
+        if not self.enabled:
+            return _err("Routines désactivées.")
+        try:
+            from .routine_presets import PRESET_ROUTINES
+        except Exception as exc:  # pragma: no cover - robustesse
+            return _err(f"Préconfigurations indisponibles : {exc}")
+
+        with self._lock:
+            payload = self._load()
+            if self.last_error:
+                return _err(self.last_error)
+
+            existing = {normalize(item["name"]) for item in payload["routines"]}
+            removed_raw = payload.get("presets_removed")
+            removed = (
+                {normalize(entry) for entry in removed_raw if str(entry).strip()}
+                if isinstance(removed_raw, list)
+                else set()
+            )
+
+            installed: list[str] = []
+            invalid: list[str] = []
+            for preset in PRESET_ROUTINES:
+                name = str(preset.get("name") or "").strip()
+                key = normalize(name)
+                if not name or not key:
+                    continue
+                if key in existing:
+                    continue  # déjà présente : on n'y touche pas
+                if key in removed and not force:
+                    continue  # supprimée par l'utilisateur : respect
+
+                steps, errors = parse_steps(preset.get("steps"))
+                if errors or not steps:
+                    invalid.append(name)
+                    continue
+
+                schedule = parse_schedule(preset.get("schedule")) if preset.get("schedule") else None
+                payload["routines"].append(
+                    {
+                        "name": name,
+                        "description": str(preset.get("description") or "").strip(),
+                        "enabled": bool(preset.get("enabled", True)),
+                        "schedule": schedule,
+                        "steps": steps,
+                        "last_run": None,
+                        "run_count": 0,
+                        "preset": True,
+                    }
+                )
+                existing.add(key)
+                installed.append(name)
+                if len(payload["routines"]) >= MAX_ROUTINES:
+                    break
+
+            if force:
+                # Une préconfiguration réinstallée n'est plus « supprimée ».
+                removed = {key for key in removed if key not in existing}
+            if removed:
+                payload["presets_removed"] = sorted(removed)
+            else:
+                payload.pop("presets_removed", None)
+
+            if installed and not self._save(payload):
+                return _err(self.last_error or "Sauvegarde impossible.")
+
+        return _ok(
+            installees=installed,
+            invalides=invalid,
+            total=len(installed),
+            force=bool(force),
+            fichier=self.path,
+        )
 
     def run_routine(self, name, dry_run=False) -> dict:
         """Exécute les étapes d'une routine, séquentiellement."""
@@ -602,6 +718,16 @@ class RoutineManager:
                 return _err(f"Routine introuvable : {name}.", disponibles=[r["name"] for r in payload["routines"]])
             steps = list(routine["steps"])
             routine_name = routine["name"]
+            routine_enabled = bool(routine.get("enabled"))
+
+        if not routine_enabled and not dry_run:
+            # Désactivée = ne s'exécute plus du tout. Pour couper uniquement
+            # le déclenchement automatique, on retire la planification.
+            return _err(
+                f"La routine « {routine_name} » est désactivée : active-la pour pouvoir la lancer.",
+                desactivee=True,
+                nom=routine_name,
+            )
 
         if not steps:
             return _err(f"La routine « {routine_name} » ne contient aucune étape.")
@@ -708,3 +834,21 @@ def set_default_routine_manager(manager: RoutineManager | None) -> None:
     global _DEFAULT_MANAGER
     with _DEFAULT_LOCK:
         _DEFAULT_MANAGER = manager
+
+
+def install_default_presets() -> dict:
+    """Installe les routines préconfigurées au démarrage de Jarvis.
+
+    Appelée par les points d'entrée (console, ``--ui``, ``--desktop``) :
+    l'ajout est silencieux, idempotent et n'écrase jamais l'existant.
+    ``JARVIS_PRESET_ROUTINES=0`` y renonce complètement.
+    """
+    enabled = os.environ.get("JARVIS_PRESET_ROUTINES", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+    if not enabled:
+        return _ok(desactivees=True, installees=[])
+    return get_default_routine_manager().install_presets()
