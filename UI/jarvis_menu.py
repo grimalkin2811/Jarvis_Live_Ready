@@ -124,6 +124,8 @@ MENU_SPECS = [
             MenuItemSpec("Mic Toggle", "toggle"),
             MenuItemSpec("Hotword Sens.", "slider"),
             MenuItemSpec("Always Listening", "toggle"),
+            MenuItemSpec("Interrupt Word", "toggle"),
+            MenuItemSpec("Stop Speaking", "pulse"),
             MenuItemSpec("Audio Test", "pulse"),
         ],
         reveal_scale=0.92,
@@ -962,6 +964,11 @@ class MorphingOrbWidget(QWidget):
             self._flash(f"Micro : {'activé' if new_value else 'coupé'}")
             return
 
+        # Raccourci « S » : couper immédiatement la réponse en cours.
+        if event.text().lower() == "s" and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
+            self._stop_speaking()
+            return
+
         # Touches 1..9 : ouvrir directement le menu radial correspondant.
         digit = event.key() - Qt.Key_1
         if 0 <= digit < len(MENU_SPECS) and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
@@ -1208,6 +1215,10 @@ class MorphingOrbWidget(QWidget):
             return f"{st.hotword_sensitivity}%"
         if label == "Always Listening":
             return "On" if st.listen_mode else "Off"
+        if label == "Interrupt Word":
+            return "On" if st.barge_in else "Off"
+        if label == "Stop Speaking":
+            return "Stop"
         return ""
 
     def _system_value(self, label: str) -> str:
@@ -1362,6 +1373,8 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.mic_enabled
         if name == "Voice" and label == "Always Listening":
             return self.menu_state.listen_mode
+        if name == "Voice" and label == "Interrupt Word":
+            return self.menu_state.barge_in
         if name == "System" and label == "Startup":
             # État réel (fichier de démarrage présent ou non), mis en cache :
             # cette valeur est lue à chaque image pour le rendu.
@@ -1389,6 +1402,14 @@ class MorphingOrbWidget(QWidget):
                 "Écoute continue : activée (plus besoin de dire Hey Jarvis)"
                 if value
                 else "Écoute continue : désactivée (« Hey Jarvis » à nouveau requis)"
+            )
+        elif name == "Voice" and label == "Interrupt Word":
+            self.menu_state.barge_in = value
+            menu_state.LIVE.set_barge_in(value)
+            self._flash(
+                "Interruption vocale : activée (dites « stop » pour couper Jarvis)"
+                if value
+                else "Interruption vocale : désactivée"
             )
         elif name == "System" and label == "Startup":
             result = system_actions.set_startup(value)
@@ -1523,6 +1544,23 @@ class MorphingOrbWidget(QWidget):
         # Référence gardée vive le temps de la lecture.
         self._test_effect = effect
 
+    def _stop_speaking(self) -> None:
+        """Coupe immédiatement la réponse en cours (bouton / touche S).
+
+        Le backend vocal enregistre sa poignée dans ``menu_state.LIVE`` ;
+        si l'UI tourne seule (aucun assistant démarré), on le dit
+        honnêtement plutôt que de faire semblant.
+        """
+        stopped = False
+        try:
+            stopped = menu_state.LIVE.request_stop_speaking()
+        except Exception:
+            stopped = False
+        self.pulse = 1.0
+        self._flash(
+            "Réponse interrompue" if stopped else "Aucune réponse à interrompre"
+        )
+
     def _reset_settings(self) -> None:
         """Réinitialise les réglages interactifs du menu (valeurs par défaut)."""
         self.menu_state = menu_state.MenuState()
@@ -1568,6 +1606,7 @@ class MorphingOrbWidget(QWidget):
                 # via _flash ; on n'écrase pas leur libellé.
                 if label in {
                     "Always Listening",
+                    "Interrupt Word",
                     "Startup",
                     "Long-term Memory",
                 }:
@@ -1585,6 +1624,8 @@ class MorphingOrbWidget(QWidget):
                         self._flash(messages[label][0 if new_value else 1])
                     else:
                         self._flash(f"{label}: {'On' if new_value else 'Off'}")
+            elif name == "Voice" and label == "Stop Speaking":
+                self._stop_speaking()
             elif name == "Voice" and label == "Audio Test":
                 self._audio_test()
                 self._flash(f"{label} ▶")
