@@ -64,6 +64,11 @@ async def run_headless():
         if gemini is not None and gemini.can_send():
             asyncio.run_coroutine_threadsafe(gemini.send_audio(pcm), loop)
 
+    def on_barge_in():
+        """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
+        if gemini is not None:
+            gemini.request_interrupt()
+
     try:
         memory_manager = MemoryManager(
             config.memory_database_path,
@@ -85,6 +90,8 @@ async def run_headless():
             listen_mode_provider=MENU_LIVE.get_listen_mode if MENU_LIVE else None,
             mic_enabled=MENU_LIVE.get_mic_enabled if MENU_LIVE else None,
             wake_threshold=MENU_LIVE.get_wake_threshold if MENU_LIVE else None,
+            barge_in_provider=MENU_LIVE.get_barge_in if MENU_LIVE else None,
+            on_barge_in=on_barge_in,
         )
         gemini = GeminiLive(
             config.api_key,
@@ -104,6 +111,7 @@ async def run_headless():
         print(f"Jarvis Live - Bonjour {config.user}")
         audio.start()
         print("Pret. Parle dans le micro. Ctrl+C pour arreter.")
+        print('[Jarvis] Dis "stop" pendant une reponse pour l\'interrompre.')
 
         while True:
             gemini.reconnect_requested = False

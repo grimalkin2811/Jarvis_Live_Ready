@@ -46,6 +46,8 @@ réglages :
 | **Options** (Voice Select) | Clic ou molette (dans les deux sens) pour parcourir les choix. |
 | **Response Mode** | Clic pour changer le mode de réponse (injecté dans le prompt Gemini). |
 | **Mic Toggle** | Coupe/rétablit le micro en direct. |
+| **Interrupt Word** | Active/désactive l'interruption vocale (dire « stop » coupe Jarvis). |
+| **Stop Speaking** | Coupe immédiatement la réponse en cours. |
 | **Audio Test** | Émet un bip de test synthétisé. |
 | **Routines** | Clic sur un nom de routine pour l'exécuter ; `Reload` recharge le fichier. |
 
@@ -59,6 +61,7 @@ s'appliquent aussi au mode console.
 | `1` … `5` | Ouvre directement le menu radial correspondant. |
 | Flèches / `Entrée` | Navigue dans le menu ouvert et active l'item sélectionné. |
 | `M` | Coupe/rétablit le micro instantanément. |
+| `S` | **Stop** : coupe immédiatement la réponse en cours. |
 | `Échap` | Ferme d'abord le menu ouvert ; un second appui quitte Jarvis. |
 | Clic droit | Ferme le menu radial ouvert. |
 
@@ -72,6 +75,7 @@ Chaque contrôle du menu agit vraiment :
 | **Voice Select** | Change la voix prébuilt Gemini (reconnexion automatique et silencieuse de la session). |
 | **Speech Speed** | Consigne de débit injectée dans le prompt système (posé / normal / vif). |
 | **Always Listening** | Écoute continue : Jarvis reste actif sans dire « Hey Jarvis » (désactivé par défaut). |
+| **Interrupt Word** | Interruption vocale : parler par-dessus Jarvis (« stop ») coupe sa réponse (activé par défaut). |
 | **Startup** | Crée/supprime réellement le lanceur dans le dossier de démarrage Windows. |
 | **Long-term Memory** | Active/désactive la mémoire persistante en direct. |
 | **Reset Settings** | Remet les réglages du menu à leurs valeurs par défaut. |
@@ -79,6 +83,49 @@ Chaque contrôle du menu agit vraiment :
 Les compteurs (mémoire, rappels, routines) sont lus au plus une fois par
 seconde et mis en cache : le rendu de l'orbe reste fluide (~60 FPS) sans
 solliciter SQLite à chaque image.
+
+## Interrompre Jarvis pendant sa réponse
+
+Plus besoin de subir un monologue : **dites simplement « stop »** (ou
+n'importe quelle phrase, « attends », « ça suffit ») pendant que Jarvis parle.
+Il se tait immédiatement et vous rend la parole.
+
+| Moyen d'interrompre | Où |
+|---|---|
+| **La voix** — parler par-dessus Jarvis | Tous les modes (console, `--ui`, `--desktop`) |
+| **Touche `S`** | Mode `--ui` |
+| **Menu radial Voice → `Stop Speaking`** | Mode `--ui` |
+
+### Comment ça marche
+
+1. Pendant que Jarvis parle, le micro reste analysé localement (RMS par blocs
+   de 80 ms). Trois blocs consécutifs nettement au-dessus du niveau ambiant
+   déclenchent l'interruption.
+2. La lecture audio est **coupée instantanément** (file de sortie vidée), sans
+   attendre le réseau.
+3. Les derniers blocs micro (jusqu'à ~0,6 s) sont réémis vers Gemini, puis le
+   flux reprend : Gemini entend la phrase **entière** — pas seulement la fin du
+   mot « stop » — et arrête son tour côté serveur.
+4. Si Gemini ne confirme jamais l'interruption (fausse détection, simple
+   bruit), la lecture reprend automatiquement au bout de 4 secondes : Jarvis
+   ne peut pas rester muet à cause de cette fonctionnalité.
+
+### Garde-fous (pour que Jarvis ne s'interrompe pas tout seul)
+
+| Garde-fou | Détail |
+|---|---|
+| **Plancher de bruit adaptatif** | Le niveau de l'écho des enceintes est appris en continu ; il faut le dépasser d'un bon facteur (2,6×) pour interrompre. Avec un casque, le seuil devient naturellement très bas. |
+| **Période de grâce** | Les 0,6 première seconde d'une réponse ne peuvent pas être coupées (le temps d'apprendre l'écho, et pour ne pas se couper sur la fin de votre propre phrase). |
+| **3 blocs consécutifs** | Un claquement de porte ou un clic de souris ne suffit pas : il faut ~240 ms de parole. |
+| **Anti-rebond** | Pas de seconde interruption dans la seconde et demie qui suit. |
+| **Micro coupé** | Micro sur Off = aucune interruption possible (rien n'est analysé). |
+| **Désactivable** | `Voice → Interrupt Word` (persisté dans `UI/menu_state.json`, clé `barge_in`). Le bouton `Stop Speaking` et la touche `S` continuent de fonctionner. |
+
+Les seuils sont des constantes lisibles en haut de `AudioIO`
+(`BARGE_IN_MIN_RMS`, `BARGE_IN_FACTOR`, `BARGE_IN_BLOCKS`,
+`BARGE_IN_GRACE_SECONDS`) : si votre micro est très peu sensible et que « stop »
+ne passe pas, baissez `BARGE_IN_MIN_RMS` ; si Jarvis se coupe tout seul avec des
+enceintes fortes, augmentez `BARGE_IN_FACTOR`.
 
 ## Mémoire persistante locale
 

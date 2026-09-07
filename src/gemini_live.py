@@ -1,10 +1,19 @@
 import asyncio
+import time
 
 from google import genai
 from google.genai import types
 
 from .memory import MemoryManager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
+
+
+#: Durée pendant laquelle une interruption demandée localement (« stop »)
+#: reste active : le micro est réouvert vers Gemini et l'audio du modèle est
+#: jeté, le temps que le serveur confirme l'interruption. Si Gemini ne
+#: s'arrête pas (fausse détection), la lecture reprend au bout de ce délai
+#: plutôt que de laisser Jarvis muet.
+INTERRUPT_WINDOW_SECONDS = 4.0
 
 
 class AuthError(RuntimeError):
@@ -73,8 +82,45 @@ class GeminiLive:
         # immédiatement, sans message d'erreur ni délai.
         self.reconnect_requested = False
 
+        # Interruption locale (« stop » détecté par le micro ou bouton Stop).
+        # Pendant la fenêtre d'interruption : l'audio du modèle est jeté et
+        # le micro est réautorisé pour que Gemini entende l'utilisateur et
+        # coupe son tour côté serveur.
+        self.interrupt_requested = False
+        self._interrupt_until = 0.0
+        self._interrupt_was_active = False
+
+    # ------------------------------------------------------------------
+    # Interruption de la réponse en cours
+    # ------------------------------------------------------------------
+
+    def request_interrupt(self) -> None:
+        """Demande l'arrêt de la réponse en cours (appelable depuis un
+        autre thread : n'écrit que des attributs simples)."""
+        self._interrupt_until = time.monotonic() + INTERRUPT_WINDOW_SECONDS
+        self.interrupt_requested = True
+
+    def interrupt_active(self) -> bool:
+        """Vrai tant que l'interruption locale est en cours (fenêtre)."""
+        if not self.interrupt_requested:
+            return False
+        if time.monotonic() >= self._interrupt_until:
+            # Gemini n'a pas confirmé : on reprend le cours normal plutôt
+            # que de rester bloqué.
+            self.interrupt_requested = False
+            return False
+        return True
+
+    def _clear_interrupt(self) -> None:
+        self.interrupt_requested = False
+        self._interrupt_until = 0.0
+
     def can_send(self):
-        return self.session is not None and not self.speaking and not self.tool_active
+        # Pendant une interruption, le micro doit passer : c'est ainsi que
+        # Gemini entend « stop » et arrête réellement son tour.
+        if self.session is None or self.tool_active:
+            return False
+        return not self.speaking or self.interrupt_active()
 
     async def connect(self):
         decl = [
@@ -148,6 +194,9 @@ class GeminiLive:
             "garde set_timer pour les simples comptes à rebours de la session en cours. "
             "Pour les actions sur le PC, utilise les outils "
             "et ne mens jamais sur leur résultat. "
+            "Si l'utilisateur te coupe la parole (« stop », « attends », « ça suffit »), "
+            "arrête-toi immédiatement : ne reprends pas la phrase interrompue, "
+            "réponds au plus par un mot très bref et attends sa consigne suivante. "
             "Si un outil renvoie success=false, dis-le simplement et "
             "propose une alternative (par exemple list_applications ou "
             "list_websites pour connaître ce qui est autorisé). "
@@ -294,19 +343,36 @@ class GeminiLive:
                 server_content
                 and server_content.model_turn
             ):
-                if not self.speaking and self.on_speaking is not None:
-                    self.on_speaking()
-                self.speaking = True
-                for part in server_content.model_turn.parts:
+                # Interruption locale en cours : l'audio déjà généré par
+                # Gemini est jeté (Jarvis se tait) jusqu'à ce que le serveur
+                # confirme l'interruption ou que la fenêtre expire.
+                interrupting = self.interrupt_active()
 
+                if interrupting:
+                    self._interrupt_was_active = True
+                else:
                     if (
-                        part.inline_data
-                        and part.inline_data.data
-                    ):
+                        not self.speaking
+                        or self._interrupt_was_active
+                    ) and self.on_speaking is not None:
+                        # Reprise après une fausse détection : l'UI doit
+                        # repasser en « réponse en cours ».
+                        self.on_speaking()
+                    self._interrupt_was_active = False
 
-                        self.on_audio(
-                            part.inline_data.data
-                        )
+                self.speaking = True
+
+                if not interrupting:
+                    for part in server_content.model_turn.parts:
+
+                        if (
+                            part.inline_data
+                            and part.inline_data.data
+                        ):
+
+                            self.on_audio(
+                                part.inline_data.data
+                            )
 
             # =================================================
             # INTERRUPTION
@@ -317,6 +383,8 @@ class GeminiLive:
                 and server_content.interrupted
             ):
                 self.speaking = False
+                self._clear_interrupt()
+                self._interrupt_was_active = False
                 if self.on_interrupted:
                     self.on_interrupted()
 
@@ -329,6 +397,8 @@ class GeminiLive:
                 and server_content.turn_complete
             ):
                 self.speaking = False
+                self._clear_interrupt()
+                self._interrupt_was_active = False
                 if self.on_turn_complete:
                     self.on_turn_complete()
                 if self.memory_manager is not None and self._turn_user_text:
@@ -401,6 +471,8 @@ class GeminiLive:
     async def _shutdown_session(self) -> None:
         self.speaking = False
         self.tool_active = False
+        self._clear_interrupt()
+        self._interrupt_was_active = False
         ctx, self.ctx = self.ctx, None
         self.session = None
         if ctx is not None:

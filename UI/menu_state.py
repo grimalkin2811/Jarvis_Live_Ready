@@ -52,6 +52,8 @@ class MenuState:
     mic_enabled: bool = True
     hotword_sensitivity: int = 50
     listen_mode: bool = False
+    #: Interruption vocale : dire « stop » coupe la réponse en cours.
+    barge_in: bool = True
 
     # System
     startup: bool = False
@@ -83,7 +85,7 @@ def _clamp_float(value: float, low: float, high: float) -> float:
         return low
 
 
-_BOOL_FIELDS = {"mic_enabled", "startup", "startup_managed", "overlay", "always_on_top", "listen_mode"}
+_BOOL_FIELDS = {"mic_enabled", "startup", "startup_managed", "overlay", "always_on_top", "listen_mode", "barge_in"}
 
 
 def _apply_payload(state: MenuState, payload: dict) -> None:
@@ -153,8 +155,12 @@ class LiveControls:
         self.tts_volume = 70
         self.speech_speed = 50
         self.listen_mode = False
+        self.barge_in = True
         self.voice_name = GEMINI_VOICE_NAMES[VOICE_OPTIONS[0]]
         self._voice_version = 0
+        #: Poignée fournie par le backend vocal pour couper la réponse en
+        #: cours (bouton « Stop Speaking » / raccourci clavier).
+        self._stop_speaking_handler = None
 
     # Mic ---------------------------------------------------------------
     def get_mic_enabled(self) -> bool:
@@ -216,6 +222,35 @@ class LiveControls:
     def set_listen_mode(self, value: bool) -> None:
         with self._lock:
             self.listen_mode = bool(value)
+
+    # Interruption vocale (« stop » coupe la réponse en cours) -----------
+    def get_barge_in(self) -> bool:
+        with self._lock:
+            return self.barge_in
+
+    def set_barge_in(self, value: bool) -> None:
+        with self._lock:
+            self.barge_in = bool(value)
+
+    # Arrêt immédiat de la réponse (bouton / raccourci) ------------------
+    def set_stop_speaking_handler(self, handler) -> None:
+        """Enregistre (ou retire avec ``None``) la fonction qui coupe la
+        réponse en cours. Elle est fournie par le backend vocal."""
+        with self._lock:
+            self._stop_speaking_handler = handler
+
+    def request_stop_speaking(self) -> bool:
+        """Coupe la réponse en cours. Renvoie False si aucun backend vocal
+        n'est branché (UI lancée seule, par exemple)."""
+        with self._lock:
+            handler = self._stop_speaking_handler
+        if handler is None:
+            return False
+        try:
+            handler()
+        except Exception:
+            return False
+        return True
 
     # Voix Gemini Live ---------------------------------------------------
     def get_voice_name(self) -> str:
@@ -279,4 +314,5 @@ def _sync_live(state: MenuState) -> None:
     LIVE.set_tts_volume(state.tts_volume)
     LIVE.set_speech_speed(state.speech_speed)
     LIVE.set_listen_mode(state.listen_mode)
+    LIVE.set_barge_in(state.barge_in)
     LIVE.set_voice_name(VOICE_OPTIONS[state.voice_select % len(VOICE_OPTIONS)])

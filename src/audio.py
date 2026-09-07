@@ -1,3 +1,4 @@
+import collections
 import os
 import queue
 import threading
@@ -45,9 +46,40 @@ class AudioIO:
     # reste ainsi synchronisée même si le réseau envoie par rafales.
     MAX_QUEUED_SECONDS = 5.0
 
+    # =========================================================
+    # INTERRUPTION VOCALE (« stop » pendant une réponse)
+    # =========================================================
+
+    # Niveau RMS minimal (échelle int16) au-dessus duquel un bloc micro est
+    # considéré comme de la parole utilisateur et non du bruit de fond.
+    BARGE_IN_MIN_RMS = 900.0
+
+    # Le bloc doit aussi dépasser ce multiple du niveau ambiant appris
+    # pendant que Jarvis parle (voix de Jarvis renvoyée par les enceintes).
+    # C'est le garde-fou anti « Jarvis s'interrompt lui-même ».
+    BARGE_IN_FACTOR = 2.6
+
+    # Nombre de blocs consécutifs (80 ms chacun) requis : évite de couper
+    # la réponse sur un claquement de porte ou un clic de souris.
+    BARGE_IN_BLOCKS = 3
+
+    # Délai laissé au détecteur pour apprendre le niveau de l'écho avant
+    # d'autoriser une interruption (et pour ignorer la fin de la phrase de
+    # l'utilisateur qui déborde sur le début de la réponse).
+    BARGE_IN_GRACE_SECONDS = 0.6
+
+    # Après une interruption, on n'en déclenche pas une autre tout de suite.
+    BARGE_IN_COOLDOWN_SECONDS = 1.5
+
+    # Blocs micro conservés pendant que Jarvis parle : ils sont renvoyés à
+    # Gemini au moment de l'interruption pour qu'il entende le mot complet
+    # (« stop ») et pas seulement sa fin.
+    BARGE_IN_PREBUFFER_BLOCKS = 8
+
     def __init__(self, on_input, presence_hook=None, voice_hook=None,
                  mic_enabled=None, wake_threshold=None,
-                 volume_provider=None, listen_mode_provider=None):
+                 volume_provider=None, listen_mode_provider=None,
+                 barge_in_provider=None, on_barge_in=None):
         self.on_input = on_input
 
         # Hooks optionnels pour l'UI (voir src/ui.py).
@@ -57,12 +89,17 @@ class AudioIO:
         # wake_threshold()      : float — sensibilité du wake word depuis le menu.
         # volume_provider()     : int 0..100 — volume de la voix Jarvis.
         # listen_mode_provider(): bool — écoute continue (sans wake word).
+        # barge_in_provider()   : bool — autorise l'interruption vocale.
+        # on_barge_in()         : appelé quand l'utilisateur coupe la parole
+        #                         à Jarvis (« stop ») ou clique sur Stop.
         self.presence_hook = presence_hook
         self.voice_hook = voice_hook
         self.mic_enabled = mic_enabled
         self.wake_threshold = wake_threshold
         self.volume_provider = volume_provider
         self.listen_mode_provider = listen_mode_provider
+        self.barge_in_provider = barge_in_provider
+        self.on_barge_in = on_barge_in
         self._last_voice_emit = 0.0
 
         self.running = False
@@ -73,6 +110,25 @@ class AudioIO:
         # déclencher : on ne retourne en veille que lorsque la réponse est finie.
         self.speaking = False
         self._speaking_lock = threading.Lock()
+
+        # =====================================================
+        # DÉTECTION D'INTERRUPTION (« stop » pendant la réponse)
+        # =====================================================
+
+        # Instant où Jarvis a commencé sa réponse (période de grâce).
+        self._speaking_since = 0.0
+        # Niveau ambiant appris pendant que Jarvis parle (écho des enceintes).
+        self._barge_floor = 0.0
+        # Blocs consécutifs au-dessus du seuil.
+        self._barge_hits = 0
+        # Dernière interruption déclenchée (anti-rebond).
+        self._last_barge_in = 0.0
+        # Blocs micro capturés pendant la parole de Jarvis : rejoués vers
+        # Gemini au moment de l'interruption.
+        self._barge_prebuffer = collections.deque(
+            maxlen=self.BARGE_IN_PREBUFFER_BLOCKS
+        )
+        self._barge_lock = threading.Lock()
 
         # Heure limite de la fenêtre de conversation
         self.follow_up_until = 0.0
@@ -303,13 +359,7 @@ class AudioIO:
 
             if self.awake:
 
-                try:
-                    # Pendant une conversation, le wake word
-                    # n'est absolument pas analysé.
-                    self.on_input(pcm)
-
-                except Exception as e:
-                    print("[Micro -> Gemini] Erreur :", e)
+                self._handle_awake_block(pcm)
 
                 continue
 
@@ -318,6 +368,24 @@ class AudioIO:
             # =================================================
 
             self._handle_idle_block(pcm)
+
+    def _handle_awake_block(self, pcm) -> None:
+        """Conversation en cours : micro -> Gemini, avec détection du
+        « stop » lorsque Jarvis est en train de parler."""
+        # L'utilisateur coupe la parole à Jarvis (« stop ») : on arrête
+        # immédiatement la lecture et on laisse passer sa phrase vers Gemini.
+        if self._detect_barge_in(pcm):
+            self._trigger_barge_in(source="voix")
+        else:
+            self._remember_recent_block(pcm)
+
+        try:
+            # Pendant une conversation, le wake word
+            # n'est absolument pas analysé.
+            self.on_input(pcm)
+
+        except Exception as e:
+            print("[Micro -> Gemini] Erreur :", e)
 
     def _handle_idle_block(self, pcm) -> None:
         """En veille : réveil automatique (écoute continue) ou wake word."""
@@ -350,6 +418,144 @@ class AudioIO:
             return bool(self.listen_mode_provider())
         except Exception:
             return False
+
+    # =========================================================
+    # INTERRUPTION VOCALE (« stop » pendant une réponse)
+    # =========================================================
+
+    def _barge_in_allowed(self) -> bool:
+        """Interruption vocale activée (menu radial / réglages)."""
+        if self.barge_in_provider is None:
+            return True
+        try:
+            return bool(self.barge_in_provider())
+        except Exception:
+            return True
+
+    @staticmethod
+    def _block_rms(pcm) -> float:
+        """Niveau moyen (RMS, échelle int16) d'un bloc micro."""
+        try:
+            samples = np.frombuffer(pcm, dtype=np.int16)
+            if samples.size == 0:
+                return 0.0
+            value = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+        except Exception:
+            return 0.0
+        if value != value:  # NaN
+            return 0.0
+        return value
+
+    def _learn_barge_floor(self, rms: float) -> None:
+        """Apprend le niveau ambiant pendant que Jarvis parle.
+
+        Attaque rapide / relâchement lent : le plancher colle aux pics de
+        l'écho des enceintes, ce qui empêche Jarvis de s'interrompre
+        lui-même, tout en restant bas si l'utilisateur porte un casque.
+        """
+        alpha = 0.35 if rms > self._barge_floor else 0.05
+        self._barge_floor += alpha * (rms - self._barge_floor)
+
+    def _remember_recent_block(self, pcm) -> None:
+        """Conserve les derniers blocs micro captés pendant la réponse.
+
+        Ils sont réémis vers Gemini au moment de l'interruption : sans cela
+        le début du mot « stop » serait perdu (détection en ~240 ms).
+        """
+        with self._speaking_lock:
+            speaking = self.speaking
+        if not speaking:
+            if self._barge_prebuffer:
+                with self._barge_lock:
+                    self._barge_prebuffer.clear()
+            return
+        with self._barge_lock:
+            self._barge_prebuffer.append(pcm)
+
+    def _detect_barge_in(self, pcm) -> bool:
+        """Vrai si l'utilisateur parle par-dessus la réponse de Jarvis."""
+        with self._speaking_lock:
+            speaking = self.speaking
+            since = self._speaking_since
+
+        if not speaking:
+            self._barge_hits = 0
+            return False
+
+        if not self._barge_in_allowed():
+            self._barge_hits = 0
+            return False
+
+        now = time.monotonic()
+        if now - self._last_barge_in < self.BARGE_IN_COOLDOWN_SECONDS:
+            return False
+
+        rms = self._block_rms(pcm)
+
+        # Période de grâce : on se contente d'apprendre le niveau de l'écho.
+        if now - since < self.BARGE_IN_GRACE_SECONDS:
+            self._learn_barge_floor(rms)
+            self._barge_hits = 0
+            return False
+
+        threshold = max(
+            self.BARGE_IN_MIN_RMS,
+            self._barge_floor * self.BARGE_IN_FACTOR,
+        )
+
+        if rms >= threshold:
+            self._barge_hits += 1
+            if self._barge_hits >= self.BARGE_IN_BLOCKS:
+                self._barge_hits = 0
+                self._last_barge_in = now
+                return True
+            return False
+
+        self._barge_hits = 0
+        self._learn_barge_floor(rms)
+        return False
+
+    def _trigger_barge_in(self, source: str = "voix") -> None:
+        """Coupe la réponse en cours et prévient le backend Gemini."""
+        self._last_barge_in = time.monotonic()
+
+        # 0. Snapshot AVANT clear_output() : la fin de la parole vide le
+        #    pré-tampon, il faut donc le récupérer maintenant.
+        with self._barge_lock:
+            pending = list(self._barge_prebuffer)
+            self._barge_prebuffer.clear()
+
+        # 1. Silence immédiat : c'est ce que l'utilisateur attend.
+        self.clear_output()
+
+        # 2. Le backend autorise de nouveau l'envoi du micro (le tour de
+        #    Gemini sera interrompu côté serveur dès qu'il entend la voix).
+        hook = self.on_barge_in
+        if hook is not None:
+            try:
+                hook()
+            except Exception as exc:
+                print(f"[Interruption] Backend indisponible : {exc}")
+
+        # 3. Rejouer les blocs captés juste avant la détection pour que la
+        #    phrase de l'utilisateur arrive entière.
+        for block in pending:
+            try:
+                self.on_input(block)
+            except Exception:
+                break
+
+        print(f"[Jarvis] Interruption ({source}) : j'arrête de parler.")
+
+    def stop_speaking(self) -> bool:
+        """Interruption manuelle (bouton du menu, raccourci clavier).
+
+        Renvoie True si Jarvis était effectivement en train de parler.
+        """
+        with self._speaking_lock:
+            was_speaking = self.speaking
+        self._trigger_barge_in(source="manuelle")
+        return was_speaking
 
     def _detect_wake_word(self, pcm):
 
@@ -499,8 +705,21 @@ class AudioIO:
         self._set_speaking(True)
 
     def _set_speaking(self, speaking: bool) -> None:
+        speaking = bool(speaking)
         with self._speaking_lock:
-            self.speaking = bool(speaking)
+            was_speaking = self.speaking
+            self.speaking = speaking
+            if speaking and not was_speaking:
+                # Nouvelle réponse : le détecteur d'interruption repart d'une
+                # page blanche (période de grâce + compteur de blocs).
+                self._speaking_since = time.monotonic()
+
+        if speaking != was_speaking:
+            # Changement d'état : le détecteur d'interruption repart propre
+            # (compteur de blocs et pré-tampon micro).
+            self._barge_hits = 0
+            with self._barge_lock:
+                self._barge_prebuffer.clear()
 
     # =========================================================
     # TIMEOUT / RETOUR EN VEILLE

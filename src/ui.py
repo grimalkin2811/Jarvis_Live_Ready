@@ -98,6 +98,16 @@ def _run_voice_loop(
         if gemini is not None and gemini.can_send():
             asyncio.run_coroutine_threadsafe(gemini.send_audio(pcm), loop)
 
+    def on_barge_in():
+        """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
+        if gemini is not None:
+            gemini.request_interrupt()
+
+    def stop_speaking():
+        """Interruption manuelle (bouton du menu radial / touche S)."""
+        if audio is not None:
+            audio.stop_speaking()
+
     async def _main():
         nonlocal gemini, audio
         # Tant que le modèle wake word n'est pas chargé, l'UI affiche un état
@@ -128,7 +138,13 @@ def _run_voice_loop(
             wake_threshold=menu_state.LIVE.get_wake_threshold,
             volume_provider=menu_state.LIVE.get_tts_volume,
             listen_mode_provider=menu_state.LIVE.get_listen_mode,
+            barge_in_provider=menu_state.LIVE.get_barge_in,
+            on_barge_in=on_barge_in,
         )
+        # Le menu radial (thread Qt) peut désormais couper la réponse en
+        # cours ; le pont est retiré à l'arrêt pour ne pas garder de
+        # référence morte.
+        menu_state.LIVE.set_stop_speaking_handler(stop_speaking)
         gemini = GeminiLive(
             config.api_key,
             config.model,
@@ -189,6 +205,10 @@ def _run_voice_loop(
     try:
         loop.run_until_complete(_main())
     finally:
+        try:
+            menu_state.LIVE.set_stop_speaking_handler(None)
+        except Exception:
+            pass
         try:
             from .scheduler import get_default_scheduler
 
