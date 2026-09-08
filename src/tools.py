@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import ast
 import datetime as dt
+import functools
+import inspect
 import json
 import math
 import operator
@@ -39,6 +41,7 @@ import urllib.request
 import webbrowser
 
 from .memory import get_default_memory_manager
+from .modes import get_default_mode_manager
 from .routines import get_default_routine_manager
 from .routine_actions import (
     notify_user, show_reminder_briefing, check_battery_alert, check_disk_alert,
@@ -1709,6 +1712,37 @@ def list_routine_tools():
 
 
 # ===========================================================================
+# MODES FOCUS / JEU
+# ===========================================================================
+
+
+def activate_focus_mode(duration_minutes=None, close_distractions=True):
+    """Active le mode focus : révisions protégées contre les distractions."""
+    return get_default_mode_manager().activate_focus_mode(
+        duration_minutes=duration_minutes,
+        close_distractions=close_distractions,
+    )
+
+
+def activate_game_mode(duration_minutes=None, close_background=True):
+    """Active le mode jeu : plus de perfs, aucune interaction visuelle."""
+    return get_default_mode_manager().activate_game_mode(
+        duration_minutes=duration_minutes,
+        close_background=close_background,
+    )
+
+
+def disable_jarvis_mode():
+    """Désactive le mode focus/jeu et revient au comportement normal."""
+    return get_default_mode_manager().disable_mode()
+
+
+def get_jarvis_mode():
+    """Indique si Jarvis est en mode normal, focus ou jeu."""
+    return get_default_mode_manager().status()
+
+
+# ===========================================================================
 # RAPPELS PERSISTANTS
 # ===========================================================================
 
@@ -1738,7 +1772,7 @@ def cancel_reminder(reminder_id=None, confirm=False):
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
-TOOL_FUNCTIONS = {
+_RAW_TOOL_FUNCTIONS = {
     # Applications
     "open_application": open_application,
     "close_application": close_application,
@@ -1802,6 +1836,11 @@ TOOL_FUNCTIONS = {
     "update_routine": update_routine,
     "delete_routine": delete_routine,
     "list_routine_tools": list_routine_tools,
+    # Modes focus / jeu
+    "activate_focus_mode": activate_focus_mode,
+    "activate_game_mode": activate_game_mode,
+    "disable_jarvis_mode": disable_jarvis_mode,
+    "get_jarvis_mode": get_jarvis_mode,
     # Notifications et routines préconfigurées
     "notify_user": notify_user,
     "show_reminder_briefing": show_reminder_briefing,
@@ -1833,6 +1872,41 @@ TOOL_FUNCTIONS = {
     "flip_coin": flip_coin,
     "roll_dice": roll_dice,
     "pick_random": pick_random,
+}
+
+
+def _guard_tool_function(name, function):
+    """Protège un outil avec la politique du mode Jarvis courant.
+
+    Le wrapper est enregistré dans TOOL_FUNCTIONS : il couvre donc les appels
+    Gemini Live et les routines, sans modifier les fonctions unitaires (utiles
+    aux tests et aux usages internes).
+    """
+    signature = inspect.signature(function)
+
+    @functools.wraps(function)
+    def _wrapped(*args, **kwargs):
+        call_args = dict(kwargs)
+        try:
+            bound = signature.bind_partial(*args, **kwargs)
+            call_args.update(bound.arguments)
+        except Exception:
+            pass
+        try:
+            blocked = get_default_mode_manager().block_for_tool(name, call_args)
+        except Exception:
+            blocked = None
+        if blocked is not None:
+            return blocked
+        return function(*args, **kwargs)
+
+    _wrapped.__signature__ = signature  # type: ignore[attr-defined]
+    return _wrapped
+
+
+TOOL_FUNCTIONS = {
+    name: _guard_tool_function(name, function)
+    for name, function in _RAW_TOOL_FUNCTIONS.items()
 }
 
 
@@ -2047,7 +2121,7 @@ TOOL_DECLARATIONS = [
         {"name": _STR},
         ["name"],
     ),
-    _decl("list_routines", "Liste les routines personnelles et les 10 routines preconfigurees, avec leur activation et planification."),
+    _decl("list_routines", "Liste les routines personnelles et les 12 routines preconfigurees, avec leur activation et planification."),
     _decl(
         "describe_routine",
         "Detaille les etapes et la planification d'une routine.",
@@ -2077,6 +2151,31 @@ TOOL_DECLARATIONS = [
     _decl(
         "list_routine_tools",
         "Liste les outils utilisables comme etape d'une routine, et ceux qui sont interdits.",
+    ),
+    # --- Modes focus / jeu -----------------------------------------------------------------
+    _decl(
+        "activate_focus_mode",
+        "Active le mode focus pour une session de revision : bloque jeux, streaming, reseaux sociaux, achats, hasard et bavardage hors travail. Ferme aussi les distractions connues si possible.",
+        {
+            "duration_minutes": {**_INT, "description": "Duree optionnelle avant retour automatique au mode normal (1 a 1440 minutes)."},
+            "close_distractions": {**_BOOL, "description": "Fermer les applications de distraction connues (Windows, best effort)."},
+        },
+    ),
+    _decl(
+        "activate_game_mode",
+        "Active le mode jeu : reduit les processus inutiles, bloque toute action/affichage a l'ecran et laisse seulement les commandes de volume et de sortie du mode.",
+        {
+            "duration_minutes": {**_INT, "description": "Duree optionnelle avant retour automatique au mode normal (1 a 1440 minutes)."},
+            "close_background": {**_BOOL, "description": "Fermer les applications lourdes non indispensables (Windows, best effort)."},
+        },
+    ),
+    _decl(
+        "disable_jarvis_mode",
+        "Desactive le mode focus ou jeu et revient au fonctionnement normal.",
+    ),
+    _decl(
+        "get_jarvis_mode",
+        "Indique le mode Jarvis actif : normal, focus ou jeu.",
     ),
     # --- Rappels persistants ---------------------------------------------------------------
     _decl(

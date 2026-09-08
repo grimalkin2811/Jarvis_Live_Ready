@@ -193,7 +193,7 @@ Une routine est un **enchaînement d'outils nommé et rejouable**. Elle ne peut
 rien faire de plus que ce que Jarvis sait déjà faire : la liste blanche est
 préservée, et les outils destructeurs y sont interdits.
 
-### 10 routines préconfigurées — un seul interrupteur
+### 12 routines préconfigurées — un seul interrupteur
 
 Le catalogue est ajouté **automatiquement**, y compris sur une installation
 existante. Toutes les routines sont **désactivées par défaut** : rien ne se
@@ -225,6 +225,8 @@ reflète aussi dans le panneau.
 | **Revue hebdomadaire** | Vendredi, 17 h | Prochains rappels sur sept jours, aujourd'hui inclus. |
 | **Batterie faible** | Vérification toutes les 5 min | Alerte à ≤ 20 %, uniquement débranché ; au plus une notification par heure. Silencieuse sans batterie. |
 | **Espace disque** | Vérification toutes les heures | Alerte sous 10 % d'espace libre sur le disque du dossier utilisateur ; au plus une notification par 24 h. Aucun fichier supprimé. |
+| **Mode focus** | À la demande | Active une session de révision : bloque jeux, streaming, réseaux sociaux, achats, hasard et bavardages hors travail ; ferme les distractions connues si Windows le permet. |
+| **Mode jeu** | À la demande | Réduit les processus non essentiels, masque les overlays/notifications, bloque ouvertures/fermetures/captures/interactions écran. Le volume et la sortie du mode restent autorisés. |
 
 Les briefings affichent jusqu'à trois échéances, puis le nombre restant. Ils
 lisent uniquement les **rappels locaux Jarvis**, pas un agenda Google/Outlook.
@@ -249,6 +251,27 @@ remplace pas vos macros personnelles ni leurs modifications ; en cas d'homonyme,
 le preset reçoit un suffixe `(Jarvis)`. Une routine explicitement supprimée à la
 voix ne réapparaît pas au redémarrage. Le catalogue livré est défini dans
 `src/routine_presets.py` ; aucune copie ou import manuel n'est nécessaire.
+
+### Modes focus et jeu
+
+Ces deux routines s'appuient sur un garde-fou runtime (`src/modes.py`) : même si
+Gemini tente une action bloquée, Jarvis la refuse localement avant d'agir sur le
+PC.
+
+- « Active le mode focus » / « lance une session focus de 45 minutes » : Jarvis
+  refuse les distractions (jeux, YouTube/Twitch/Netflix, réseaux sociaux,
+  achats, hasard, commandes multimédia) et garde les actions utiles aux
+  révisions.
+- « Active le mode jeu » : Jarvis ferme en best effort des processus lourds non
+  essentiels, abaisse sa priorité quand Windows/psutil le permettent, masque
+  halo/orbe/notifications et bloque tout ce qui peut toucher au jeu ou à
+  l'écran. Les commandes de volume (`set_volume`, `volume_up`, `volume_down`,
+  mute/unmute) restent disponibles.
+- « Désactive le mode Jarvis » / « quitte le mode jeu » revient au mode normal.
+
+L'état actif est conservé dans `~/.jarvis/mode.json` (configurable avec
+`JARVIS_MODES_PATH`). Un mode peut être lancé avec une durée en minutes ; à
+l'expiration, Jarvis repasse automatiquement en mode normal.
 
 ### Créer et lancer ses propres routines
 
@@ -311,7 +334,7 @@ open_application(vscode); wait(2); set_volume(30); open_website(spotify)
 | **Liste blanche** | Une étape ne peut appeler qu'un outil existant de `TOOL_FUNCTIONS`. |
 | **Outils interdits** | `shutdown_pc`, `restart_pc`, `delete_notes`, `clear_memory`, `forget`, `delete_memory`, `update_memory`, `run_routine` (pas de récursion) et les outils de gestion des routines. |
 | **Refus explicite** | Une étape interdite fait **échouer** la création, plutôt que d'être retirée en silence : tu ne peux pas croire posséder une routine qui n'en fait pas autant qu'annoncé. |
-| **Limites** | 25 étapes par routine, 50 routines personnelles (en plus des 10 presets), pause de 60 secondes maximum. |
+| **Limites** | 25 étapes par routine, 50 routines personnelles (en plus des 12 presets), pause de 60 secondes maximum. |
 | **Non bloquant** | Une étape en échec est rapportée mais n'interrompt pas la routine ; depuis l'orbe, l'exécution a lieu hors du thread graphique. |
 
 `list_routine_tools` renvoie à tout moment la liste des outils autorisés.
@@ -350,8 +373,10 @@ Dans `.env` :
 ```env
 JARVIS_ROUTINES_ENABLED=1
 JARVIS_REMINDERS_ENABLED=1
+JARVIS_MODES_ENABLED=1
 JARVIS_ROUTINES_PATH=C:\\Users\\Moi\\.jarvis\\routines.json      # optionnel
 JARVIS_SCHEDULE_DATABASE_PATH=C:\\Users\\Moi\\.jarvis\\schedule.db  # optionnel
+JARVIS_MODES_PATH=C:\\Users\\Moi\\.jarvis\\mode.json              # optionnel
 ```
 
 Mettre l'une des variables à `0` désactive la fonctionnalité sans supprimer les
@@ -359,7 +384,7 @@ données.
 
 ## Fonctions
 
-Jarvis dispose de **79 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **83 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -374,6 +399,7 @@ Jarvis dispose de **79 outils** déclarés dans `src/tools.py` (voir
 | **Notifications locales** | `notify_user`, `show_reminder_briefing`, `check_battery_alert`, `check_disk_alert` |
 | **Rappels persistants** | `set_reminder`, `list_reminders`, `cancel_reminder` |
 | **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
+| **Modes focus/jeu** | `activate_focus_mode`, `activate_game_mode`, `disable_jarvis_mode`, `get_jarvis_mode` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
 | **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
@@ -384,7 +410,8 @@ Exemples de phrases : « ouvre YouTube », « quelle météo à Lyon ? », « me
 minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 3 ? », « note que je dois appeler Paul », « capture l'écran », « verrouille le
 PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
-mode travail », « rappelle-moi d'appeler le dentiste demain à 9h ».
+mode travail », « active le mode focus », « active le mode jeu », « désactive le
+mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h ».
 
 ## Sécurité : listes blanches
 
@@ -402,6 +429,9 @@ Tout ce que Jarvis peut ouvrir est déclaré explicitement dans `src/tools.py` :
 La reconnaissance des noms est tolérante : casse, accents, tirets et petites
 phrases (« ouvre le site wikipedia ») sont acceptés. Tout ce qui n'est pas dans
 la liste blanche renvoie `success: false` — Jarvis l'annonce alors honnêtement.
+Les modes focus/jeu ajoutent une seconde couche : un outil pourtant autorisé en
+temps normal peut être refusé avec `blocked_by_mode=true` si le mode actif le
+bloque.
 
 Les actions irréversibles (`shutdown_pc`, `restart_pc`, `delete_notes`,
 `delete_routine`) exigent un paramètre `confirm=true`, demandé oralement à
@@ -416,9 +446,10 @@ python -m unittest discover tests
 Les tests sont multiplateformes et ne déclenchent aucune action réelle
 (ni ouverture d'application, ni navigateur). Les tests mémoire, routines et
 rappels utilisent des fichiers et des bases SQLite temporaires, et ne
-nécessitent pas de clé Gemini réelle. Les tests des presets couvrent les dix
+nécessitent pas de clé Gemini réelle. Les tests des presets couvrent les douze
 routines, la migration sans écrasement, la persistance des interrupteurs, les
-plages horaires, les alertes conditionnelles et l'anti-spam. Le panneau et le
-relais de notifications Qt sont testés offscreen (clavier, défilement,
+plages horaires, les alertes conditionnelles, les modes focus/jeu et
+l'anti-spam. Le panneau et le relais de notifications Qt sont testés offscreen
+(clavier, défilement,
 thread graphique, erreur d'écriture), sans afficher de bulle Windows réelle.
 

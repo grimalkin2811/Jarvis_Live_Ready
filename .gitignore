@@ -15,6 +15,7 @@ data/
 *.db-shm
 *.db-wal
 
-# Routines et rappels locaux (hors du depot par defaut : ~/.jarvis)
+# Routines, rappels et modes locaux (hors du depot par defaut : ~/.jarvis)
 routines.json
 schedule.db
+mode.json

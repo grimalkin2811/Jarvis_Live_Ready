@@ -13,7 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src import notifications, routine_actions, routines, scheduler, tools
+from src import modes, notifications, routine_actions, routines, scheduler, tools
 from src.routine_presets import builtin_routines
 from src.timeparse import describe_schedule, parse_schedule
 
@@ -32,6 +32,33 @@ class PresetTestCase(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.path = Path(self.directory.name) / "routines.json"
         self.database = Path(self.directory.name) / "schedule.db"
+        previous_mode = modes._DEFAULT_MANAGER
+        self.mode_manager = modes.JarvisModeManager(
+            Path(self.directory.name) / "mode.json"
+        )
+        modes.set_default_mode_manager(self.mode_manager)
+        self.addCleanup(modes.set_default_mode_manager, previous_mode)
+        cleanup_patch = patch.object(
+            modes.JarvisModeManager,
+            "_close_processes",
+            return_value={"success": True, "tente": False, "fermes": [], "ignores": []},
+        )
+        priority_patch = patch.object(
+            modes.JarvisModeManager,
+            "_set_jarvis_low_priority",
+            return_value={"success": True, "applique": False},
+        )
+        restore_priority_patch = patch.object(
+            modes.JarvisModeManager,
+            "_restore_jarvis_priority",
+            return_value={"success": True, "applique": False},
+        )
+        cleanup_patch.start()
+        priority_patch.start()
+        restore_priority_patch.start()
+        self.addCleanup(cleanup_patch.stop)
+        self.addCleanup(priority_patch.stop)
+        self.addCleanup(restore_priority_patch.stop)
         routines.set_tool_registry(tools.TOOL_FUNCTIONS, tools.TOOL_DECLARATIONS)
         self.manager = routines.RoutineManager(self.path)
         self.scheduler = scheduler.Scheduler(
@@ -56,13 +83,13 @@ class PresetTestCase(unittest.TestCase):
 
 
 class PresetInstallationTests(PresetTestCase):
-    def test_ten_complete_disabled_presets_are_installed(self):
+    def test_twelve_complete_disabled_presets_are_installed(self):
         result = self.manager.list_routines()
-        self.assertEqual(result["count"], 10)
+        self.assertEqual(result["count"], 12)
         self.assertTrue(all(not item["enabled"] for item in result["routines"]))
         self.assertEqual(self.manager.scheduled_routines(), [])
         self.publish.assert_not_called()
-        self.assertEqual(len({item["preset_id"] for item in result["routines"]}), 10)
+        self.assertEqual(len({item["preset_id"] for item in result["routines"]}), 12)
 
     def test_every_preset_uses_valid_tools_arguments_and_schedules(self):
         for preset in builtin_routines():
@@ -81,7 +108,7 @@ class PresetInstallationTests(PresetTestCase):
         before = self.path.read_bytes()
         self.manager.install_presets()
         reopened = routines.RoutineManager(self.path)
-        self.assertEqual(reopened.list_routines()["count"], 10)
+        self.assertEqual(reopened.list_routines()["count"], 12)
         self.assertEqual(self.path.read_bytes(), before)
 
     def test_activation_and_personal_changes_survive_restart(self):
@@ -105,7 +132,7 @@ class PresetInstallationTests(PresetTestCase):
     def test_deleted_preset_does_not_reappear(self):
         self.manager.delete_routine("Hydratation", confirm=True)
         reopened = routines.RoutineManager(self.path)
-        self.assertEqual(reopened.list_routines()["count"], 9)
+        self.assertEqual(reopened.list_routines()["count"], 11)
         self.assertFalse(reopened.describe_routine("Hydratation")["success"])
 
     def test_existing_custom_routines_and_homonyms_are_preserved(self):
@@ -116,7 +143,7 @@ class PresetInstallationTests(PresetTestCase):
         before = old.describe_routine("Hydratation")
         migrated = routines.RoutineManager(path)
         self.assertEqual(migrated.describe_routine("Hydratation"), before)
-        self.assertEqual(migrated.list_routines()["count"], 11)
+        self.assertEqual(migrated.list_routines()["count"], 13)
         preset = migrated.describe_routine("hydration")
         self.assertEqual(preset["nom"], "Hydratation (Jarvis)")
         self.assertFalse(preset["active"])
@@ -149,7 +176,7 @@ class PresetInstallationTests(PresetTestCase):
                 old.create_routine(f"custom {index}", "flip_coin()")["success"]
             )
         migrated = routines.RoutineManager(path)
-        self.assertEqual(migrated.list_routines()["count"], routines.MAX_ROUTINES + 10)
+        self.assertEqual(migrated.list_routines()["count"], routines.MAX_ROUTINES + 12)
         self.assertFalse(
             migrated.create_routine("une de trop", "flip_coin()")["success"]
         )
@@ -182,7 +209,8 @@ class PresetInstallationTests(PresetTestCase):
 
 
 class PresetExecutionTests(PresetTestCase):
-    def test_all_ten_execute_successfully_with_no_user_parameters(self):
+    def test_all_twelve_execute_successfully_with_no_user_parameters(self):
+        mode_presets = {"focus_mode", "game_mode"}
         with (
             patch.object(
                 tools,
@@ -208,7 +236,11 @@ class PresetExecutionTests(PresetTestCase):
                     self.manager.update_routine(preset["name"], enabled=True)
                     result = self.manager.run_routine(preset["name"])
                     self.assertTrue(result["success"], result)
-                    self.assertTrue(result["notification_handled"])
+                    if preset["preset_id"] in mode_presets:
+                        self.assertFalse(result["notification_handled"])
+                        self.mode_manager.disable_mode()
+                    else:
+                        self.assertTrue(result["notification_handled"])
                     self.assertEqual(self.executions(preset["name"]), 1)
         self.assertEqual(self.publish.call_count, 10)
         for call in self.publish.call_args_list:

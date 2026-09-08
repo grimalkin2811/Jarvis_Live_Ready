@@ -51,6 +51,14 @@ class PresenceRouter(QObject):
 
     @Slot(str)
     def handle_presence(self, state: str) -> None:
+        try:
+            from .modes import get_default_mode_manager
+
+            if get_default_mode_manager().should_suppress_visuals():
+                self._overlay.hide_overlay()
+                return
+        except Exception:
+            pass
         if state == "listening":
             self._overlay.show_listening()
         elif state == "thinking":
@@ -258,8 +266,19 @@ def _build_tray_icon(on_activate, on_quit):
         show_action = menu.addAction("Afficher Jarvis")
         show_action.triggered.connect(on_activate)
         from UI.routines_dialog import show_routines_dialog
+
+        def _show_routines_if_allowed() -> None:
+            try:
+                from .modes import get_default_mode_manager
+
+                if get_default_mode_manager().should_suppress_visuals():
+                    return
+            except Exception:
+                pass
+            show_routines_dialog()
+
         routines_action = menu.addAction("Routines…")
-        routines_action.triggered.connect(lambda: show_routines_dialog())
+        routines_action.triggered.connect(_show_routines_if_allowed)
         menu.addSeparator()
         quit_action = menu.addAction("Quitter Jarvis")
         quit_action.triggered.connect(on_quit)
@@ -317,6 +336,14 @@ def run_ui(mode: str = "desktop") -> int:
         presence_hook = jarvis_menu.set_presence_state
 
         def _activate() -> None:
+            try:
+                from .modes import get_default_mode_manager
+
+                if get_default_mode_manager().should_suppress_visuals():
+                    window.hide()
+                    return
+            except Exception:
+                pass
             window.showFullScreen()
             window.raise_()
             window.activateWindow()
@@ -344,7 +371,19 @@ def run_ui(mode: str = "desktop") -> int:
         # En mode overlay, il n'y a aucune fenêtre interactive : sans icône
         # de notification, il n'existe aucun moyen propre de quitter.
         app.setQuitOnLastWindowClosed(False)
-        tray = _build_tray_icon(overlay.show_idle, app.quit)
+
+        def _activate_overlay() -> None:
+            try:
+                from .modes import get_default_mode_manager
+
+                if get_default_mode_manager().should_suppress_visuals():
+                    overlay.hide_overlay()
+                    return
+            except Exception:
+                pass
+            overlay.show_idle()
+
+        tray = _build_tray_icon(_activate_overlay, app.quit)
         if tray is None:
             print("[Jarvis] Aucune icône de notification disponible : "
                   "utilise Ctrl+C dans cette console pour quitter.")

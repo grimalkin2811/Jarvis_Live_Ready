@@ -5,6 +5,7 @@ from google import genai
 from google.genai import types
 
 from .memory import MemoryManager
+from .modes import get_default_mode_manager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
 
 
@@ -175,6 +176,12 @@ class GeminiLive:
                 print(f"[Memory] Contexte indisponible : {exc}")
                 memory_context = ""
 
+        mode_context = ""
+        try:
+            mode_context = get_default_mode_manager().system_instruction()
+        except Exception:
+            mode_context = ""
+
         system_instruction = (
             f"Tu es Jarvis, assistant vocal de {self.user}. "
             "Parle naturellement en français. "
@@ -188,7 +195,9 @@ class GeminiLive:
             "Pour oublier ou effacer la mémoire, utilise forget/delete_memory/clear_memory et demande confirmation pour les suppressions larges. "
             "Tu sais aussi enchaîner des actions grâce aux routines : run_routine pour lancer une routine existante (« lance le mode travail »), "
             "list_routines pour savoir ce qui existe, create_routine/update_routine pour en créer ou en modifier une. "
-            "Dix routines préconfigurées sont déjà disponibles et désactivées par défaut. "
+            "Douze routines préconfigurées sont déjà disponibles et désactivées par défaut, dont Mode focus et Mode jeu. "
+            "Pour activer immédiatement le mode focus ou le mode jeu, utilise activate_focus_mode ou activate_game_mode ; "
+            "pour revenir au comportement normal, utilise disable_jarvis_mode seulement si l'utilisateur le demande clairement. "
             "Pour « active/désactive la routine hydratation », utilise update_routine avec name et enabled=true/false uniquement : "
             "ne la recrée pas, ne demande aucun horaire ni paramètre supplémentaire. En cas de nom ambigu, liste les routines. "
             "Une routine désactivée ne peut pas être lancée ; son activation ne lance pas immédiatement ses étapes, "
@@ -212,6 +221,8 @@ class GeminiLive:
         )
         if memory_context:
             system_instruction += f"\n\n{memory_context}"
+        if mode_context:
+            system_instruction += f"\n\n{mode_context}"
 
         voice_name = None
         if self.voice_provider is not None:
