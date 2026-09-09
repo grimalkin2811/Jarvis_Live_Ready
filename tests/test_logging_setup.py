@@ -18,7 +18,22 @@ class LoggingSetupTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # Les addCleanup tournent en LIFO : les handlers sont donc fermés
+        # AVANT la suppression du dossier temporaire. Sous Windows, un
+        # FileHandler encore ouvert bloque jarvis.log et fait échouer le
+        # cleanup avec PermissionError (WinError 32).
+        self.addCleanup(self._close_jarvis_handlers)
         self.log_file = Path(self.tmp.name) / "jarvis.log"
+
+    @staticmethod
+    def _close_jarvis_handlers():
+        logger = logging.getLogger("jarvis")
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            try:
+                handler.close()
+            except Exception:
+                pass
 
     def test_setup_creates_log_file(self):
         logger = logging_setup.setup_logging(
