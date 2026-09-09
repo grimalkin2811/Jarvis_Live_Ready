@@ -14,6 +14,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+import _ci_diag  # noqa: E402,F401  (diagnostic CI temporaire)
 
 from src.gemini_live import AuthError, GeminiLive, _is_auth_error  # noqa: E402
 

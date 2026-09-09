@@ -13,6 +13,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import _ci_diag  # noqa: E402,F401  (diagnostic CI temporaire)
 
 from src import routines  # noqa: E402
 from src import scheduler as scheduler_module  # noqa: E402
