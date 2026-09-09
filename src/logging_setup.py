@@ -3,8 +3,8 @@
 Une application distribuée ne peut pas dépendre d'un terminal ouvert. Ce module
 initialise un journal **à rotation** dans le dossier de données utilisateur
 (``%LOCALAPPDATA%\\Jarvis\\logs\\jarvis.log`` sur Windows) et installe un
-gestionnaire de dernier recours pour ne jamais perdre silencieusement une
-trace de crash.
+gestionnaire de dernier recours pour ne jamais perdre silencieusement une trace
+de crash.
 
 Tous les composants (Gemini, audio, OpenWakeWord, updater, config, scheduler…)
 peuvent utiliser ``logging.getLogger(__name__)`` après un appel à
@@ -22,13 +22,9 @@ from pathlib import Path
 
 from . import paths
 
-#: Nom du logger principal de l'application.
 ROOT_LOGGER = "jarvis"
-
 _FORMAT = "%(asctime)s %(levelname)-8s [%(name)s] %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
-
-#: Niveau par défaut (surchargeable via ``JARVIS_LOG_LEVEL``).
 _DEFAULT_LEVEL = "INFO"
 
 
@@ -57,30 +53,26 @@ def setup_logging(
     max_bytes: int = 2 * 1024 * 1024,
     backup_count: int = 5,
 ) -> logging.Logger:
-    """Configure le logger racine ``jarvis``.
-
-    Args:
-        level: niveau minimal (chaîne ou int). ``None`` -> ``JARVIS_LOG_LEVEL``.
-        filename: chemin du journal. ``None`` -> emplacement utilisateur.
-        console: ajouter aussi une sortie console (débogage).
-        rotate: activer la rotation (fichiers ``jarvis.log.1``, ``.2``…).
-        max_bytes: taille max d'un fichier avant rotation.
-        backup_count: nombre de fichiers de rotation conservés.
-    """
+    """Configure le logger racine ``jarvis``."""
     logger = logging.getLogger(ROOT_LOGGER)
-    logger.setLevel(logging.DEBUG)  # on filtre dans les handlers
+    logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
-    # Ne pas empiler les handlers si déjà initialisé.
+    # Ne pas empiler les handlers si déjà initialisé. Fermer explicitement les
+    # anciens handlers : sous Windows, un FileHandler conserve le fichier
+    # ouvert même après removeHandler(), ce qui bloque TemporaryDirectory.
     for handler in list(logger.handlers):
         logger.removeHandler(handler)
+        try:
+            handler.close()
+        except Exception:
+            pass
 
     level = _level_from_env() if level is None else level
     if isinstance(level, str):
         level = getattr(logging, level.upper(), logging.INFO)
 
     formatter = logging.Formatter(_FORMAT, datefmt=_DATEFMT)
-
     target = _log_path() if filename is None else Path(filename).expanduser().resolve()
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -98,8 +90,6 @@ def setup_logging(
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     except OSError as exc:
-        # Le dossier de données peut être verrouillé (rare) : on dégrade en
-        # console plutôt que de planter.
         logger.warning("Impossible d'ouvrir le journal %s : %s", target, exc)
         console = True
 
@@ -109,14 +99,11 @@ def setup_logging(
         console_handler.setFormatter(formatter)
         logger.addHandler(console_handler)
 
-    # Handler de dernier recours : toute exception non interceptée doit laisser
-    # au moins une trace dans le journal plutôt que de disparaître en silence.
     if not getattr(logger, "_jarvis_excepthook_installed", False):
         def _jarvis_excepthook(exc_type, exc_value, exc_tb):
             logging.getLogger(ROOT_LOGGER).critical(
                 "Exception non interceptée", exc_info=(exc_type, exc_value, exc_tb)
             )
-            # Laisse aussi la trace s'afficher sur stderr en dev.
             sys.stderr.write("".join(traceback.format_exception(exc_type, exc_value, exc_tb)))
 
         sys.excepthook = _jarvis_excepthook
