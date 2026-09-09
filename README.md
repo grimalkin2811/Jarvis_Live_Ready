@@ -384,7 +384,7 @@ données.
 
 ## Fonctions
 
-Jarvis dispose de **83 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **86 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -405,6 +405,7 @@ Jarvis dispose de **83 outils** déclarés dans `src/tools.py` (voir
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
 | **Fichiers** | `open_folder`, `list_folder`, `search_files` |
 | **Calcul & divers** | `calculate`, `random_number`, `flip_coin`, `roll_dice`, `pick_random` |
+| **Protocoles** | `run_protocol`, `list_protocols`, `cancel_protocol` |
 
 Exemples de phrases : « ouvre YouTube », « quelle météo à Lyon ? », « mets un
 minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
@@ -412,6 +413,64 @@ minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
 mode travail », « active le mode focus », « active le mode jeu », « désactive le
 mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h ».
+
+## Les Protocoles — « Jarvis, wake up »
+
+Une fonction volontairement discrète : aucun bouton dans l'orbe, aucune ligne
+dans les menus radiaux. Un **protocole** est une séquence cinématique plein
+écran qui interroge réellement la machine pendant qu'elle se joue.
+
+Ce n'est pas une animation décorative : chaque ligne du journal affiche une
+**vraie mesure** (charge CPU, RAM, espace disque, batterie, latence réseau,
+nombre de souvenirs en base, routines armées, rappels en attente).
+
+### Les quatre protocoles
+
+| Protocole | Ce qu'il fait | Couleur |
+|---|---|---|
+| `wake_up` | Allumage complet en 12 étapes : noyau, opérateur, CPU, RAM, disque, alimentation, liaison distante, banque mémoire, routines, planificateur, audio. | Cyan |
+| `diagnostic` | Bilan système condensé en 7 relevés. | Vert |
+| `focus` | Baisse le volume à 25 % et arme un minuteur de 25 minutes. | Ambre |
+| `stand_down` | Mise en veille : sauvegarde, atténuation audio, micro maintenu. | Violet |
+
+### Les cinq façons de le déclencher
+
+1. **À la voix** — « Jarvis, réveille-toi », « wake up », « lance un diagnostic
+   complet », « mode concentration ». Gemini appelle l'outil `run_protocol`.
+2. **Code secret tapé** — l'orbe ayant le focus, tapez simplement `wakeup`,
+   `jarvis`, `reveil`, `bilan`, `focus` ou `veille`. Aucun champ de saisie :
+   les lettres sont reconnues au vol, et la saisie expire après 1,6 s.
+3. **Geste secret** — trois clics rapides au cœur de l'orbe.
+4. **Icône de notification** — menu « Protocoles », pour qui ne connaît pas
+   les codes.
+5. **En ligne de commande** — sans micro ni clé API :
+
+```bat
+python -m src.main --protocol wake_up
+python -m src.main --protocol diagnostic
+```
+
+En console, la séquence se dessine en ASCII ; avec l'interface, elle s'affiche
+en plein écran (réacteur à anneaux contrarotatifs, balayage, journal qui
+s'écrit à la machine à écrire).
+
+**Échap interrompt toujours** un protocole en cours — et c'est sa seule action
+tant qu'une séquence tourne : impossible de fermer Jarvis par accident.
+
+### Garanties
+
+* Un protocole ne peut appeler **aucun outil destructeur** : la liste
+  `FORBIDDEN_TOOLS` des routines s'applique telle quelle (un beat qui tenterait
+  `shutdown_pc` est refusé et signalé en jaune).
+* Une sonde ou un outil qui échoue **dégrade la ligne affichée**, jamais la
+  séquence.
+* Un seul protocole tourne à la fois : le relancer annule proprement le
+  précédent.
+* `src/protocols.py` n'importe **ni Qt ni sounddevice** — d'où les tests
+  complets sans interface.
+
+Les codes secrets ne commencent jamais par `m`, `s` ou `d`, afin que les
+raccourcis d'une lettre (micro, stop, debug) restent instantanés.
 
 ## Sécurité : listes blanches
 
@@ -452,4 +511,11 @@ plages horaires, les alertes conditionnelles, les modes focus/jeu et
 l'anti-spam. Le panneau et le relais de notifications Qt sont testés offscreen
 (clavier, défilement,
 thread graphique, erreur d'écriture), sans afficher de bulle Windows réelle.
+
+Les Protocoles ajoutent 49 tests (`tests/test_protocols.py`,
+`tests/test_protocol_ui.py`) : catalogue et recherche tolérante, progression,
+annulation, sonde ou outil en échec, refus des outils destructeurs, codes
+secrets (expiration, accents, non-collision avec les raccourcis `m`/`s`/`d`),
+geste des trois clics, et rendu offscreen de l'overlay à chaque étape sur
+trois résolutions.
 

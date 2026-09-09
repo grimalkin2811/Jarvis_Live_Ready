@@ -17,11 +17,9 @@ import asyncio
 import sys
 from pathlib import Path
 
-from .audio import AudioIO
-from .config import load_config
-from .gemini_live import AuthError, GeminiLive
-from .memory import MemoryManager, set_default_memory_manager
-from .scheduler import start_default_scheduler
+# Les imports lourds (audio, Gemini) sont faits dans run_headless : ainsi
+# « python -m src.main --protocol wake_up » joue la séquence cinématique
+# même sans micro, sans clé API et sans sounddevice installé.
 
 # Pont vers les réglages du menu radial. Il est optionnel : sans PySide6
 # (mode console minimal), Jarvis fonctionne avec les valeurs par défaut.
@@ -47,6 +45,12 @@ def _load_menu_bridge() -> None:
 
 
 async def run_headless():
+    from .audio import AudioIO
+    from .config import load_config
+    from .gemini_live import AuthError, GeminiLive
+    from .memory import MemoryManager, set_default_memory_manager
+    from .scheduler import start_default_scheduler
+
     try:
         config = load_config()
     except Exception as exc:
@@ -172,11 +176,35 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Lance l'overlay halo plein écran + l'assistant vocal.",
     )
+    group.add_argument(
+        "--protocol",
+        nargs="?",
+        const="wake_up",
+        metavar="NOM",
+        help="Joue un protocole cinématique dans la console puis quitte "
+             "(wake_up, diagnostic, focus, stand_down).",
+    )
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Protocole seul : la séquence cinématique en mode console, sans micro
+    # ni clé API. C'est la démonstration la plus rapide de la fonction.
+    if getattr(args, "protocol", None):
+        from . import protocols
+
+        target = protocols.find_protocol(args.protocol)
+        if target is None:
+            names = ", ".join(item["id"] for item in protocols.list_protocols())
+            print(f"[Jarvis] Protocole inconnu : {args.protocol}. Disponibles : {names}")
+            return 2
+        try:
+            protocols.play_protocol(target, protocols.render_console())
+        except KeyboardInterrupt:
+            print("\n[Jarvis] Protocole interrompu.")
+        return 0
 
     if args.ui or args.desktop:
         from .ui import run_ui

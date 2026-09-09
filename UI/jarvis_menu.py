@@ -376,6 +376,25 @@ class MorphingOrbWidget(QWidget):
         # overall time scale for animation speed (1.0 = normal). Increase for more reactive feel.
         self.time_scale = 1.25
 
+        # =====================================================
+        # PROTOCOLES CACHÉS
+        # =====================================================
+        # Aucun bouton, aucun menu : on tape « wakeup » au clavier ou on
+        # clique trois fois au cœur de l'orbe. Les détecteurs vivent dans
+        # src.secret_codes (logique pure, testée sans Qt).
+        self._secret_code = None
+        self._secret_gesture = None
+        try:
+            from src.secret_codes import SecretCodeDetector, SecretGestureDetector
+
+            self._secret_code = SecretCodeDetector()
+            self._secret_gesture = SecretGestureDetector()
+        except Exception:
+            pass
+        # Présentateur du protocole (overlay plein écran), créé à la demande
+        # pour ne rien coûter tant qu'aucun protocole n'est déclenché.
+        self._protocol_presenter = None
+
     # =========================================================
     # ANIMATION
     # =========================================================
@@ -870,6 +889,20 @@ class MorphingOrbWidget(QWidget):
                 event.accept()
                 return
 
+        # Geste secret : trois clics rapides au cœur de l'orbe réveillent
+        # Jarvis. Testé avant les nœuds de menu, mais seulement au centre,
+        # là où aucun nœud ne peut se trouver.
+        if event.button() == Qt.LeftButton and self._secret_gesture is not None:
+            pos = event.position()
+            distance = math.hypot(
+                pos.x() - self.current_center.x(),
+                pos.y() - self.current_center.y(),
+            )
+            if self._secret_gesture.feed(distance, self.base_radius):
+                self.launch_protocol("wake_up")
+                event.accept()
+                return
+
         if event.button() == Qt.LeftButton and self._menu_nodes:
             hit = self._menu_hit_test(event.position())
             if hit is not None:
@@ -964,6 +997,12 @@ class MorphingOrbWidget(QWidget):
         # n'y a plus rien à fermer qu'Échap quitte Jarvis. On évite ainsi
         # les fermetures accidentelles de l'application.
         if event.key() == Qt.Key_Escape:
+            # Un protocole en cours se coupe en premier : Échap est le
+            # « je reprends la main » universel, jamais une sortie brutale.
+            if self.protocol_running():
+                self.cancel_protocol()
+                self._flash("Protocole interrompu")
+                return
             if self._menu_sector >= 0 or self._menu_alpha > 0.05:
                 self._close_radial_menu()
                 return
@@ -972,6 +1011,23 @@ class MorphingOrbWidget(QWidget):
             self._save_menu_state(force=True)
             self.close()
             return
+
+        # ------------------------------------------------------------------
+        # Code secret : taper « wakeup », « jarvis », « bilan »… lance le
+        # protocole cinématique correspondant. Aucun menu, aucun bouton.
+        # ------------------------------------------------------------------
+        plain = not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier))
+        if self._secret_code is not None and plain:
+            triggered = self._secret_code.feed(event.text())
+            if triggered:
+                self.launch_protocol(triggered)
+                return
+            if self._secret_code.is_partial():
+                # Un code est en train de s'écrire : on met les raccourcis
+                # d'une lettre en pause pour ne pas couper le micro en
+                # tapant « jarvis ».
+                self.update()
+                return
 
         # Raccourci « M » : couper/rétablir le micro sans ouvrir le menu.
         if event.text().lower() == "m" and not (event.modifiers() & (Qt.ControlModifier | Qt.AltModifier)):
@@ -1057,6 +1113,50 @@ class MorphingOrbWidget(QWidget):
         """
         self._menu_action_flash = str(message)[:80]
         self._menu_action_flash_time = self.time
+
+    # ------------------------------------------------------------------
+    # Protocoles cinématiques (fonction cachée)
+    # ------------------------------------------------------------------
+    def _protocol_ui(self):
+        """Présentateur d'overlay, instancié à la première utilisation."""
+        if self._protocol_presenter is None:
+            try:
+                from .boot_sequence import ProtocolPresenter
+
+                self._protocol_presenter = ProtocolPresenter(self)
+            except Exception:
+                self._protocol_presenter = None
+        return self._protocol_presenter
+
+    def launch_protocol(self, name: str = "wake_up") -> bool:
+        """Joue un protocole et affiche l'overlay cinématique."""
+        presenter = self._protocol_ui()
+        if presenter is None:
+            self._flash("Protocole indisponible")
+            return False
+        if presenter.play(name):
+            self._close_radial_menu()
+            self._flash(f"Protocole engagé : {name}")
+            return True
+        self._flash(f"Protocole inconnu : {name}")
+        return False
+
+    def protocol_running(self) -> bool:
+        try:
+            from src import protocols
+
+            run = protocols.active_run()
+            return bool(run is not None and run.running)
+        except Exception:
+            return False
+
+    def cancel_protocol(self) -> bool:
+        try:
+            from src import protocols
+
+            return protocols.cancel_active()
+        except Exception:
+            return False
 
     def _close_radial_menu(self) -> None:
         """Ferme le menu radial ouvert (Échap ou clic droit)."""

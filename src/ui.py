@@ -27,6 +27,7 @@ from .audio import AudioIO
 from .config import load_config
 from .gemini_live import AuthError, GeminiLive
 from .memory import MemoryManager, set_default_memory_manager
+from . import protocols
 from .scheduler import start_default_scheduler
 from UI import appearance_actions
 from UI import menu_state
@@ -279,6 +280,27 @@ def _build_tray_icon(on_activate, on_quit):
 
         routines_action = menu.addAction("Routines…")
         routines_action.triggered.connect(_show_routines_if_allowed)
+
+        def _start_protocol_if_allowed(protocol_id: str) -> None:
+            try:
+                from .modes import get_default_mode_manager
+
+                if get_default_mode_manager().should_suppress_visuals():
+                    return
+            except Exception:
+                pass
+            protocols.start_protocol(protocol_id)
+
+        # Protocoles : la fonction cachée reste accessible à la souris pour
+        # qui ne connaît pas les codes secrets, sauf en mode jeu où tout
+        # affichage au-dessus du jeu est supprimé.
+        protocol_menu = menu.addMenu("Protocoles")
+        for protocol in protocols.PROTOCOLS:
+            action = protocol_menu.addAction(protocol.name)
+            action.triggered.connect(
+                lambda _checked=False, pid=protocol.protocol_id:
+                _start_protocol_if_allowed(pid)
+            )
         menu.addSeparator()
         quit_action = menu.addAction("Quitter Jarvis")
         quit_action.triggered.connect(on_quit)
@@ -388,6 +410,21 @@ def run_ui(mode: str = "desktop") -> int:
             print("[Jarvis] Aucune icône de notification disponible : "
                   "utilise Ctrl+C dans cette console pour quitter.")
 
+    # Overlay des Protocoles : il écoute src.protocols quel que soit le mode,
+    # pour que « Jarvis, réveille-toi » déclenche la séquence cinématique
+    # aussi bien depuis l'orbe que depuis l'overlay halo.
+    protocol_presenter = None
+    try:
+        from UI.boot_sequence import ProtocolPresenter
+
+        protocol_presenter = ProtocolPresenter()
+        if mode == "ui":
+            # L'orbe réutilise le même présentateur : un seul overlay, donc
+            # un seul abonnement aux évènements.
+            window._protocol_presenter = protocol_presenter
+    except Exception as exc:
+        print(f"[Protocole] Overlay indisponible : {exc}")
+
     # Brancher les notifications AVANT de démarrer le planificateur vocal :
     # les rappels échus au lancement sont visibles même si l'orbe est en veille.
     notification_bridge = NotificationBridge(tray)
@@ -397,6 +434,11 @@ def run_ui(mode: str = "desktop") -> int:
         stop_event.set()
         voice_thread.join(timeout=3.0)
         notification_bridge.close()
+        if protocol_presenter is not None:
+            try:
+                protocol_presenter.close()
+            except Exception:
+                pass
 
     app.aboutToQuit.connect(_shutdown)
 

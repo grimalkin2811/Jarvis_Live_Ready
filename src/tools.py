@@ -1769,6 +1769,58 @@ def cancel_reminder(reminder_id=None, confirm=False):
 
 
 # ===========================================================================
+# PROTOCOLES CINÉMATIQUES
+# ===========================================================================
+
+
+def run_protocol(protocol="wake_up"):
+    """Joue un protocole cinematique (reveil, diagnostic, concentration, veille).
+
+    L'affichage est pris en charge par l'interface (overlay plein ecran) si
+    elle est ouverte, sinon par la console. La fonction rend la main
+    immediatement : Jarvis peut parler pendant que la sequence se deroule.
+    """
+    from . import protocols as _protocols
+
+    target = _protocols.find_protocol(protocol)
+    if target is None:
+        return _err(
+            "Protocole inconnu.",
+            protocoles=[item["id"] for item in _protocols.list_protocols()],
+        )
+
+    # Sans interface abonnee, on dessine la sequence dans la console.
+    emit = None if _protocols.has_listener() else _protocols.render_console()
+    run = _protocols.start_protocol(target, emit)
+    if run is None:  # pragma: no cover - defensif
+        return _err("Protocole indisponible.")
+
+    return _ok(
+        protocole=target.protocol_id,
+        nom=target.name,
+        etapes=len(target.beats),
+        duree_estimee_s=round(sum(b.duration for b in target.beats), 1),
+        message=f"Protocole {target.name} engage.",
+    )
+
+
+def list_protocols():
+    """Liste les protocoles cinematiques disponibles."""
+    from . import protocols as _protocols
+
+    return _ok(protocoles=_protocols.list_protocols())
+
+
+def cancel_protocol():
+    """Interrompt le protocole cinematique en cours."""
+    from . import protocols as _protocols
+
+    if _protocols.cancel_active():
+        return _ok(message="Protocole interrompu.")
+    return _ok(message="Aucun protocole en cours.")
+
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -1872,6 +1924,10 @@ _RAW_TOOL_FUNCTIONS = {
     "flip_coin": flip_coin,
     "roll_dice": roll_dice,
     "pick_random": pick_random,
+    # Protocoles cinematiques
+    "run_protocol": run_protocol,
+    "list_protocols": list_protocols,
+    "cancel_protocol": cancel_protocol,
 }
 
 
@@ -2288,6 +2344,18 @@ TOOL_DECLARATIONS = [
         {"options": {"type": "string", "description": "Options separees par des virgules."}},
         ["options"],
     ),
+    # --- Protocoles cinematiques -------------------------------------------
+    _decl(
+        "run_protocol",
+        "Joue un protocole cinematique plein ecran avec diagnostic reel de la machine. "
+        "Protocoles : wake_up (reveil complet, 'Jarvis wake up'), diagnostic (bilan systeme), "
+        "focus (session de concentration de 25 minutes), stand_down (mise en veille). "
+        "A utiliser quand l'utilisateur dit 'reveille-toi', 'wake up', 'lance le protocole ...', "
+        "'diagnostic complet' ou 'mode concentration'.",
+        {"protocol": {**_STR, "description": "Identifiant ou nom du protocole (wake_up, diagnostic, focus, stand_down)."}},
+    ),
+    _decl("list_protocols", "Liste les protocoles cinematiques disponibles."),
+    _decl("cancel_protocol", "Interrompt le protocole cinematique en cours."),
 ]
 
 

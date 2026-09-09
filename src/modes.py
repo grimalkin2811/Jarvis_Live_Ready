@@ -539,6 +539,7 @@ class JarvisModeManager:
         cleanup = None
         if bool(close_background):
             cleanup = self._close_processes(GAME_BACKGROUND_PROCESS_IMAGES)
+        protocol = self._cancel_active_protocol()
         priority = self._set_jarvis_low_priority()
         result.update(
             description=(
@@ -551,6 +552,7 @@ class JarvisModeManager:
             interactions_ecran_bloquees=True,
             outils_autorises=sorted(GAME_ALLOWED_TOOLS),
             nettoyage=cleanup,
+            protocole=protocol,
             priorite_jarvis=priority,
         )
         return result
@@ -725,6 +727,15 @@ class JarvisModeManager:
             "ignores": ignored,
             "erreurs": errors,
         }
+
+    def _cancel_active_protocol(self) -> dict:
+        try:
+            from . import protocols
+
+            cancelled = bool(protocols.cancel_active())
+            return _ok(annule=cancelled)
+        except Exception as exc:
+            return _ok(annule=False, raison=str(exc))
 
     def _set_jarvis_low_priority(self) -> dict:
         if psutil is None:
