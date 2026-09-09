@@ -1,6 +1,10 @@
 @echo off
 cd /d "%~dp0"
-echo === JARVIS LIVE - SETUP ===
+echo === JARVIS LIVE - SETUP (DEVELOPPEMENT) ===
+echo.
+echo Ce script est reserve au developpement. Pour l'utilisateur final,
+echo utilisez JarvisSetup.exe (voir https://github.com/grimalkin2811/Jarvis_Live_Ready/releases).
+echo.
 where py >nul 2>nul
 if %errorlevel%==0 (set PY=py) else (set PY=python)
 %PY% --version

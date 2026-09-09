@@ -1,11 +1,15 @@
 import collections
 import os
 import queue
+import sys
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
+
+from . import paths
 
 try:
     import openwakeword
@@ -15,6 +19,85 @@ except Exception:
     openwakeword = None
     Model = None
     download_models = None
+
+
+def _openwakeword_model_name() -> str:
+    """Nom canonique du wake word 'Hey Jarvis'."""
+    return "hey_jarvis"
+
+
+def _openwakeword_candidate_dirs() -> list[str]:
+    """Répertoires où chercher le modèle OpenWakeWord, du plus spécifique au
+    plus général. Pour une application distribuée, il ne faut PAS supposer que
+    ``.venv/Lib/site-packages`` existe sur la machine de l'utilisateur."""
+    dirs: list[str] = []
+    # 1. Dossier utilisateur (modèles téléchargés au premier lancement).
+    dirs.append(str(paths.openwakeword_models_dir()))
+    # 2. Ressources embarquées dans le bundle PyInstaller (_MEIPASS).
+    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
+        meipass = str(sys._MEIPASS)
+        # a. `resources/openwakeword` (dossier de ressources fourni par le build).
+        dirs.append(os.path.join(meipass, "resources", "openwakeword"))
+        dirs.append(os.path.join(meipass, "resources", "models"))
+        # b. Emplacement d'origine du paquet openwakeword (si collecté tel quel).
+        dirs.append(os.path.join(meipass, "openwakeword", "resources", "models"))
+    # 3. Dossier de ressources du paquet installé (site-packages en dev).
+    if openwakeword is not None:
+        dirs.append(
+            os.path.join(os.path.dirname(os.path.abspath(openwakeword.__file__)), "resources", "models")
+        )
+    return dirs
+
+
+def _find_openwakeword_model(extension: str | None = None) -> str | None:
+    """Retourne le chemin absolu du modèle 'hey_jarvis' s'il existe."""
+    if openwakeword is None:
+        return None
+    expected = None
+    try:
+        info = openwakeword.MODELS.get(_openwakeword_model_name())
+        if info:
+            expected = Path(info.get("model_path", "")).name
+    except Exception:
+        expected = f"{_openwakeword_model_name()}_v0.1"
+    for directory in _openwakeword_candidate_dirs():
+        candidates = [expected] if expected else []
+        if extension:
+            candidates.append(f"{_openwakeword_model_name()}_v0.1{extension}")
+        for name in candidates:
+            if not name:
+                continue
+            candidate = os.path.join(directory, name)
+            if os.path.isfile(candidate):
+                return candidate
+        # Recherche libre : tout fichier contenant le nom du wake word.
+        try:
+            for entry in os.listdir(directory):
+                lower = entry.lower()
+                if _openwakeword_model_name() in lower and (
+                    extension is None or lower.endswith(extension)
+                ):
+                    return os.path.join(directory, entry)
+        except OSError:
+            continue
+    return None
+
+
+def _download_openwakeword_model() -> str | None:
+    """Télécharge le modèle 'hey_jarvis' dans le dossier utilisateur.
+
+    Retourne le chemin du modèle téléchargé, ou ``None`` en cas d'échec.
+    """
+    if download_models is None:
+        return None
+    target = paths.openwakeword_models_dir()
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+        download_models([_openwakeword_model_name()], target_directory=str(target))
+        return _find_openwakeword_model(".tflite") or _find_openwakeword_model(".onnx")
+    except Exception as exc:
+        print(f"[Wake Word] Téléchargement du modèle impossible : {exc}")
+        return None
 
 
 class AudioIO:
@@ -182,46 +265,40 @@ class AudioIO:
             print("[Wake Word] openwakeword indisponible, détection de wake word désactivée.")
             return
 
-        download_target = None
-        if openwakeword is not None:
-            download_target = os.path.join(
-                os.path.dirname(os.path.abspath(openwakeword.__file__)),
-                "resources",
-                "models",
-            )
+        model_path = _find_openwakeword_model(".tflite") or _find_openwakeword_model(".onnx")
 
-        try:
-            self.wake_model = Model(
-                wakeword_models=["hey_jarvis"],
-                inference_framework="tflite",
-            )
-            print("[Wake Word] Modèle chargé.")
-            return
-        except Exception as exc:
-            print(f"[Wake Word] Chargement initial impossible : {exc}")
-
-        if download_models is not None and download_target is not None:
+        def _load(framework: str, path: str | None) -> bool:
             try:
-                print("[Wake Word] Téléchargement du modèle Hey Jarvis...")
-                download_models(["hey_jarvis"], target_directory=download_target)
-                self.wake_model = Model(
-                    wakeword_models=["hey_jarvis"],
-                    inference_framework="tflite",
-                )
-                print("[Wake Word] Modèle chargé après téléchargement.")
-                return
-            except Exception as dl_exc:
-                print(f"[Wake Word] Téléchargement du modèle impossible : {dl_exc}")
+                kwargs = {"wakeword_models": [path] if path else [_openwakeword_model_name()]}
+                self.wake_model = Model(inference_framework=framework, **kwargs)
+                print(f"[Wake Word] Modèle chargé ({framework}).")
+                return True
+            except Exception as exc:
+                print(f"[Wake Word] Chargement ({framework}) impossible : {exc}")
+                return False
 
-        try:
-            self.wake_model = Model(
-                wakeword_models=["hey_jarvis"],
-                inference_framework="onnx",
-            )
-            print("[Wake Word] Modèle ONNX chargé.")
-        except Exception as onnx_exc:
-            print(f"[Wake Word] Aucun modèle wake-word disponible : {onnx_exc}")
-            self.wake_model = None
+        # 1. Chemin explicite trouvé (bundle, dossier utilisateur, site-packages).
+        if model_path and _load("tflite", model_path):
+            return
+        if model_path and _load("onnx", model_path):
+            return
+
+        # 2. Chargement par nom (openwakeword résout seul, si le modèle est présent
+        #    dans son répertoire par défaut).
+        if _load("tflite", None):
+            return
+
+        # 3. Téléchargement contrôlé vers le dossier utilisateur (premier lancement).
+        downloaded = _download_openwakeword_model()
+        if downloaded and _load("tflite", downloaded):
+            return
+        if downloaded and _load("onnx", downloaded):
+            return
+
+        # 4. État dégradé : aucune détection de wake word, Jarvis fonctionne
+        #    quand même (mode « écoute continue » ou réveil manuel).
+        print("[Wake Word] Aucun modèle wake-word disponible après téléchargement.")
+        self.wake_model = None
 
     # =========================================================
     # DÉMARRAGE

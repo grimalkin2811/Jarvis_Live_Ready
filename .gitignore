@@ -1,3 +1,4 @@
+# Environnement / secrets
 .env
 .venv/
 __pycache__/
@@ -19,3 +20,20 @@ data/
 routines.json
 schedule.db
 mode.json
+
+# Modèles OpenWakeWord téléchargés lors du build (binaires volumineux)
+resources/openwakeword/
+resources/models/
+
+# Builds & artefacts de packaging
+dist/
+build/
+*.spec.bak
+*.zip
+*.sha256
+*.exe
+
+# Outils
+.idea/
+.vscode/
+*.log

@@ -40,6 +40,7 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
+from . import paths
 from .memory import get_default_memory_manager
 from .modes import get_default_mode_manager
 from .routines import get_default_routine_manager
@@ -69,11 +70,8 @@ except Exception:  # pragma: no cover
 IS_WINDOWS = os.name == "nt"
 
 # Dossier de données persistantes (notes, mémos...).
-DATA_DIR = os.environ.get(
-    "JARVIS_DATA_DIR",
-    os.path.join(os.path.expanduser("~"), ".jarvis"),
-)
-NOTES_FILE = os.path.join(DATA_DIR, "notes.json")
+DATA_DIR = str(paths.data_dir())
+NOTES_FILE = os.environ.get("JARVIS_NOTES_FILE", str(paths.notes_file()))
 
 
 # ===========================================================================

@@ -16,11 +16,33 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
-DEFAULT_DATA_DIR = os.environ.get(
-    "JARVIS_DATA_DIR",
-    os.path.join(os.path.expanduser("~"), ".jarvis"),
-)
-DEFAULT_MEMORY_DB = os.path.join(DEFAULT_DATA_DIR, "memory.db")
+from . import paths
+
+DEFAULT_DATA_DIR = str(paths.data_dir())
+DEFAULT_MEMORY_DB = os.environ.get("JARVIS_MEMORY_DATABASE_PATH", str(paths.memory_db()))
+
+#: Version courante du schéma de la base mémoire. Toute modification de
+#: structure doit incrémenter ce numéro et ajouter la migration listée dans
+#: ``_MIGRATIONS`` (les données utilisateur sont conservées).
+MEMORY_SCHEMA_VERSION = 1
+
+#: Migrations de schéma, indexées par version cible. Chaque fonction reçoit la
+#: connexion SQLite et doit faire passer la base à la version suivante. Les
+#: données existantes ne sont jamais supprimées.
+_MIGRATIONS: dict[int, callable] = {}
+
+
+def _migrate(conn) -> None:
+    """Applique de façon idempotente les migrations de schéma manquantes."""
+    try:
+        current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+    except sqlite3.Error:
+        current = 0
+    for target in sorted(_MIGRATIONS):
+        if target <= current:
+            continue
+        _MIGRATIONS[target](conn)
+        conn.execute(f"PRAGMA user_version = {int(target)}")
 
 CATEGORIES = {
     "identity",
@@ -235,6 +257,16 @@ class MemoryManager:
                     )
                 except sqlite3.Error:
                     # FTS5 absent : les recherches LIKE restent disponibles.
+                    pass
+                # Applique les migrations de schéma éventuelles (données
+                # utilisateur préservées — voir _MIGRATIONS / _migrate).
+                _migrate(conn)
+                # Marque la version de schéma si aucune migration ne l'a fixée.
+                try:
+                    current = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                    if current == 0:
+                        conn.execute(f"PRAGMA user_version = {int(MEMORY_SCHEMA_VERSION)}")
+                except sqlite3.Error:
                     pass
             self.available = True
             self.last_error = None

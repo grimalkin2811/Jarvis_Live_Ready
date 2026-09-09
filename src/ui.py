@@ -17,7 +17,6 @@ import asyncio
 import sys
 import threading
 import traceback
-from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
@@ -27,16 +26,12 @@ from .audio import AudioIO
 from .config import load_config
 from .gemini_live import AuthError, GeminiLive
 from .memory import MemoryManager, set_default_memory_manager
-from . import protocols
+from . import paths, protocols
 from .scheduler import start_default_scheduler
 from UI import appearance_actions
 from UI import menu_state
 from UI.screen_halo_overlay import ScreenHaloOverlay
 from UI.notification_bridge import NotificationBridge
-
-
-def _ui_dir() -> Path:
-    return Path(__file__).resolve().parent.parent / "UI"
 
 
 class PresenceBridge(QObject):
@@ -315,7 +310,8 @@ def _build_tray_icon(on_activate, on_quit):
 
 
 def run_ui(mode: str = "desktop") -> int:
-    app = QApplication(sys.argv)
+    # Réutilise un QApplication déjà créé (assistant de premier lancement).
+    app = QApplication.instance() or QApplication(sys.argv)
 
     try:
         config = load_config()
@@ -338,7 +334,7 @@ def run_ui(mode: str = "desktop") -> int:
         return 1
 
     appearance_state = appearance_actions.load_state(
-        str(_ui_dir() / "appearance_state.json")
+        str(paths.appearance_state_file())
     )
 
     stop_event = threading.Event()

@@ -23,6 +23,7 @@ import sqlite3
 import threading
 
 from . import notifications
+from . import paths
 from .timeparse import (
     describe_schedule,
     format_datetime,
@@ -31,11 +32,8 @@ from .timeparse import (
     parse_when,
 )
 
-DEFAULT_DATA_DIR = os.environ.get(
-    "JARVIS_DATA_DIR",
-    os.path.join(os.path.expanduser("~"), ".jarvis"),
-)
-DEFAULT_SCHEDULE_DB = os.path.join(DEFAULT_DATA_DIR, "schedule.db")
+DEFAULT_DATA_DIR = str(paths.data_dir())
+DEFAULT_SCHEDULE_DB = os.environ.get("JARVIS_SCHEDULE_DATABASE_PATH", str(paths.schedule_db()))
 
 #: Fréquence de vérification des échéances.
 TICK_SECONDS = 15

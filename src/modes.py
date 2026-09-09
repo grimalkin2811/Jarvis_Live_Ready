@@ -21,12 +21,10 @@ try:  # Informations/processus système enrichis, optionnel.
 except Exception:  # pragma: no cover - dépend de l'environnement
     psutil = None
 
+from . import paths  # noqa: E402
 
-DEFAULT_DATA_DIR = os.environ.get(
-    "JARVIS_DATA_DIR",
-    os.path.join(os.path.expanduser("~"), ".jarvis"),
-)
-DEFAULT_MODES_PATH = os.path.join(DEFAULT_DATA_DIR, "mode.json")
+DEFAULT_DATA_DIR = str(paths.data_dir())
+DEFAULT_MODES_PATH = os.environ.get("JARVIS_MODES_PATH", str(paths.modes_file()))
 
 MODE_NORMAL = "normal"
 MODE_FOCUS = "focus"

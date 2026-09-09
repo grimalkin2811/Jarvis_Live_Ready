@@ -1,12 +1,209 @@
 # Jarvis Live Ready
 
-Assistant vocal Windows prêt à tester avec Gemini Live.
+Assistant vocal **Windows** avec Gemini Live (audio entrée/sortie, wake word
+« Hey Jarvis », barge-in, mémoire persistante, routines, rappels, notifications,
+modes focus/jeu, protocoles cinématiques et interface PySide6).
 
-## Démarrage
-1. Décompresse ce ZIP.
-2. Lance `setup.bat`.
-3. Entre ton nom et ta clé Gemini API.
-4. Une fois terminé, lance `Jarvis.bat`.
+Cette version est conçue pour être **distribuée** : un installateur
+`JarvisSetup.exe` installe l'application **sans Python ni `.venv`**, et un
+launcher (`JarvisLauncher.exe`) reçoit automatiquement les nouvelles versions via
+les **GitHub Releases**, **sans jamais toucher à vos données**.
+
+---
+
+## Pour les utilisateurs
+
+### Installer Jarvis
+
+1. Téléchargez `JarvisSetup-<version>.exe` depuis la page **Releases** du dépôt.
+2. Double-cliquez dessus. L'installation se fait **pour votre compte** (aucun
+   droit administrateur requis).
+3. Deux raccourcis sont créés (bureau et menu Démarrer) au choix.
+4. Lancez **Jarvis** depuis le raccourci (ou le launcher).
+
+> Vous n'avez **rien** à installer à côté : ni Python, ni `.venv`, ni `pip`.
+> L'application embarque tout ce dont elle a besoin.
+
+### Premier lancement (configuration)
+
+Au tout premier lancement, Jarvis vous demande :
+
+* votre **prénom** ;
+* votre **clé API Gemini** (sur <https://aistudio.google.com/app/apikey>) ;
+* le **modèle** (conservé par défaut).
+
+Ces informations sont enregistrées **sur votre PC**, dans
+`%LOCALAPPDATA%\Jarvis\config\config.json`. Aucune clé n'est envoyée ailleurs ni
+stockée dans l'application elle-même.
+
+### Mises à jour
+
+Le launcher vérifie automatiquement les **GitHub Releases** au démarrage :
+
+```text
+JarvisLauncher.exe
+   ├─ vérifie la version locale
+   ├─ interroge GitHub (dernière release)
+   ├─ si une version plus récente existe : vous demande confirmation
+   ├─ télécharge et vérifie (SHA-256)
+   └─ remplace l'application, préserve vos données, puis lance Jarvis
+```
+
+Vos données **survivent** aux mises à jour :
+
+| Donnée | Emplacement | Préservée |
+|---|---|---|
+| Configuration | `%LOCALAPPDATA%\Jarvis\config\` | ✅ |
+| Mémoire (SQLite) | `%LOCALAPPDATA%\Jarvis\memory.db` | ✅ |
+| Routines | `%LOCALAPPDATA%\Jarvis\routines.json` | ✅ |
+| Rappels | `%LOCALAPPDATA%\Jarvis\schedule.db` | ✅ |
+| Modes | `%LOCALAPPDATA%\Jarvis\mode.json` | ✅ |
+| Préférences UI | `%LOCALAPPDATA%\Jarvis\ui\` | ✅ |
+| Logs | `%LOCALAPPDATA%\Jarvis\logs\` | ✅ |
+| Modèles OpenWakeWord | `%LOCALAPPDATA%\Jarvis\models\` | ✅ |
+
+### Désinstallation
+
+Lancez **Panneau de configuration → Programmes → Désinstaller Jarvis**
+(vous pouvez aussi relancer l'installateur et choisir *Supprimer*).
+
+L'uninstallateur supprime **uniquement** le programme. Vos données (mémoire,
+config, routines…) sont **conservées**. Pour les effacer, supprimez le dossier
+`%LOCALAPPDATA%\Jarvis`.
+
+### Diagnostic
+
+En cas de problème, les journaux se trouvent dans :
+`%LOCALAPPDATA%\Jarvis\logs\jarvis.log` (avec rotation). En mode console,
+lancez `JarvisLauncher.exe --console` pour voir la sortie en direct.
+
+---
+
+## Pour les développeurs
+
+### Cloner et installer (environnement de développement)
+
+Les développeurs utilisent encore un `.venv` (facultatif pour l'utilisateur
+final, indispensable pour itérer).
+
+```bash
+# 1. Cloner
+git clone https://github.com/grimalkin2811/Jarvis_Live_Ready.git
+cd Jarvis_Live_Ready
+
+# 2. Environnement virtuel
+python -m venv .venv
+
+# 3. Dépendances
+.venv\Scripts\pip install -r requirements.txt   # Windows
+# ou : source .venv/bin/activate && pip install -r requirements.txt  # Linux/macOS
+
+# 4. Environnement "dev" : un fichier .env à la racine
+#    (setup.bat le crée ; sinon copiez ce bloc)
+copy .env.example .env              # Windows
+```
+
+Le build nécessite ensuite les outils de dev :
+
+```bash
+.venv\Scripts\pip install -r requirements-dev.txt   # ruff + pyinstaller
+```
+
+### Lancer en développement
+
+```bash
+.venv\Scripts\python -m src.main          # console / headless
+.venv\Scripts\python -m src.main --ui     # orbe morphing interactif
+.venv\Scripts\python -m src.main --desktop# overlay halo plein écran
+.venv\Scripts\python -m src.main --protocol wake_up  # séquence cinématique
+```
+
+> En développement, `Jarvis.bat` et `setup.bat` créent le `.venv` et le `.env`
+> automatiquement. Ils ne sont **pas** destinés à l'utilisateur final.
+
+### Configurer en développement
+
+Le `.env` (ou les variables d'environnement) reste supporté :
+
+```env
+JARVIS_USER=Prénom
+GEMINI_API_KEY=AIza...
+GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
+JARVIS_MEMORY_ENABLED=1
+JARVIS_ROUTINES_ENABLED=1
+JARVIS_REMINDERS_ENABLED=1
+```
+
+Au premier lancement, Jarvis migre ce `.env` vers `config.json`.
+
+### Lancer les tests
+
+```bash
+# Toute la suite (matériel audio et Gemini sont simulés)
+.venv\Scripts\python -m unittest discover tests
+```
+
+Les tests sont multiplateformes et ne déclenchent aucune action réelle. Ceux
+qui nécessitent Qt s'exécutent en mode `offscreen` (et passent sur Windows/CI).
+
+### Construire le build local (Windows)
+
+```powershell
+# 1. Télécharge les modèles OpenWakeWord et appelle PyInstaller (app + launcher)
+.\scripts\build_windows.ps1 -DistDir dist
+
+# 2. Compile l'installateur Windows (Inno Setup)
+.\scripts\download_models.py            # si non fait par le build
+iscc packaging\installer.iss /DVERSION=1.0.0 /DSourceDir=..\dist
+```
+
+Résultats dans `dist/` :
+
+```text
+dist/
+├── Jarvis/                       # dossier onedir de l'application (Jarvis.exe + _internal)
+├── JarvisLauncher.exe            # le launcher
+├── Jarvis-v<version>-portable.zip        # archive téléchargée par le launcher
+├── Jarvis-v<version>-portable.zip.sha256 # empreinte SHA-256
+└── JarvisSetup-<version>.exe     # installateur Inno Setup
+```
+
+La version provient d'**une seule source** : `src/version.py`. Toutes les
+parties (Jarvis, launcher, updater, build, CI) la lisent.
+
+### Architecture (code / données)
+
+```text
+%LOCALAPPDATA%\Jarvis\
+├── JarvisLauncher.exe        # launcher (stable, met à jour l'app)
+├── version.json              # marqueur de version locale
+├── app\                      # l'application (Jarvis.exe + bundle) -> REMPLACÉE
+│   ├── Jarvis.exe
+│   └── _internal\
+├── config\config.json        # données utilisateur
+├── memory.db                 # mémoire SQLite
+├── routines.json
+├── schedule.db
+├── mode.json
+├── ui\                       # préférences de l'interface
+├── logs\jarvis.log           # logs (rotation)
+└── models\openwakeword\      # modèles wake word
+```
+
+Le principe est simple :
+
+* **Code / application** : remplaçable à chaque mise à jour (`app\`).
+* **Données utilisateur** : hors du code, jamais écrasées par une mise à jour.
+
+---
+
+## Fonctionnalités (détail)
+
+> **Note configuration** : les sections ci-dessous mentionnent parfois `~/.jarvis`
+> et `.env`. En développement, `.env` reste supporté et les fichiers de données
+> restent dans `~/.jarvis` (Linux) ou `%LOCALAPPDATA%\Jarvis` (Windows dev).
+> Dans l'**application distribuée**, tout est géré par `src/paths.py` et
+> `config.json` (voir la section « Architecture »).
 
 ## Interface graphique (PySide6)
 
@@ -136,15 +333,18 @@ pas l'intégralité des conversations.
 
 ### Stockage
 
-Par défaut, la base est stockée hors du code source :
+Par défaut, la base est stockée **hors du code source** :
 
 ```text
-~/.jarvis/memory.db
+%LOCALAPPDATA%\Jarvis\memory.db      (Windows, application distribuée)
+~/.jarvis/memory.db                  (Linux/macOS, développement)
 ```
 
-Le dossier peut être changé avec `JARVIS_DATA_DIR` ou le chemin complet avec
-`JARVIS_MEMORY_DATABASE_PATH`. Les fichiers `data/` et `*.db` sont ignorés par
-Git pour éviter d'envoyer des souvenirs privés dans le repository.
+Le dossier de données est centralisé dans `src/paths.py`. Il peut être changé
+avec `JARVIS_DATA_DIR` (racine du dossier) ou, pour la mémoire
+spécifiquement, avec `JARVIS_MEMORY_DATABASE_PATH`. Les fichiers `data/`,
+`*.db` et les modèles téléchargés sont ignorés par Git pour éviter d'envoyer
+des souvenirs privés dans le repository.
 
 ### Fonctionnement
 
@@ -518,4 +718,30 @@ annulation, sonde ou outil en échec, refus des outils destructeurs, codes
 secrets (expiration, accents, non-collision avec les raccourcis `m`/`s`/`d`),
 geste des trois clics, et rendu offscreen de l'overlay à chaque étape sur
 trois résolutions.
+
+La distribution ajoute des tests ciblés : `test_version` (source unique de
+version, comparaison sémantique), `test_paths` (emplacements de données
+utilisateur), `test_config` (config JSON + migration depuis `.env`),
+`test_updater` (détection de release, SHA-256, téléchargement, installation
+atomique et rollback), `test_logging_setup` (logs à rotation) et
+`test_first_run` (assistant de premier lancement).
+
+### Publication d'une nouvelle version
+
+1. Modifiez `src/version.py` (`__version__`).
+2. `git add . && git commit -m "v1.0.1"`.
+3. `git push`.
+4. Créez un tag : `git tag v1.0.1 && git push origin v1.0.1`.
+5. Le workflow GitHub Actions (`.github/workflows/build.yml`) construit
+   automatiquement l'application, le launcher et l'installateur, puis **crée la
+   release** avec :
+
+   ```text
+   JarvisSetup-<version>.exe
+   Jarvis-v<version>-portable.zip
+   Jarvis-v<version>-portable.zip.sha256
+   ```
+
+6. Les utilisateurs existants reçoivent cette version via le launcher
+   automatiquement.
 

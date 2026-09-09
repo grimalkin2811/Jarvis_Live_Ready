@@ -20,7 +20,26 @@ def _startup_launcher_path() -> Path:
     appdata = os.environ.get("APPDATA", "")
     if not appdata:
         return Path()
-    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Jarvis.bat"
+    return Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Jarvis.lnk"
+
+
+def _command_path() -> Path:
+    """Chemin du programme à lancer au démarrage.
+
+    * Application distribuée : ``Jarvis.exe`` (Python embarqué) dans le
+      dossier de l'installation.
+    * Développement : ``Jarvis.bat`` (utilise ``.venv``) à la racine du dépôt.
+    """
+    import sys as _sys
+
+    if getattr(_sys, "frozen", False):
+        return Path(_sys.executable).resolve().parent / "Jarvis.exe"
+    # Chemin de travail du module : racine du dépôt.
+    root = Path(__file__).resolve().parents[1]
+    jarvis_bat = root / "Jarvis.bat"
+    if jarvis_bat.is_file():
+        return jarvis_bat
+    return jarvis_bat
 
 
 def startup_status() -> bool:
@@ -34,9 +53,11 @@ def startup_status() -> bool:
 def set_startup(enabled: bool) -> dict:
     """Active/désactive le lancement de Jarvis au démarrage de Windows.
 
-    Crée ou supprime un petit .bat dans le dossier ``Startup`` du profil.
-    Sur les autres systèmes, l'action échoue proprement : l'UI affiche alors
-    un message honnête au lieu de prétendre que le réglage a été appliqué.
+    Crée ou supprime un raccourci (``.lnk``) dans le dossier ``Startup`` du
+    profil, pointant vers ``Jarvis.exe`` (app distribuée) ou ``Jarvis.bat``
+    (développement). Sur les autres systèmes, l'action échoue proprement :
+    l'UI affiche alors un message honnête au lieu de prétendre que le réglage
+    a été appliqué.
     """
     try:
         launcher = _startup_launcher_path()
@@ -45,21 +66,42 @@ def set_startup(enabled: bool) -> dict:
                 "success": False,
                 "error": "Lancement automatique disponible uniquement sur Windows",
             }
-        jarvis_bat = Path(__file__).resolve().parents[1] / "Jarvis.bat"
-        if not jarvis_bat.is_file():
-            return {"success": False, "error": "Jarvis.bat introuvable"}
+        command = _command_path()
+        if not command.is_file():
+            return {"success": False, "error": f"Programme introuvable : {command}"}
         if enabled:
-            content = (
-                "@echo off\r\n"
-                f'start "" "{jarvis_bat}" --ui\r\n'
-            )
             launcher.parent.mkdir(parents=True, exist_ok=True)
-            launcher.write_text(content, encoding="ascii")
+            if launcher.suffix == ".lnk":
+                _create_shortcut(launcher, command)
+            else:
+                content = (
+                    "@echo off\r\n"
+                    f'start "" "{command}" --ui\r\n'
+                )
+                launcher.write_text(content, encoding="ascii")
         elif launcher.is_file():
             launcher.unlink()
         return {"success": True, "enabled": enabled}
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+def _create_shortcut(link_path: Path, target: Path) -> None:
+    """Crée un raccourci Windows ``.lnk`` (via PowerShell)."""
+    import subprocess
+
+    script = (
+        "$W = New-Object -ComObject WScript.Shell; "
+        f"$S = $W.CreateShortcut('{link_path}'); "
+        f"$S.TargetPath = '{target}'; "
+        f"$S.Arguments = '--ui'; "
+        "$S.Save()"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=True,
+        capture_output=True,
+    )
 
 
 @dataclass
