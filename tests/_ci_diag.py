@@ -150,7 +150,10 @@ def _install_exit_protocol():
                 module = "unittest.loader"
             failing.add(module or "unittest.loader")
         if not failing:
-            os._exit(7)
+            # Suite verte : laisser unittest se terminer naturellement
+            # (code 0 => step réussi).
+            print("::notice::suite verte (aucun échec)", flush=True)
+            return result
         index_map = {name: i for i, name in enumerate(_test_module_names())}
         mask = 0
         report_lines = [
