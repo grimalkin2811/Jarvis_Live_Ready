@@ -1,5 +1,69 @@
 platform=linux python=3.11.2
-testsRun=243 errors=7 failures=0 skipped=0
+testsRun=201 errors=11 failures=0 skipped=0
+
+======================================================================
+ERROR: unittest.loader._FailedTest.test_audio_controls
+ImportError: Failed to import test module: test_audio_controls
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/unittest/loader.py", line 407, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
+    __import__(name)
+  File "/home/user/Jarvis_Live_Ready/tests/test_audio_controls.py", line 19, in <module>
+    import numpy as np  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'numpy'
+
+
+======================================================================
+ERROR: unittest.loader._FailedTest.test_config
+ImportError: Failed to import test module: test_config
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/unittest/loader.py", line 407, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
+    __import__(name)
+  File "/home/user/Jarvis_Live_Ready/tests/test_config.py", line 13, in <module>
+    from src.config import Config, is_configured, load_config, save_config  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/Jarvis_Live_Ready/src/config.py", line 20, in <module>
+    from dotenv import load_dotenv
+ModuleNotFoundError: No module named 'dotenv'
+
+
+======================================================================
+ERROR: unittest.loader._FailedTest.test_gemini_live
+ImportError: Failed to import test module: test_gemini_live
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/unittest/loader.py", line 407, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
+    __import__(name)
+  File "/home/user/Jarvis_Live_Ready/tests/test_gemini_live.py", line 19, in <module>
+    from src.gemini_live import AuthError, GeminiLive, _is_auth_error  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/user/Jarvis_Live_Ready/src/gemini_live.py", line 4, in <module>
+    from google import genai
+ModuleNotFoundError: No module named 'google'
+
+
+======================================================================
+ERROR: unittest.loader._FailedTest.test_interruption
+ImportError: Failed to import test module: test_interruption
+Traceback (most recent call last):
+  File "/usr/lib/python3.11/unittest/loader.py", line 407, in _find_test_path
+    module = self._get_module_from_name(name)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
+    __import__(name)
+  File "/home/user/Jarvis_Live_Ready/tests/test_interruption.py", line 27, in <module>
+    import numpy as np  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'numpy'
+
 
 ======================================================================
 ERROR: unittest.loader._FailedTest.test_interruption_ui
@@ -10,10 +74,10 @@ Traceback (most recent call last):
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
     __import__(name)
-  File "/home/user/Jarvis_Live_Ready/tests/test_interruption_ui.py", line 16, in <module>
-    from PySide6.QtWidgets import QApplication  # noqa: E402
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+  File "/home/user/Jarvis_Live_Ready/tests/test_interruption_ui.py", line 15, in <module>
+    from PySide6.QtCore import Qt  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'PySide6'
 
 
 ======================================================================
@@ -28,7 +92,7 @@ Traceback (most recent call last):
   File "/home/user/Jarvis_Live_Ready/tests/test_menu_render_offscreen.py", line 15, in <module>
     from PySide6.QtWidgets import QApplication  # noqa: E402
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+ModuleNotFoundError: No module named 'PySide6'
 
 
 ======================================================================
@@ -45,9 +109,9 @@ Traceback (most recent call last):
     ^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/home/user/Jarvis_Live_Ready/tests/../UI/__init__.py", line 3, in <module>
     from .screen_halo_overlay import ScreenHaloOverlay, build_presence_hook
-  File "/home/user/Jarvis_Live_Ready/tests/../UI/screen_halo_overlay.py", line 15, in <module>
-    from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+  File "/home/user/Jarvis_Live_Ready/tests/../UI/screen_halo_overlay.py", line 6, in <module>
+    from PySide6.QtCore import (
+ModuleNotFoundError: No module named 'PySide6'
 
 
 ======================================================================
@@ -59,10 +123,10 @@ Traceback (most recent call last):
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
     __import__(name)
-  File "/home/user/Jarvis_Live_Ready/tests/test_menu_ux.py", line 23, in <module>
-    from PySide6.QtWidgets import QApplication  # noqa: E402
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+  File "/home/user/Jarvis_Live_Ready/tests/test_menu_ux.py", line 22, in <module>
+    from PySide6.QtCore import QPointF, Qt  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'PySide6'
 
 
 ======================================================================
@@ -74,10 +138,10 @@ Traceback (most recent call last):
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
     __import__(name)
-  File "/home/user/Jarvis_Live_Ready/tests/test_protocol_ui.py", line 17, in <module>
-    from PySide6.QtGui import QKeyEvent, QMouseEvent  # noqa: E402
-    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+  File "/home/user/Jarvis_Live_Ready/tests/test_protocol_ui.py", line 16, in <module>
+    from PySide6.QtCore import QPointF, Qt  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+ModuleNotFoundError: No module named 'PySide6'
 
 
 ======================================================================
@@ -89,9 +153,9 @@ Traceback (most recent call last):
              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/usr/lib/python3.11/unittest/loader.py", line 350, in _get_module_from_name
     __import__(name)
-  File "/home/user/Jarvis_Live_Ready/tests/test_routines_ui.py", line 15, in <module>
-    from PySide6.QtTest import QTest
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+  File "/home/user/Jarvis_Live_Ready/tests/test_routines_ui.py", line 14, in <module>
+    from PySide6.QtCore import Qt
+ModuleNotFoundError: No module named 'PySide6'
 
 
 ======================================================================
@@ -108,7 +172,7 @@ Traceback (most recent call last):
     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
   File "/home/user/Jarvis_Live_Ready/tests/../UI/__init__.py", line 3, in <module>
     from .screen_halo_overlay import ScreenHaloOverlay, build_presence_hook
-  File "/home/user/Jarvis_Live_Ready/tests/../UI/screen_halo_overlay.py", line 15, in <module>
-    from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen, QRadialGradient
-ImportError: libGL.so.1: cannot open shared object file: No such file or directory
+  File "/home/user/Jarvis_Live_Ready/tests/../UI/screen_halo_overlay.py", line 6, in <module>
+    from PySide6.QtCore import (
+ModuleNotFoundError: No module named 'PySide6'
 
