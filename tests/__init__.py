@@ -2,6 +2,7 @@
 
 import gc
 import os
+import sys
 import tempfile
 import unittest
 
@@ -18,6 +19,24 @@ def _cleanup_with_gc(self):
 tempfile.TemporaryDirectory.cleanup = _cleanup_with_gc
 
 
+def _make_streams_unicode_safe():
+    """Rendre stdout/stderr tolérants aux caractères non cp1252.
+
+    Sur les runners Windows, stdout/stderr redirigés utilisent l'encodage
+    locale (cp1252) : les bandeaux Unicode de Jarvis (╔═══, etc.) lèveraient
+    UnicodeEncodeError en plein milieu des tests. En UTF-8 + ``replace``,
+    tout s'affiche sans jamais casser une exécution.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except AttributeError:
+            pass  # streams remplacés par des objets sans reconfigure (pytest, etc.)
+
+
+_make_streams_unicode_safe()
+
+
 def _emit_github_annotations():
     """En CI, émettre chaque échec comme annotation GitHub ``::error``.
 
@@ -29,14 +48,30 @@ def _emit_github_annotations():
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
 
+    print("::notice::tests/__init__ loaded: annotations + utf-8 streams active", flush=True)
+
     original_print_errors = unittest.TextTestResult.printErrors
 
     def print_errors_with_annotations(self):
-        for test, err in self.errors + self.failures:
-            lines = [ln for ln in err.splitlines() if ln.strip()]
-            last = lines[-1] if lines else ""
-            kind = "ERROR" if (test, err) in self.errors else "FAIL"
-            print(f"::error::{kind} {test.id()} — {last}")
+        print(
+            f"::notice::unittest done: errors={len(self.errors)} "
+            f"failures={len(self.failures)} skipped={len(getattr(self, 'skipped', []))}",
+            flush=True,
+        )
+        errors = list(self.errors)
+        failures = list(self.failures)
+        for kind, entries in (("ERROR", errors), ("FAIL", failures)):
+            for test, err in entries:
+                lines = [ln for ln in err.splitlines() if ln.strip()]
+                last = lines[-1] if lines else ""
+                # ASCII only + borne a 400 caracteres : une commande de
+                # workflow doit rester monoligne et encodable partout.
+                msg = f"{kind} {test.id()} :: {last}"[:400]
+                msg = msg.encode("ascii", "replace").decode("ascii")
+                try:
+                    print(f"::error::{msg}", flush=True)
+                except Exception:
+                    pass
         original_print_errors(self)
 
     unittest.TextTestResult.printErrors = print_errors_with_annotations
