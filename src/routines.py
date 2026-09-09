@@ -42,13 +42,11 @@ import threading
 import time
 
 from .routine_presets import builtin_routines
+from . import paths
 from .timeparse import describe_schedule, normalize, parse_schedule
 
-DEFAULT_DATA_DIR = os.environ.get(
-    "JARVIS_DATA_DIR",
-    os.path.join(os.path.expanduser("~"), ".jarvis"),
-)
-DEFAULT_ROUTINES_PATH = os.path.join(DEFAULT_DATA_DIR, "routines.json")
+DEFAULT_DATA_DIR = str(paths.data_dir())
+DEFAULT_ROUTINES_PATH = os.environ.get("JARVIS_ROUTINES_PATH", str(paths.routines_file()))
 
 #: Outils interdits dans une routine : irréversibles, ou sources de récursion.
 FORBIDDEN_TOOLS = {

@@ -15,11 +15,14 @@ Exemples :
 import argparse
 import asyncio
 import sys
-from pathlib import Path
 
 # Les imports lourds (audio, Gemini) sont faits dans run_headless : ainsi
 # « python -m src.main --protocol wake_up » joue la séquence cinématique
 # même sans micro, sans clé API et sans sounddevice installé.
+
+from . import first_run, paths, settings
+from . import logging_setup
+from .version import get_version
 
 # Pont vers les réglages du menu radial. Il est optionnel : sans PySide6
 # (mode console minimal), Jarvis fonctionne avec les valeurs par défaut.
@@ -38,8 +41,7 @@ def _load_menu_bridge() -> None:
     try:
         from UI import menu_state as ms
 
-        path = Path(__file__).resolve().parent.parent / "UI" / "menu_state.json"
-        ms.load_state(str(path))
+        ms.load_state(str(paths.menu_state_file()))
     except Exception:
         pass
 
@@ -54,14 +56,24 @@ async def run_headless():
     try:
         config = load_config()
     except Exception as exc:
-        raise RuntimeError("La configuration Jarvis est manquante. Relance setup.bat.") from exc
+        # En distribution, on lance l'assistant de première configuration
+        # plutôt que de faire planter l'application.
+        try:
+            cfg = first_run.run_wizard(gui=False)
+        except Exception:
+            cfg = None
+        if cfg is None:
+            raise RuntimeError(
+                "La configuration Jarvis est manquante ou incomplète. "
+                "Relance Jarvis et complète l'assistant de configuration."
+            ) from exc
+        config = load_config()
 
     _load_menu_bridge()
 
     loop = asyncio.get_running_loop()
     gemini = None
     audio = None
-    task = None
     scheduler = None
 
     def mic(pcm):
@@ -128,12 +140,12 @@ async def run_headless():
                 print(f"\n[Jarvis] {exc}")
                 print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
                 break
-            except Exception as exc:
+            except Exception:
                 import traceback
                 if gemini.reconnect_requested:
                     pass
                 else:
-                    print(f"\n[Jarvis] Connexion perdue ou erreur:")
+                    print("\n[Jarvis] Connexion perdue ou erreur:")
                     traceback.print_exc()
                     audio.awake = False
                     try:
@@ -190,6 +202,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
 
+    # Journalisation : un exécutable distribué ne dépend pas d'une console.
+    is_gui = args.ui or args.desktop
+    try:
+        logging_setup.setup_logging(console=not is_gui)
+    except Exception:
+        pass
+
+    log = logging_setup.get_logger("main")
+    log.info("Jarvis %s démarre (mode=%s)", get_version(), "ui" if args.ui else "desktop" if args.desktop else "console")
+
     # Protocole seul : la séquence cinématique en mode console, sans micro
     # ni clé API. C'est la démonstration la plus rapide de la fonction.
     if getattr(args, "protocol", None):
@@ -210,6 +232,17 @@ def main(argv=None) -> int:
         from .ui import run_ui
 
         mode = "ui" if args.ui else "desktop"
+
+        # Premier lancement (absence de config.json) : assistant de
+        # configuration avant d'ouvrir l'orbe.
+        if settings.first_run_needed():
+            from PySide6.QtWidgets import QApplication
+
+            app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841 — garde une référence vivante
+            cfg = first_run.run_wizard(gui=True)
+            if cfg is None:
+                print("[Jarvis] Configuration annulée.")
+                return 1
         return run_ui(mode)
 
     try:

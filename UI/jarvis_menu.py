@@ -12,7 +12,6 @@ Run:
 from __future__ import annotations
 
 import math
-import os
 import re
 import sys
 import threading
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 from . import appearance_actions
 from . import menu_state
 from . import system_actions
+from src import paths
 
 
 voice_energy = 0.0
@@ -264,11 +264,11 @@ class MorphingOrbWidget(QWidget):
         self.glow_color = QColor(70, 180, 255)
         self.text_color = QColor(210, 235, 255)
         self._base_radius_default = 110.0
-        self._appearance_state_path = os.path.join(os.path.dirname(__file__), "appearance_state.json")
+        self._appearance_state_path = str(paths.appearance_state_file())
         self.appearance_state = appearance_actions.load_state(self._appearance_state_path)
         self._appearance_signature = None
         self._apply_appearance_state()
-        self._system_state_path = os.path.join(os.path.dirname(__file__), "system_state.json")
+        self._system_state_path = str(paths.system_state_file())
         self.system_state = system_actions.load_state(self._system_state_path)
 
         # STATE
@@ -341,7 +341,7 @@ class MorphingOrbWidget(QWidget):
         self._mode_checked_at = -10.0
         self._visuals_suppressed_by_mode = False
         # État interactif persistant du menu.
-        self._menu_state_path = os.path.join(os.path.dirname(__file__), "menu_state.json")
+        self._menu_state_path = str(paths.menu_state_file())
         self.menu_state = menu_state.load_state(self._menu_state_path)
         self._menu_open_projection = self.base_radius * 0.42
         self._menu_close_projection = self.base_radius * 3.00
@@ -367,11 +367,7 @@ class MorphingOrbWidget(QWidget):
         # debug toggle (press 'D' to enable console diagnostics)
         self.debug_mode = False
         # debug log file path and throttle state
-        try:
-            base_dir = os.path.dirname(__file__)
-        except NameError:
-            base_dir = os.getcwd()
-        self._debug_log_path = os.path.join(base_dir, "jarvis_debug.log")
+        self._debug_log_path = str(paths.debug_log_file())
         self._debug_last_write = -1.0
         # overall time scale for animation speed (1.0 = normal). Increase for more reactive feel.
         self.time_scale = 1.25
