@@ -21,6 +21,11 @@ for pkg in ("openwakeword",):
     binaries += b
     hiddenimports += h
 
+# google.genai : sous-modules dynamiques (client, types, live) non détectés
+# statiquement par modulegraph.
+hiddenimports += collect_submodules("google.genai")
+hiddenimports += collect_submodules("google.genai.live")
+
 # openwakeword télécharge parfois ses modèles dans resources/models ;
 # on les récupère s'ils existent déjà (CI les télécharge avant le build).
 datas += collect_data_files("openwakeword", include_py_files=False)
