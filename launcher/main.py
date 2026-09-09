@@ -73,12 +73,14 @@ def _launch(args: argparse.Namespace) -> None:
             cmd.append("--ui")
 
     print(f"[Launcher] Lancement de Jarvis ({' '.join(cmd)})...")
-    # subprocess avec création de nouveau groupe de processus : si Jarvis
-    # échoue, le launcher ne meurt pas avec lui.
+    # Jarvis tourne dans un processus séparé ; le launcher ne doit pas
+    # s'attacher à lui (sinon il resterait ouvert tant que Jarvis est ouvert).
     try:
         if getattr(args, "console", False):
-            return subprocess.call(cmd)
-        return subprocess.Popen(cmd)
+            subprocess.call(cmd)
+        else:
+            subprocess.Popen(cmd)
+        return 0
     except FileNotFoundError:
         print(f"[Launcher] Démarrage impossible : {cmd[0]} introuvable.")
         print("[Launcher] Réinstallez Jarvis ou lancez Jarvis.exe directement.")

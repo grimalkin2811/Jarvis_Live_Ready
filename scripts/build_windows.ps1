@@ -34,15 +34,18 @@ $Channel = python -c "import sys; sys.path.insert(0, '.'); from src.version impo
 $Channel = $Channel.Trim()
 Write-Host "Version : $Version (canal : $Channel)"
 
-if (-not (Test-Path ".venv")) {
-    Write-Host "[build] Création de l'environnement virtuel..."
-    python -m venv .venv
-}
+# Réutilise un .venv existant, sinon le python actif (CI l'a déjà installé).
 $venvPython = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) { $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe") }
-Write-Host "Python venv : $venvPython"
+if (-not (Test-Path $venvPython)) {
+    $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe")
+}
+if (-not (Test-Path $venvPython)) {
+    Write-Host "[build] Aucun .venv trouvé : on utilise le python actif."
+    $venvPython = "python"
+}
+Write-Host "Python build : $venvPython"
 
-# Installer les dépendances de build.
+# Vérifie/installe les dépendances de build (idempotent).
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install -r requirements.txt
 & $venvPython -m pip install pyinstaller
