@@ -45,8 +45,8 @@ class RoutinesDialogTests(unittest.TestCase):
         self.dialog.deleteLater()
         self.app.processEvents()
 
-    def test_all_ten_presets_are_visible_in_scrollable_catalogue(self):
-        self.assertEqual(len(self.dialog.rows), 10)
+    def test_all_twelve_presets_are_visible_in_scrollable_catalogue(self):
+        self.assertEqual(len(self.dialog.rows), 12)
         self.assertFalse(self.dialog.grab().isNull())
         self.assertGreater(self.dialog.scroll.verticalScrollBar().maximum(), 0)
         last = self.dialog.rows["Espace disque"]["toggle"]
@@ -54,7 +54,7 @@ class RoutinesDialogTests(unittest.TestCase):
         self.app.processEvents()
         self.assertTrue(last.isVisibleTo(self.dialog.scroll))
         self.assertFalse(last.isChecked())
-        self.assertIn("0 / 10", self.dialog.summary.text())
+        self.assertIn("0 / 12", self.dialog.summary.text())
 
     def test_toggle_by_keyboard_persists_without_running_routine(self):
         toggle = self.dialog.rows["Hydratation"]["toggle"]
@@ -66,7 +66,7 @@ class RoutinesDialogTests(unittest.TestCase):
             self.assertTrue(toggle.isChecked())
             reopened = routines.RoutineManager(self.path)
             self.assertTrue(reopened.describe_routine("Hydratation")["active"])
-            self.assertIn("1 / 10", self.dialog.summary.text())
+            self.assertIn("1 / 12", self.dialog.summary.text())
             QTest.keyClick(toggle, Qt.Key_Space)
             self.assertFalse(toggle.isChecked())
             self.assertFalse(reopened.describe_routine("Hydratation")["active"])
@@ -98,12 +98,11 @@ class RoutinesDialogTests(unittest.TestCase):
         for index in range(8):
             self.manager.create_routine(f"Personnelle {index}", "flip_coin()")
         self.dialog.refresh(force=True)
-        self.assertEqual(len(self.dialog.rows), 18)
+        self.assertEqual(len(self.dialog.rows), 20)
         self.dialog.rows["Personnelle 7"]["toggle"].click()
         self.assertFalse(self.manager.describe_routine("Personnelle 7")["active"])
 
     def test_tray_menu_keeps_catalogue_action_alive(self):
-        # Importer le lanceur ne doit nécessiter ni périphérique audio ni clé.
         fake_audio = sys.modules.get("sounddevice", types.ModuleType("sounddevice"))
         with patch.dict(sys.modules, {"sounddevice": fake_audio}):
             from src.ui import _build_tray_icon
@@ -135,11 +134,8 @@ class RoutinesDialogTests(unittest.TestCase):
         self.assertEqual(custom.routine_name, long_name)
         self.assertEqual(len(custom.label), 22)
         widget = jarvis_menu.MorphingOrbWidget()
-        # Ne pas toucher les préférences d'un utilisateur qui lance les tests.
         widget._menu_state_path = str(Path(self.directory.name) / "menu.json")
-        widget._appearance_state_path = str(
-            Path(self.directory.name) / "appearance.json"
-        )
+        widget._appearance_state_path = str(Path(self.directory.name) / "appearance.json")
         widget._system_state_path = str(Path(self.directory.name) / "system.json")
         try:
             with patch("UI.routines_dialog.show_routines_dialog") as show:
@@ -166,9 +162,7 @@ class NotificationBridgeTests(unittest.TestCase):
 
     def test_backend_notification_is_dispatched_to_gui_thread(self):
         seen_threads = []
-        self.tray.showMessage.side_effect = lambda *args: seen_threads.append(
-            threading.get_ident()
-        )
+        self.tray.showMessage.side_effect = lambda *args: seen_threads.append(threading.get_ident())
         main_thread = threading.get_ident()
         with patch.object(QSystemTrayIcon, "supportsMessages", return_value=True):
             thread = threading.Thread(
@@ -177,7 +171,7 @@ class NotificationBridgeTests(unittest.TestCase):
             thread.start()
             thread.join(timeout=2)
             self.assertFalse(thread.is_alive())
-            self.tray.showMessage.assert_not_called()  # le signal attend la boucle Qt
+            self.tray.showMessage.assert_not_called()
             self.app.processEvents()
         self.assertEqual(seen_threads, [main_thread])
         self.assertEqual(
