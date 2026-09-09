@@ -6,7 +6,10 @@ target-version = "py311"
 # Sélection volontairement raisonnable : erreurs de syntaxe/undefined (E9),
 # pyflakes (F), et une partie de pycodestyle (E4/E7). On ignore les réglages
 # cosmétiques (E501 ligne longue) et les règles bruyantes non essentielles.
-extend-select = ["E4", "E7", "E9", "F"]
+# ``select`` explicite (et non ``extend-select``) : les versions récentes de
+# ruff ont élargi leurs règles par défaut (BLE001, S110, etc.) et un simple
+# ``extend-select`` les activerait aussi.
+select = ["E4", "E7", "E9", "F"]
 ignore = [
     "E501",   # longueur de ligne (cosmétique, nombreuses lignes existantes)
     "E741",   # nom de variable ambigu (l)

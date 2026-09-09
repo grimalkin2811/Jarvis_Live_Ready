@@ -94,16 +94,19 @@ class Scheduler:
     # ------------------------------------------------------------------
     @contextmanager
     def _connect(self):
-        """Open a SQLite connection and always close it on context exit.
+        """Open a SQLite connection, commit on success, always close it.
 
-        sqlite3.Connection.__exit__ commits/rolls back but does not close the
-        connection. Closing here is important on Windows, where SQLite WAL
-        files remain locked while the connection object is alive.
+        Utilisé comme ``with self._connect() as conn``, ce helper reproduit la
+        sémantique de ``sqlite3.Connection`` utilisé comme context manager
+        (commit si succès, rollback si exception) et ferme en plus la
+        connexion. Fermer ici est important sous Windows : les fichiers WAL
+        restent verrouillés tant que l'objet connexion est vivant.
         """
         conn = sqlite3.connect(self.database_path, timeout=5)
         conn.row_factory = sqlite3.Row
         try:
-            yield conn
+            with conn:
+                yield conn
         finally:
             conn.close()
 
