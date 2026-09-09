@@ -498,12 +498,32 @@ class ProtocolPresenter(QObject):
         self.overlay = BootSequenceOverlay()
         protocols.add_listener(self._on_event)
 
+    def _visuals_suppressed(self) -> bool:
+        try:
+            from src.modes import get_default_mode_manager
+
+            return bool(get_default_mode_manager().should_suppress_visuals())
+        except Exception:
+            return False
+
     def _on_event(self, event: dict) -> None:
         # Appelé depuis le thread du protocole : on repasse par un signal.
+        # En mode jeu, aucun overlay cinématique ne doit apparaître par-dessus
+        # le jeu ; on annule également la séquence active si elle vient de
+        # démarrer avant l'activation du mode.
+        if self._visuals_suppressed():
+            try:
+                protocols.cancel_active()
+                self.overlay.hide()
+            except Exception:
+                pass
+            return
         self.overlay.event_received.emit(event)
 
     def play(self, name: str = "wake_up") -> bool:
         """Lance un protocole ; renvoie False si le nom est inconnu."""
+        if self._visuals_suppressed():
+            return False
         return protocols.start_protocol(name) is not None
 
     def cancel(self) -> None:

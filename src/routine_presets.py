@@ -1,4 +1,4 @@
-"""Catalogue livré avec Jarvis : dix routines locales, prêtes à activer.
+"""Catalogue livré avec Jarvis : douze routines locales, prêtes à activer.
 
 Aucun compte, chemin personnel ou logiciel tiers à renseigner. Les identifiants
 stables servent à la migration ; les noms restent libres et prononçables.
@@ -123,6 +123,24 @@ _PRESETS = (
         "Ne supprime aucun fichier.",
         "schedule": _schedule("00:00", end="23:00", interval=60),
         "steps": [{"tool": "check_disk_alert", "args": {}}],
+    },
+    {
+        "preset_id": "focus_mode",
+        "name": "Mode focus",
+        "description": "Session de révision protégée : bloque les jeux, le streaming, "
+        "les réseaux sociaux, les achats, les outils de hasard et les bavardages "
+        "hors travail. Ferme aussi les distractions connues quand Windows le permet.",
+        "schedule": None,
+        "steps": [{"tool": "activate_focus_mode", "args": {}}],
+    },
+    {
+        "preset_id": "game_mode",
+        "name": "Mode jeu",
+        "description": "Optimise Jarvis pour jouer : ferme des processus lourds non essentiels, "
+        "bloque toute ouverture, fermeture, capture, notification ou interaction "
+        "à l'écran. Les commandes de volume et la sortie du mode restent possibles.",
+        "schedule": None,
+        "steps": [{"tool": "activate_game_mode", "args": {}}],
     },
 )
 

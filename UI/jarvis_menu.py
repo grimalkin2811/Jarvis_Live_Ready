@@ -215,7 +215,7 @@ def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
         result = get_default_routine_manager().list_routines()
         if not result.get("success"):
             return []
-        # Les dix presets ont leur panneau défilant : ne pas les tronquer
+        # Les presets ont leur panneau défilant : ne pas les tronquer
         # aux six raccourcis réservés ici aux macros personnelles actives.
         return [str(item["name"]) for item in result.get("routines", [])
                 if not item.get("preset_id") and item.get("enabled")][:limit]
@@ -336,6 +336,10 @@ class MorphingOrbWidget(QWidget):
         self._menu_state_last_save = -10.0
         # Curseur pointeur au survol d'une cible cliquable.
         self._pointer_cursor_active = False
+        # En mode jeu, l'orbe se masque totalement pour ne rien afficher par-dessus le jeu.
+        self._hidden_by_game_mode = False
+        self._mode_checked_at = -10.0
+        self._visuals_suppressed_by_mode = False
         # État interactif persistant du menu.
         self._menu_state_path = os.path.join(os.path.dirname(__file__), "menu_state.json")
         self.menu_state = menu_state.load_state(self._menu_state_path)
@@ -409,6 +413,18 @@ class MorphingOrbWidget(QWidget):
             and (self.time - self._menu_state_last_save) > 0.5
         ):
             self._save_menu_state(force=True)
+
+        # Mode jeu : aucune surimpression ni menu au-dessus du jeu.
+        if self._mode_suppresses_visuals():
+            if self.isVisible():
+                self._close_radial_menu()
+                self.hide()
+            self._hidden_by_game_mode = True
+            return
+        if self._hidden_by_game_mode:
+            self._hidden_by_game_mode = False
+            if not self.isVisible():
+                self.showFullScreen()
 
         # Nettoyage du flash d'action (indépendant de l'état du menu : le
         # flash doit aussi disparaître quand aucun menu n'est ouvert).
@@ -1182,6 +1198,21 @@ class MorphingOrbWidget(QWidget):
 
     def _invalidate_status_cache(self) -> None:
         self._status_cache.clear()
+
+    def _mode_suppresses_visuals(self) -> bool:
+        """Lecture légère du mode jeu : l'orbe ne doit rien afficher en jeu."""
+        if (self.time - self._mode_checked_at) < 0.5:
+            return self._visuals_suppressed_by_mode
+        self._mode_checked_at = self.time
+        try:
+            from src.modes import get_default_mode_manager
+
+            self._visuals_suppressed_by_mode = bool(
+                get_default_mode_manager().should_suppress_visuals()
+            )
+        except Exception:
+            self._visuals_suppressed_by_mode = False
+        return self._visuals_suppressed_by_mode
 
     # =========================================================
     # GEOMETRY

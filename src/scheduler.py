@@ -59,6 +59,15 @@ def _err(message: str, **payload) -> dict:
     return result
 
 
+def _notifications_suppressed_by_mode() -> bool:
+    """Vrai quand un mode Jarvis interdit tout affichage (mode jeu)."""
+    try:
+        from .modes import get_default_mode_manager
+
+        return bool(get_default_mode_manager().should_suppress_notifications())
+    except Exception:
+        return False
+
 
 class Scheduler:
     """Planificateur persistant. Un unique thread de fond suffit."""
@@ -162,6 +171,8 @@ class Scheduler:
         return get_default_routine_manager()
 
     def _notify(self, title: str, message: str) -> str:
+        if _notifications_suppressed_by_mode():
+            return "suppressed:game_mode"
         channel = notifications.publish(title, message)
         with self._lock:
             hooks = list(self._notify_hooks)
@@ -178,6 +189,14 @@ class Scheduler:
         message = str(message or "").strip()
         if not message:
             return _err("Message de notification vide.")
+        if _notifications_suppressed_by_mode():
+            return _ok(
+                notification=False,
+                raison="Mode jeu actif : notification visuelle supprimée.",
+                titre=title,
+                message=message,
+                canal="suppressed:game_mode",
+            )
         if cooldown_key:
             if not self._ready():
                 return self._unavailable()
