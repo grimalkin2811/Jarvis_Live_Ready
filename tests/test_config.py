@@ -46,7 +46,12 @@ class ConfigTests(unittest.TestCase):
     def test_load_config_uses_env_when_no_json(self):
         with patch.dict(
             os.environ,
-            {"JARVIS_USER": "Marius", "GEMINI_API_KEY": "AIza" + "z" * 20, "GEMINI_MODEL": "m3"},
+            {
+                "JARVIS_DATA_DIR": self.tmp.name,
+                "JARVIS_USER": "Marius",
+                "GEMINI_API_KEY": "AIza" + "z" * 20,
+                "GEMINI_MODEL": "m3",
+            },
             clear=True,
         ):
             config = load_config()
@@ -64,7 +69,6 @@ class ConfigTests(unittest.TestCase):
         config = Config(user="M", api_key="K" * 20, model="m", memory_enabled=False)
         with patch.dict(os.environ, {"JARVIS_DATA_DIR": self.tmp.name}, clear=False):
             save_config(config)
-            # config.py écrit vers %JARVIS_DATA_DIR%/config/config.json
             self.assertTrue(
                 os.path.isfile(os.path.join(self.tmp.name, "config", "config.json"))
             )
