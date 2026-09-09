@@ -42,7 +42,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_local_version_marker(self):
         # Pas de version.json -> retombe sur la version embarquée.
-        self.assertEqual(local_version(self.root), "1.0.0")
+        self.assertEqual(local_version(self.root), "1.0.1")
         write_version_file("1.2.0", self.root)
         self.assertEqual(local_version(self.root), "1.2.0")
 
