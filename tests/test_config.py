@@ -7,7 +7,6 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import _ci_diag  # noqa: E402,F401  (diagnostic CI temporaire)
 
 from src import settings  # noqa: E402
 from src.config import Config, is_configured, load_config, save_config  # noqa: E402

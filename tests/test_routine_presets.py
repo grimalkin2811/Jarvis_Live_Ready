@@ -455,5 +455,3 @@ class IntervalParsingTests(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 
-
-import _ci_diag  # noqa: E402,F401  (diagnostic CI temporaire)

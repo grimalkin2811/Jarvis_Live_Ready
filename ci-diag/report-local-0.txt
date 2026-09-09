@@ -1,9 +1,0 @@
-platform=linux python=3.11.2
-testsRun=6 errors=0 failures=1 skipped=0
-
-======================================================================
-FAIL: test_version._DiagProbe.test_probe_ko
-Traceback (most recent call last):
-  File "/home/user/Jarvis_Live_Ready/tests/test_version.py", line 55, in test_probe_ko
-    self.fail("sonde diag")
-AssertionError: sonde diag
