@@ -1,0 +1,134 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  PYTHON_VERSION: "3.11"
+  REPO_SLUG: ${{ github.repository }}
+  # Version lue depuis src/version.py après checkout.
+
+jobs:
+  test:
+    name: Tests (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Lancer les tests
+        run: python -m unittest discover tests -v
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer ruff
+        run: pip install ruff
+      - name: Lint (code applicatif)
+        run: ruff check --output-format=github src launcher run_jarvis.py version.py
+      - name: Lint (tests & UI, sans bloquer)
+        continue-on-error: true
+        run: ruff check --output-format=github UI tests
+
+  build:
+    name: Build & Release
+    needs: [test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Lire la version
+        id: vars
+        shell: pwsh
+        run: |
+          $v = python -c "import sys; sys.path.insert(0,'.'); from src.version import __version__; print(__version__)"
+          "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # Le tag doit correspondre à la version.
+          $tag = "${{ github.ref_name }}"
+          if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
+          if ($tag -ne $v.Trim()) { throw "Tag v$v attendu, trouvé $tag" }
+
+      - name: Construire l'application et le launcher
+        shell: pwsh
+        run: .\scripts\build_windows.ps1 -DistDir dist
+
+      - name: Installer Inno Setup (compilateur ISCC)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          echo "ISCC=$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Construire l'installateur Windows
+        shell: pwsh
+        run: |
+          $version = "${{ steps.vars.outputs.version }}"
+          # Le chemin Source est relatif au dossier du .iss (packaging\..\dist).
+          & "$env:ISCC" "packaging\installer.iss" /DVERSION=$version /DSourceDir=..\dist
+          if ($LASTEXITCODE -ne 0) { throw "Échec de la compilation Inno Setup." }
+          # Inno Setup résout OutputDir soit par rapport au dossier du .iss
+          # (packaging\dist), soit au dossier courant selon la version installée.
+          # On récupère l'exe où qu'il soit et on le centralise dans dist/ pour
+          # que la release le trouve toujours.
+          $setup = Get-ChildItem -Recurse -Path "dist", "packaging\dist" -Filter "JarvisSetup-*.exe" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if (-not $setup) { throw "JarvisSetup-*.exe introuvable après compilation." }
+          Copy-Item -Force $setup.FullName (Join-Path "dist" $setup.Name)
+          Get-ChildItem dist -Filter "JarvisSetup-*.exe"
+
+      - name: Récupérer le SHA-256
+        id: sha
+        shell: pwsh
+        run: |
+          $v = "${{ steps.vars.outputs.version }}"
+          $sha = (Get-Content "dist\Jarvis-v${v}-portable.zip.sha256" -Raw).Trim().Split(" ")[0]
+          "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Vérifier les artefacts avant publication
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | Select-Object Name, Length
+          $zip = "dist\Jarvis-v${{ steps.vars.outputs.version }}-portable.zip"
+          if (-not (Test-Path $zip)) { throw "Archive portable manquante : $zip" }
+
+      - name: Créer la release GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref }}
+          name: Jarvis ${{ steps.vars.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/JarvisSetup-*.exe
+            dist/Jarvis-v*-portable.zip
+            dist/Jarvis-v*-portable.zip.sha256
+          draft: false
+          prerelease: false
