@@ -14,8 +14,12 @@ class TestMemoryManager(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.db_path = os.path.join(self.tmp.name, "memory.db")
         self.manager = MemoryManager(self.db_path, enabled=True, max_results=5, min_importance=1)
+        self.addCleanup(self._close_manager)
 
-    def tearDown(self):
+    def _close_manager(self):
+        close = getattr(self.manager, "close", None)
+        if callable(close):
+            close()
         set_default_memory_manager(None)
         self.tmp.cleanup()
 
@@ -82,6 +86,9 @@ class TestMemoryManager(unittest.TestCase):
         result = disabled.add_memory("Ne doit pas être écrit.")
         self.assertFalse(result["success"])
         self.assertTrue(result["disabled"])
+        close = getattr(disabled, "close", None)
+        if callable(close):
+            close()
 
     def test_inaccessible_database(self):
         blocker = os.path.join(self.tmp.name, "not_a_dir")
