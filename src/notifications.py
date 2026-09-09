@@ -95,7 +95,9 @@ def publish(title: str, message: str) -> str:
     global _WINDOWS_WORKER
     title = str(title or "Jarvis").strip()[:63]
     message = str(message).strip()
-    print(f"\n[Jarvis] 🔔 {title} : {message}")
+    # ASCII volontairement : les runners Windows peuvent utiliser CP1252 et
+    # l'emoji de notification faisait échouer les tests avec UnicodeEncodeError.
+    print(f"\n[Jarvis] [Notification] {title} : {message}")
     with _LOCK:
         hooks = list(_HOOKS)
     delivered = False
