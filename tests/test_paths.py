@@ -23,45 +23,37 @@ class PathTests(unittest.TestCase):
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}, clear=False):
                 self.assertEqual(
                     str(paths.config_file()),
-                    str(Path(tmp) / "config" / "config.json"),
+                    str(Path(tmp).resolve() / "config" / "config.json"),
                 )
 
     def test_memory_db(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}, clear=False):
-                # Rétro-compatibilité : memory.db à la racine du dossier.
-                self.assertEqual(str(paths.memory_db()), str(Path(tmp) / "memory.db"))
+                self.assertEqual(str(paths.memory_db()), str(Path(tmp).resolve() / "memory.db"))
 
     def test_routines_schedule_modes_at_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}, clear=False):
-                self.assertEqual(str(paths.schedule_db()), str(Path(tmp) / "schedule.db"))
-                self.assertEqual(str(paths.routines_file()), str(Path(tmp) / "routines.json"))
-                self.assertEqual(str(paths.modes_file()), str(Path(tmp) / "mode.json"))
-                self.assertEqual(str(paths.notes_file()), str(Path(tmp) / "notes.json"))
+                root = Path(tmp).resolve()
+                self.assertEqual(str(paths.schedule_db()), str(root / "schedule.db"))
+                self.assertEqual(str(paths.routines_file()), str(root / "routines.json"))
+                self.assertEqual(str(paths.modes_file()), str(root / "mode.json"))
+                self.assertEqual(str(paths.notes_file()), str(root / "notes.json"))
 
     def test_ui_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}, clear=False):
-                self.assertEqual(
-                    str(paths.menu_state_file()),
-                    str(Path(tmp) / "ui" / "menu_state.json"),
-                )
-                self.assertEqual(
-                    str(paths.appearance_state_file()),
-                    str(Path(tmp) / "ui" / "appearance_state.json"),
-                )
-                self.assertEqual(
-                    str(paths.debug_log_file()),
-                    str(Path(tmp) / "ui" / "jarvis_debug.log"),
-                )
+                root = Path(tmp).resolve()
+                self.assertEqual(str(paths.menu_state_file()), str(root / "ui" / "menu_state.json"))
+                self.assertEqual(str(paths.appearance_state_file()), str(root / "ui" / "appearance_state.json"))
+                self.assertEqual(str(paths.debug_log_file()), str(root / "ui" / "jarvis_debug.log"))
 
     def test_logs_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}, clear=False):
                 self.assertEqual(
                     str(paths.app_log_file()),
-                    str(Path(tmp) / "logs" / "jarvis.log"),
+                    str(Path(tmp).resolve() / "logs" / "jarvis.log"),
                 )
 
     def test_openwakeword_models_dir(self):
@@ -69,7 +61,7 @@ class PathTests(unittest.TestCase):
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}, clear=False):
                 self.assertEqual(
                     str(paths.openwakeword_models_dir()),
-                    str(Path(tmp) / "models" / "openwakeword"),
+                    str(Path(tmp).resolve() / "models" / "openwakeword"),
                 )
 
     def test_ensure_data_dirs(self):
