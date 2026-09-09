@@ -107,7 +107,6 @@ $shaPath = "$zipPath.sha256"
 Write-Host "[build] SHA-256 : $sha"
 
 # Copier aussi le launcher et un version.json de référence à la racine.
-Copy-Item -Force (Join-Path $DistDir "JarvisLauncher.exe") $DistDir
 Copy-Item -Force (Join-Path $appDir "version.json") $DistDir
 
 Write-Host "=== BUILD TERMINÉ ===" -ForegroundColor Green
