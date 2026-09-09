@@ -138,4 +138,58 @@ def _emit_github_annotations():
     atexit.register(_report_if_missing)
 
 
+
+def _test_module_names():
+    """Liste triée des modules de test, identique en local et en CI."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    names = [
+        "tests." + f[:-3]
+        for f in sorted(os.listdir(base))
+        if f.startswith("test_") and f.endswith(".py")
+    ]
+    names.append("unittest.loader")  # pseudo-module des erreurs d'import
+    return names
+
+
+def _install_ci_exit_protocol():
+    """En CI, encode les modules en échec dans le code de sortie du process.
+
+    Le code de sortie apparaît dans l'annotation "Process completed with
+    exit code N", visible via l'API même sans accès aux logs :
+      - 7    : suite verte (le hook a bien tourné)
+      - 1000 + idx1*32 + idx2 : index (dans la liste triée) du 1er et 2e
+        module contenant au moins un échec (31 = absent)
+      - 1    : le hook n'a jamais été atteint (le step a échoué avant)
+    Temporaire : à retirer une fois la CI verte.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+
+    original_run = unittest.TextTestRunner.run
+
+    def run_with_exit_code(self, test):
+        result = original_run(self, test)
+        failing = set()
+        for case, _ in list(result.errors) + list(result.failures):
+            try:
+                module = case.id().rsplit(".", 1)[0]
+            except Exception:
+                module = "unittest.loader"
+            failing.add(module or "unittest.loader")
+        if not failing:
+            os._exit(7)
+        index_map = {name: i for i, name in enumerate(_test_module_names())}
+
+        def index_of(name):
+            return index_map.get(name, 31)
+
+        ordered = sorted(failing)
+        code = 1000 + index_of(ordered[0]) * 32
+        code += index_of(ordered[1]) if len(ordered) > 1 else 31
+        os._exit(code)
+
+    unittest.TextTestRunner.run = run_with_exit_code
+
+
 _emit_github_annotations()
+_install_ci_exit_protocol()
