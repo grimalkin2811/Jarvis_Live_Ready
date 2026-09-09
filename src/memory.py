@@ -9,6 +9,7 @@ le détail du stockage.
 from __future__ import annotations
 
 import datetime as dt
+from contextlib import contextmanager
 import os
 import re
 import sqlite3
@@ -195,10 +196,20 @@ class MemoryManager:
         if self.enabled:
             self._initialize()
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self):
+        """Open a SQLite connection and always close it on context exit.
+
+        sqlite3.Connection.__exit__ commits/rolls back but does not close the
+        connection. Closing here is important on Windows, where SQLite WAL
+        files remain locked while the connection object is alive.
+        """
         conn = sqlite3.connect(self.database_path, timeout=5)
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     def _initialize(self) -> None:
         try:
