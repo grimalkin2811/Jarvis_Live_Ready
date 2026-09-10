@@ -11,7 +11,6 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   REPO_SLUG: ${{ github.repository }}
-  # Version lue depuis src/version.py après checkout.
 
 jobs:
   test:
@@ -55,7 +54,7 @@ jobs:
     needs: [test]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: write
     steps:
@@ -67,21 +66,195 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
-      - name: Lire la version
+      - name: Lire la version et vérifier cohérence tag
         id: vars
         shell: pwsh
         run: |
           $v = python -c "import sys; sys.path.insert(0,'.'); from src.version import __version__; print(__version__)"
+          $v = $v.Trim()
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Version depuis src/version.py: $v"
           # Le tag doit correspondre à la version.
           $tag = "${{ github.ref_name }}"
+          Write-Host "Tag Git: $tag"
           if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
-          if ($tag -ne $v.Trim()) { throw "Tag v$v attendu, trouvé $tag" }
+          $tag = $tag.Trim()
+          Write-Host "Tag sans 'v': $tag"
+          if ($tag -ne $v) {
+            Write-Host "ERROR: Tag v$v attendu, trouvé v$tag" -ForegroundColor Red
+            Write-Host "La version dans src/version.py doit correspondre au tag Git"
+            throw "Tag v$v attendu, trouvé v$tag"
+          }
+          Write-Host "Version et tag cohérents: $v" -ForegroundColor Green
 
       - name: Construire l'application et le launcher
         shell: pwsh
-        run: .\scripts\build_windows.ps1 -DistDir dist
+        run: |
+          Write-Host "=== BUILD WINDOWS ==="
+          .\scripts\build_windows.ps1 -DistDir dist
+          if ($LASTEXITCODE -ne 0) { throw "Build Windows échoué" }
 
+      # -------------------------------------------------------------------
+      # TEST 1 — PyInstaller layout
+      # -------------------------------------------------------------------
+      - name: "Test 1 — PyInstaller layout"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 1: PyInstaller layout ===" -ForegroundColor Cyan
+          python scripts/validate_build.py --pyinstaller dist/Jarvis
+          if ($LASTEXITCODE -ne 0) { throw "Test 1 FAILED: PyInstaller layout invalide" }
+
+          # Vérifications explicites supplémentaires
+          $checks = @(
+            "dist/Jarvis/Jarvis.exe",
+            "dist/Jarvis/_internal/python311.dll",
+            "dist/Jarvis/_internal/base_library.zip"
+          )
+          foreach ($file in $checks) {
+            if (Test-Path $file) {
+              Write-Host "  $file : OK" -ForegroundColor Green
+            } else {
+              Write-Host "  $file : MISSING" -ForegroundColor Red
+              throw "Test 1 FAILED: $file manquant"
+            }
+          }
+
+          # Vérifie qu'il n'y a PAS de flattening
+          $flattened = @(
+            "dist/Jarvis/python311.dll",
+            "dist/Jarvis/base_library.zip"
+          )
+          foreach ($file in $flattened) {
+            if (Test-Path $file) {
+              Write-Host "  $file : FOUND (BAD - flattening!)" -ForegroundColor Red
+              throw "Test 1 FAILED: Flattening détecté - $file ne devrait pas exister à la racine"
+            } else {
+              Write-Host "  $file : OK (not present, as expected)" -ForegroundColor Green
+            }
+          }
+
+          Write-Host "Test 1 PASSED" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # TEST 1b — dist/app layout (après copie)
+      # -------------------------------------------------------------------
+      - name: "Test 1b — dist/app layout"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 1b: dist/app layout ===" -ForegroundColor Cyan
+          python scripts/validate_build.py --app-dir dist/app
+          if ($LASTEXITCODE -ne 0) { throw "Test 1b FAILED: dist/app layout invalide" }
+
+          $checks = @(
+            "dist/app/Jarvis.exe",
+            "dist/app/_internal/python311.dll",
+            "dist/app/_internal/base_library.zip"
+          )
+          foreach ($file in $checks) {
+            if (Test-Path $file) {
+              Write-Host "  $file : OK" -ForegroundColor Green
+            } else {
+              Write-Host "  $file : MISSING" -ForegroundColor Red
+              throw "Test 1b FAILED: $file manquant"
+            }
+          }
+
+          Write-Host "Test 1b PASSED" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # TEST 2 — ZIP layout
+      # -------------------------------------------------------------------
+      - name: "Test 2 — ZIP layout"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 2: ZIP layout ===" -ForegroundColor Cyan
+          $version = "${{ steps.vars.outputs.version }}"
+          $zipPath = "dist/Jarvis-v$version-portable.zip"
+
+          if (-not (Test-Path $zipPath)) {
+            throw "Test 2 FAILED: ZIP manquant $zipPath"
+          }
+
+          Write-Host "Validating ZIP: $zipPath"
+          python scripts/validate_build.py --zip $zipPath
+          if ($LASTEXITCODE -ne 0) { throw "Test 2 FAILED: ZIP validation échouée" }
+
+          # Vérifie le contenu du ZIP en détail
+          Write-Host "Checking ZIP content..."
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zip = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path $zipPath).Path)
+          $entries = $zip.Entries | ForEach-Object { $_.FullName }
+
+          $required = @(
+            "Jarvis.exe",
+            "_internal/python311.dll",
+            "_internal/base_library.zip"
+          )
+
+          foreach ($req in $required) {
+            $found = $entries | Where-Object { $_ -eq $req -or $_ -like "*$req" }
+            if ($found) {
+              Write-Host "  $req : OK (found as $($found | Select-Object -First 1))" -ForegroundColor Green
+            } else {
+              Write-Host "  $req : MISSING in ZIP" -ForegroundColor Red
+              $zip.Dispose()
+              throw "Test 2 FAILED: $req manquant dans ZIP"
+            }
+          }
+
+          # Vérifie qu'il n'y a PAS de flattening dans le ZIP
+          $flattenedInZip = @("python311.dll", "base_library.zip")
+          foreach ($flat in $flattenedInZip) {
+            $foundAtRoot = $entries | Where-Object { $_ -eq $flat }
+            if ($foundAtRoot) {
+              Write-Host "  $flat at root of ZIP: FOUND (BAD - flattening!)" -ForegroundColor Red
+              $zip.Dispose()
+              throw "Test 2 FAILED: Flattening détecté dans ZIP - $flat à la racine"
+            } else {
+              Write-Host "  $flat at root: OK (not present)" -ForegroundColor Green
+            }
+          }
+
+          $zip.Dispose()
+          Write-Host "Test 2 PASSED" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # TEST 3 — executable smoke test
+      # -------------------------------------------------------------------
+      - name: "Test 3 — executable smoke test"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 3: Executable smoke test ===" -ForegroundColor Cyan
+          $exe = "dist/app/Jarvis.exe"
+
+          if (-not (Test-Path $exe)) {
+            throw "Test 3 FAILED: $exe manquant"
+          }
+
+          Write-Host "Testing $exe --smoke-test"
+          # Lance avec timeout de 30s
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow -Wait -Timeout 30
+
+          if ($null -eq $process) {
+            Write-Host "  Process did not start or timed out" -ForegroundColor Yellow
+            # On tente avec --version qui est plus simple
+            Write-Host "  Trying --version..."
+            $process2 = Start-Process -FilePath $exe -ArgumentList "--version" -PassThru -NoNewWindow -Wait -Timeout 15
+            if ($process2.ExitCode -ne 0) {
+              throw "Test 3 FAILED: Executable crash or non-zero exit: $($process2.ExitCode)"
+            }
+          } else {
+            Write-Host "  Exit code: $($process.ExitCode)"
+            if ($process.ExitCode -ne 0) {
+              throw "Test 3 FAILED: Smoke test failed with exit code $($process.ExitCode)"
+            }
+          }
+
+          Write-Host "Test 3 PASSED: Executable starts correctly" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # Build installer
+      # -------------------------------------------------------------------
       - name: Installer Inno Setup (compilateur ISCC)
         shell: pwsh
         run: |
@@ -89,18 +262,18 @@ jobs:
           $ISCC = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
           if (-not (Test-Path $ISCC)) { throw "ISCC.exe introuvable : $ISCC" }
           "ISCC=$ISCC" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Write-Host "ISCC: $ISCC"
 
       - name: Construire l'installateur Windows
         shell: pwsh
         run: |
           $version = "${{ steps.vars.outputs.version }}"
-          # Le chemin Source est relatif au dossier du .iss (packaging\..\dist).
-          & "$env:ISCC" "packaging\installer.iss" /DVERSION=$version /DSourceDir=..\dist
+          Write-Host "Building installer for version $version"
+          & "$env:ISCC" "packaging\installer.iss" /DVERSION=$version /DSourceDir=..\\dist
           if ($LASTEXITCODE -ne 0) { throw "Échec de la compilation Inno Setup." }
+
           # Inno Setup résout OutputDir soit par rapport au dossier du .iss
           # (packaging\dist), soit au dossier courant selon la version installée.
-          # On récupère l'exe où qu'il soit et on le centralise dans dist/ pour
-          # que la release le trouve toujours.
           $setup = Get-ChildItem -Recurse -Path "dist", "packaging\dist" -Filter "JarvisSetup-*.exe" -ErrorAction SilentlyContinue |
             Select-Object -First 1
           if (-not $setup) { throw "JarvisSetup-*.exe introuvable après compilation." }
@@ -108,22 +281,213 @@ jobs:
           if ($setup.FullName -ne $target) {
             Copy-Item -Force $setup.FullName $target
           }
-          Get-ChildItem dist -Filter "JarvisSetup-*.exe"
+          Get-ChildItem dist -Filter "JarvisSetup-*.exe" | Format-Table Name, Length
+
+      # -------------------------------------------------------------------
+      # TEST 4 — installer layout
+      # -------------------------------------------------------------------
+      - name: "Test 4 — installer layout (silent install)"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 4: Installer layout ===" -ForegroundColor Cyan
+          $version = "${{ steps.vars.outputs.version }}"
+          $installer = "dist/JarvisSetup-$version.exe"
+
+          if (-not (Test-Path $installer)) {
+            throw "Test 4 FAILED: Installer manquant $installer"
+          }
+
+          # Installe dans un dossier temporaire
+          $installDir = Join-Path $env:TEMP "jarvis-test-install-$version"
+          if (Test-Path $installDir) { Remove-Item $installDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+
+          Write-Host "Installing $installer to $installDir (silent)..."
+          # Inno Setup silent install: /SILENT /DIR="path"
+          $process = Start-Process -FilePath $installer -ArgumentList "/SILENT", "/DIR=`"$installDir`"" -PassThru -Wait -Timeout 120
+
+          if ($process.ExitCode -ne 0) {
+            Write-Host "Installer exit code: $($process.ExitCode)" -ForegroundColor Yellow
+            # Certains installateurs retournent 0 même en cas de succès, on vérifie les fichiers
+          }
+
+          Start-Sleep -Seconds 3
+
+          # Vérifie l'installation
+          Write-Host "Checking installed files in $installDir..."
+          Get-ChildItem $installDir -Recurse | Select-Object FullName | Format-Table -AutoSize
+
+          $checks = @(
+            "$installDir/JarvisLauncher.exe",
+            "$installDir/version.json",
+            "$installDir/app/Jarvis.exe",
+            "$installDir/app/_internal/python311.dll",
+            "$installDir/app/_internal/base_library.zip"
+          )
+
+          foreach ($file in $checks) {
+            if (Test-Path $file) {
+              Write-Host "  $file : OK" -ForegroundColor Green
+            } else {
+              Write-Host "  $file : MISSING" -ForegroundColor Red
+              throw "Test 4 FAILED: $file manquant après installation"
+            }
+          }
+
+          # Vérifie qu'il n'y a PAS de flattening dans l'installation
+          $flattened = @(
+            "$installDir/app/python311.dll",
+            "$installDir/app/base_library.zip"
+          )
+          foreach ($file in $flattened) {
+            if (Test-Path $file) {
+              Write-Host "  $file : FOUND (BAD - flattening!)" -ForegroundColor Red
+              throw "Test 4 FAILED: Flattening détecté après installation - $file"
+            } else {
+              Write-Host "  $file : OK (not present)" -ForegroundColor Green
+            }
+          }
+
+          # Sauvegarde le dossier d'install pour les tests suivants
+          "INSTALL_DIR=$installDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "Test 4 PASSED" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # TEST 5 — installed executable smoke test
+      # -------------------------------------------------------------------
+      - name: "Test 5 — installed executable smoke test"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 5: Installed executable smoke test ===" -ForegroundColor Cyan
+          $installDir = $env:INSTALL_DIR
+
+          if (-not $installDir -or -not (Test-Path $installDir)) {
+            throw "Test 5 FAILED: Install dir not found: $installDir"
+          }
+
+          $exe = Join-Path $installDir "app/Jarvis.exe"
+          $launcher = Join-Path $installDir "JarvisLauncher.exe"
+
+          Write-Host "Testing installed Jarvis.exe: $exe"
+          if (-not (Test-Path $exe)) { throw "Test 5 FAILED: $exe manquant" }
+
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow -Wait -Timeout 30
+          if ($process.ExitCode -ne 0) {
+            throw "Test 5 FAILED: Installed Jarvis.exe smoke test failed: $($process.ExitCode)"
+          }
+          Write-Host "  Jarvis.exe smoke test: OK" -ForegroundColor Green
+
+          Write-Host "Testing launcher validation: $launcher --validate"
+          if (Test-Path $launcher) {
+            $process2 = Start-Process -FilePath $launcher -ArgumentList "--validate", "--no-update" -PassThru -NoNewWindow -Wait -Timeout 15
+            if ($process2.ExitCode -ne 0) {
+              throw "Test 5 FAILED: Launcher validation failed: $($process2.ExitCode)"
+            }
+            Write-Host "  Launcher validation: OK" -ForegroundColor Green
+          }
+
+          Write-Host "Test 5 PASSED" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # TEST 6 — update validation
+      # -------------------------------------------------------------------
+      - name: "Test 6 — update validation"
+        shell: pwsh
+        run: |
+          Write-Host "=== Test 6: Update validation ===" -ForegroundColor Cyan
+
+          # Teste que le système d'update rejette une archive invalide
+          Write-Host "Testing update validation with Python..."
+
+          python -m unittest tests.test_updater -v
+          if ($LASTEXITCODE -ne 0) { throw "Test 6 FAILED: test_updater échoué" }
+
+          python -m unittest tests.test_packaging -v
+          if ($LASTEXITCODE -ne 0) { throw "Test 6 FAILED: test_packaging échoué" }
+
+          # Test manuel: crée une archive invalide et vérifie qu'elle est rejetée
+          Write-Host "Testing invalid ZIP rejection..."
+          python -c "
+          import tempfile, zipfile, sys
+          from pathlib import Path
+          sys.path.insert(0, '.')
+          from src.updater import apply_update, UpdateError
+
+          # Crée une archive invalide (sans _internal)
+          tmp = Path(tempfile.gettempdir()) / 'invalid_test.zip'
+          with zipfile.ZipFile(tmp, 'w') as zf:
+              zf.writestr('Jarvis.exe', b'fake')
+              zf.writestr('python311.dll', b'fake-flattened')
+
+          # Crée un dossier d'install factice
+          install_dir = Path(tempfile.gettempdir()) / 'jarvis_update_test'
+          if install_dir.exists():
+              import shutil
+              shutil.rmtree(install_dir)
+          install_dir.mkdir(parents=True)
+          (install_dir / 'Jarvis.exe').write_bytes(b'old')
+
+          try:
+              apply_update(tmp, install_dir, version='9.9.9')
+              print('ERROR: Invalid ZIP should have been rejected!')
+              sys.exit(1)
+          except UpdateError as e:
+              print(f'OK: Invalid ZIP correctly rejected: {e}')
+              sys.exit(0)
+          except Exception as e:
+              print(f'ERROR: Unexpected exception: {e}')
+              sys.exit(1)
+          "
+          if ($LASTEXITCODE -ne 0) { throw "Test 6 FAILED: Invalid ZIP not rejected" }
+
+          Write-Host "Test 6 PASSED" -ForegroundColor Green
+
+      # -------------------------------------------------------------------
+      # Final validation before release
+      # -------------------------------------------------------------------
+      - name: Vérifier les artefacts avant publication
+        shell: pwsh
+        run: |
+          Write-Host "=== Final validation before release ===" -ForegroundColor Cyan
+          $version = "${{ steps.vars.outputs.version }}"
+
+          Get-ChildItem dist -File | Select-Object Name, Length | Format-Table -AutoSize
+
+          $zip = "dist/Jarvis-v$version-portable.zip"
+          $sha = "dist/Jarvis-v$version-portable.zip.sha256"
+          $installer = "dist/JarvisSetup-$version.exe"
+
+          $files = @($zip, $sha, $installer)
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) {
+              throw "Artefact manquant: $file"
+            }
+            Write-Host "  $file : OK" -ForegroundColor Green
+          }
+
+          # Validation finale du ZIP
+          Write-Host "Final ZIP validation..."
+          python scripts/validate_build.py --zip $zip
+          if ($LASTEXITCODE -ne 0) { throw "Final ZIP validation FAILED" }
+
+          # Vérifie que le nom du ZIP correspond à la version
+          $expectedZip = "Jarvis-v$version-portable.zip"
+          $actualZip = (Get-Item $zip).Name
+          if ($actualZip -ne $expectedZip) {
+            throw "ZIP name mismatch: attendu $expectedZip, trouvé $actualZip"
+          }
+
+          Write-Host "All artifacts valid, ready for release!" -ForegroundColor Green
 
       - name: Récupérer le SHA-256
         id: sha
         shell: pwsh
         run: |
           $v = "${{ steps.vars.outputs.version }}"
-          $sha = (Get-Content "dist\Jarvis-v${v}-portable.zip.sha256" -Raw).Trim().Split(" ")[0]
+          $sha = (Get-Content "dist/Jarvis-v${v}-portable.zip.sha256" -Raw).Trim().Split(" ")[0]
           "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-
-      - name: Vérifier les artefacts avant publication
-        shell: pwsh
-        run: |
-          Get-ChildItem dist -File | Select-Object Name, Length
-          $zip = "dist\Jarvis-v${{ steps.vars.outputs.version }}-portable.zip"
-          if (-not (Test-Path $zip)) { throw "Archive portable manquante : $zip" }
+          Write-Host "SHA-256: $sha"
 
       - name: Créer la release GitHub
         uses: softprops/action-gh-release@v2
