@@ -26,6 +26,9 @@ for pkg in ("openwakeword",):
 hiddenimports += collect_submodules("google.genai")
 hiddenimports += collect_submodules("google.genai.live")
 
+# Validation de packaging (utilisé par --smoke-test et updater)
+hiddenimports += ["src.packaging_validation", "src.updater", "src.version", "src.paths"]
+
 # openwakeword télécharge parfois ses modèles dans resources/models ;
 # on les récupère s'ils existent déjà (CI les télécharge avant le build).
 datas += collect_data_files("openwakeword", include_py_files=False)

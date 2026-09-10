@@ -113,11 +113,14 @@ class UpdaterTests(unittest.TestCase):
         marker_dir = self.root
 
         # Archive contenant la nouvelle version de l'app.
+        # Doit contenir les fichiers critiques pour passer la validation.
         zip_path = self.root / "new.zip"
         _make_zip(
             zip_path,
             {
                 "Jarvis.exe": b"new-exe",
+                "_internal/python311.dll": b"fake-dll",
+                "_internal/base_library.zip": b"fake-base",
                 "_internal/data.txt": b"new-internal",
             },
         )
@@ -126,6 +129,7 @@ class UpdaterTests(unittest.TestCase):
 
         self.assertEqual((install_dir / "Jarvis.exe").read_bytes(), b"new-exe")
         self.assertTrue((install_dir / "_internal").is_dir())
+        self.assertTrue((install_dir / "_internal" / "python311.dll").exists())
         marker = json.loads((marker_dir / "version.json").read_text(encoding="utf-8"))
         self.assertEqual(marker["version"], "2.0.0")
         self.assertEqual(local_version(marker_dir), "2.0.0")
@@ -136,7 +140,14 @@ class UpdaterTests(unittest.TestCase):
         (install_dir / "Jarvis.exe").write_bytes(b"old")
 
         zip_path = self.root / "new.zip"
-        _make_zip(zip_path, {"Jarvis.exe": b"new-exe"})
+        _make_zip(
+            zip_path,
+            {
+                "Jarvis.exe": b"new-exe",
+                "_internal/python311.dll": b"fake-dll",
+                "_internal/base_library.zip": b"fake-base",
+            },
+        )
         apply_update(zip_path, install_dir, version="2.0.0", marker_dir=self.root)
         self.assertEqual((install_dir / "Jarvis.exe").read_bytes(), b"new-exe")
 
@@ -165,6 +176,48 @@ class UpdaterTests(unittest.TestCase):
 
     def test_is_app_running_on_non_windows(self):
         self.assertFalse(updater.is_app_running(self.root))
+
+    def test_apply_update_rejects_invalid_zip(self):
+        """Une archive invalide (flattened) doit être rejetée."""
+        install_dir = self.root / "app"
+        install_dir.mkdir(parents=True)
+        (install_dir / "Jarvis.exe").write_bytes(b"old")
+
+        # Archive aplatie : python311.dll à la racine au lieu de _internal/
+        zip_path = self.root / "invalid.zip"
+        _make_zip(
+            zip_path,
+            {
+                "Jarvis.exe": b"new-exe",
+                "python311.dll": b"flattened dll (BAD)",
+            },
+        )
+
+        with self.assertRaises(UpdateError):
+            apply_update(zip_path, install_dir, version="2.0.0", marker_dir=self.root)
+
+        # L'ancienne version doit toujours être là
+        self.assertEqual((install_dir / "Jarvis.exe").read_bytes(), b"old")
+
+    def test_apply_update_rejects_missing_internal(self):
+        """Une archive sans _internal doit être rejetée."""
+        install_dir = self.root / "app"
+        install_dir.mkdir(parents=True)
+        (install_dir / "Jarvis.exe").write_bytes(b"old")
+
+        zip_path = self.root / "no_internal.zip"
+        _make_zip(
+            zip_path,
+            {
+                "Jarvis.exe": b"new-exe",
+                # _internal manquant
+            },
+        )
+
+        with self.assertRaises(UpdateError):
+            apply_update(zip_path, install_dir, version="2.0.0", marker_dir=self.root)
+
+        self.assertEqual((install_dir / "Jarvis.exe").read_bytes(), b"old")
 
 
 if __name__ == "__main__":

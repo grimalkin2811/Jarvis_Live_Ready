@@ -745,3 +745,155 @@ atomique et rollback), `test_logging_setup` (logs à rotation) et
 6. Les utilisateurs existants reçoivent cette version via le launcher
    automatiquement.
 
+
+---
+
+## Architecture de distribution (détail technique)
+
+### Chaîne complète
+
+```text
+source
+  ↓
+PyInstaller 6.x (onedir)
+  ↓
+dist/Jarvis/
+├── Jarvis.exe
+└── _internal/
+    ├── python311.dll        # CRITIQUE : doit rester dans _internal/
+    ├── base_library.zip
+    ├── PySide6/
+    └── ...
+  ↓ (robocopy, préserve _internal/)
+dist/app/                     # copie exacte de dist/Jarvis/
+├── Jarvis.exe
+└── _internal/
+    ├── python311.dll
+    └── ...
+  ↓ (Python zipfile, préserve _internal/)
+dist/Jarvis-vX.Y.Z-portable.zip
+├── Jarvis.exe
+└── _internal/
+    ├── python311.dll
+    └── ...
+  ↓ (Inno Setup, recursesubdirs)
+JarvisSetup-X.Y.Z.exe
+  ↓ (installation silencieuse)
+%LOCALAPPDATA%/Jarvis/
+├── JarvisLauncher.exe
+├── version.json
+└── app/
+    ├── Jarvis.exe
+    └── _internal/
+        ├── python311.dll
+        └── ...
+  ↓ (launcher)
+Jarvis.exe --ui
+  ↓ (update)
+Nouvelle version → validation → backup → remplacement atomique → rollback si échec
+```
+
+### Pourquoi python311.dll doit rester dans _internal/
+
+PyInstaller 6.x produit une structure moderne où toutes les dépendances sont dans `_internal/`.
+L'exécutable `Jarvis.exe` cherche `python311.dll` dans `_internal/` via un chemin codé en dur.
+Si `python311.dll` se retrouve à la racine de `app/` (aplatissement), l'application échoue avec :
+
+```text
+[PYI-20752:ERROR] Failed to load Python DLL
+'C:\Users\...\AppData\Local\Jarvis\app\_internal\python311.dll'.
+LoadLibrary: Le module spécifié est introuvable.
+```
+
+Et on observe alors :
+
+```text
+C:\...\Jarvis\app\python311.dll          # existe (BAD)
+C:\...\Jarvis\app\_internal\python311.dll # manquant (BAD)
+```
+
+### Garde-fous implémentés (v1.0.2+)
+
+**1. Build Windows (`scripts/build_windows.ps1`) :**
+- Validation immédiate après PyInstaller : `dist/Jarvis/_internal/python311.dll` doit exister
+- Utilise `robocopy` (pas `Copy-Item *` qui peut aplatir `_internal/`)
+- Validation après copie : `dist/app/_internal/python311.dll` doit exister
+- Détection d'aplatissement : `dist/app/python311.dll` ne doit PAS exister
+- Création ZIP via Python `zipfile` (robuste) au lieu de `Compress-Archive`
+- Validation du ZIP : contient `_internal/python311.dll`, pas `python311.dll` à la racine
+- Smoke test : `Jarvis.exe --smoke-test` doit démarrer
+
+**2. Validation centralisée (`src/packaging_validation.py`) :**
+- Source unique de vérité pour les fichiers critiques
+- Utilisée par build, CI, updater, launcher, tests
+- Détecte flattening : `python311.dll` à la racine = invalide
+
+**3. Installer (`packaging/installer.iss`) :**
+- `recursesubdirs` + `createallsubdirs` préservent `_internal/`
+- Validation post-install dans `[Code]` : log si `_internal/python311.dll` manquant
+
+**4. Launcher (`launcher/main.py`) :**
+- Valide `app/_internal/python311.dll` avant lancement
+- Message d'erreur clair si installation corrompue
+- `--validate` : valide l'installation et quitte
+
+**5. Updater (`src/updater.py`) :**
+- Valide le ZIP avant extraction (rejette les archives aplaties)
+- Valide la structure extraite avant remplacement
+- Valide la nouvelle installation après remplacement
+- Rollback automatique si validation échoue
+- Ne remplace jamais l'installation par une archive invalide
+
+**6. CI (`/.github/workflows/build.yml`) :**
+- Test 1 : PyInstaller layout (`Jarvis.exe` + `_internal/python311.dll`)
+- Test 1b : `dist/app` layout
+- Test 2 : ZIP layout (conserve `_internal/` sans flattening)
+- Test 3 : Executable smoke test (`Jarvis.exe --smoke-test`)
+- Test 4 : Installer layout (installation silencieuse + validation)
+- Test 5 : Installed executable smoke test
+- Test 6 : Update validation (archive invalide rejetée)
+
+Si un test échoue, **aucune release n'est publiée**.
+
+### Scripts de validation
+
+```bash
+# Valide la sortie PyInstaller
+python scripts/validate_build.py --pyinstaller dist/Jarvis
+
+# Valide dist/app/
+python scripts/validate_build.py --app-dir dist/app
+
+# Valide le ZIP portable
+python scripts/validate_build.py --zip dist/Jarvis-v1.0.1-portable.zip
+
+# Valide une installation
+python scripts/validate_build.py --install-dir %LOCALAPPDATA%/Jarvis
+
+# Crée le ZIP de façon robuste
+python scripts/make_portable_zip.py --app-dir dist/app --output dist/Jarvis-v1.0.1-portable.zip
+```
+
+### Publication d'une nouvelle version (procédure robuste)
+
+1. Modifiez `src/version.py` (`__version__ = "X.Y.Z"`)
+2. Vérifiez cohérence : `python -c "from src.version import __version__; print(__version__)"`
+3. Lancez les tests : `python -m unittest discover tests -v`
+4. Testez le packaging (Windows) : `.\scripts\build_windows.ps1 -DistDir dist`
+5. Validez : `python scripts/validate_build.py --app-dir dist/app && python scripts/validate_build.py --zip dist/Jarvis-vX.Y.Z-portable.zip`
+6. Commit : `git add . && git commit -m "vX.Y.Z"`
+7. Push : `git push origin main`
+8. Tag : `git tag vX.Y.Z && git push origin vX.Y.Z`
+   - Le tag DOIT correspondre à `src/version.py`, sinon le workflow échoue
+9. Le workflow GitHub Actions :
+   - Build + validation complète
+   - Si tests packaging échouent → **aucune release**
+   - Si tout passe → crée la release avec `JarvisSetup-X.Y.Z.exe` + ZIP + SHA256
+10. Les utilisateurs reçoivent la mise à jour via le launcher automatiquement
+
+**En cas d'échec de build :**
+- Ne pas déplacer le tag existant
+- Corriger le code
+- Créer un nouveau commit + tag (ex: vX.Y.Z+1)
+- Ou supprimer le tag cassé : `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`
+
