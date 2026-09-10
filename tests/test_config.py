@@ -62,8 +62,10 @@ class ConfigTests(unittest.TestCase):
     def test_load_config_missing_raises(self):
         with patch.dict(os.environ, {}, clear=True):
             with patch.dict(os.environ, {"JARVIS_DATA_DIR": self.tmp.name}, clear=False):
-                with self.assertRaises(RuntimeError):
-                    load_config()
+                # Isolate this test from a developer .env in the repository.
+                with patch("src.config.load_dotenv"):
+                    with self.assertRaises(RuntimeError):
+                        load_config()
 
     def test_save_config_roundtrip(self):
         config = Config(user="M", api_key="K" * 20, model="m", memory_enabled=False)
