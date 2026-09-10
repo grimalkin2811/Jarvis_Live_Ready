@@ -100,7 +100,6 @@ def _validate_installation() -> tuple[bool, str]:
         # En dev, on ne valide pas
         return True, "Mode développement"
 
-    install_dir = _install_dir()
     app_dir = _app_dir()
 
     # Vérifie que le dossier app existe
