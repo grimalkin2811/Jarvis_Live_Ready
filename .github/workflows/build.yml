@@ -86,7 +86,9 @@ jobs:
         shell: pwsh
         run: |
           choco install innosetup -y --no-progress
-          echo "ISCC=$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $ISCC = Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $ISCC)) { throw "ISCC.exe introuvable : $ISCC" }
+          "ISCC=$ISCC" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Construire l'installateur Windows
         shell: pwsh
@@ -102,7 +104,10 @@ jobs:
           $setup = Get-ChildItem -Recurse -Path "dist", "packaging\dist" -Filter "JarvisSetup-*.exe" -ErrorAction SilentlyContinue |
             Select-Object -First 1
           if (-not $setup) { throw "JarvisSetup-*.exe introuvable après compilation." }
-          Copy-Item -Force $setup.FullName (Join-Path "dist" $setup.Name)
+          $target = Join-Path (Resolve-Path "dist") $setup.Name
+          if ($setup.FullName -ne $target) {
+            Copy-Item -Force $setup.FullName $target
+          }
           Get-ChildItem dist -Filter "JarvisSetup-*.exe"
 
       - name: Récupérer le SHA-256
