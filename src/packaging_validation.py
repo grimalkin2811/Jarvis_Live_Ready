@@ -181,17 +181,10 @@ def _zip_has_flattened(zip_file: zipfile.ZipFile) -> list[str]:
     has_app_prefix = any(n.startswith("app/") for n in names)
 
     for forbidden in FORBIDDEN_FLATTENED_FILES:
-        # Chemins à vérifier
-        candidates = [forbidden, f"app/{forbidden}"] if has_app_prefix else [forbidden]
-        # Mais si has_app_prefix, on ne veut PAS que app/python311.dll existe
-        # (il doit être dans app/_internal/)
-        # Donc on vérifie app/python311.dll
-        if has_app_prefix:
-            if f"app/{forbidden}" in names:
-                found.append(f"app/{forbidden}")
-        else:
-            if forbidden in names:
-                found.append(forbidden)
+        # Si has_app_prefix, app/python311.dll est interdit.
+        candidate = f"app/{forbidden}" if has_app_prefix else forbidden
+        if candidate in names:
+            found.append(candidate)
     return found
 
 
@@ -224,8 +217,8 @@ def validate_zip(zip_path: str | Path, *, expect_app_prefix: bool = False) -> tu
             # Si has_app_prefix, on attend app/Jarvis.exe etc.
             # Sinon, on attend Jarvis.exe à la racine
 
-            missing: list[str] = []
             # Vérifie les fichiers critiques
+            missing: list[str] = []
             if has_app_prefix:
                 for rel in CRITICAL_APP_FILES:
                     if f"app/{rel}" not in names and not any(n == f"app/{rel}" or n.startswith(f"app/{rel}/") for n in names):

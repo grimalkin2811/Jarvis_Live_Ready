@@ -26,6 +26,7 @@ from src.updater import (  # noqa: E402
     verify_sha256,
     write_version_file,
 )
+from src.version import get_version  # noqa: E402
 
 
 def _make_zip(zip_path: Path, files: dict[str, bytes]) -> None:
@@ -42,7 +43,7 @@ class UpdaterTests(unittest.TestCase):
 
     def test_local_version_marker(self):
         # Pas de version.json -> retombe sur la version embarquée.
-        self.assertEqual(local_version(self.root), "1.0.1")
+        self.assertEqual(local_version(self.root), get_version())
         write_version_file("1.2.0", self.root)
         self.assertEqual(local_version(self.root), "1.2.0")
 
