@@ -23,6 +23,7 @@ a = Analysis(
         "src.updater",
         "src.version",
         "src.paths",
+        "src.packaging_validation",
     ],
     hookspath=[],
     runtime_hooks=[],

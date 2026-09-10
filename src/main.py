@@ -5,11 +5,14 @@ Modes disponibles :
 * (par défaut)  : assistant vocal headless (console), comme avant.
 * ``--ui``      : orbe morphing interactif (menus radiaux) + assistant vocal.
 * ``--desktop`` : overlay halo plein écran + assistant vocal.
+* ``--smoke-test`` : test rapide sans audio/Gemini (pour CI packaging).
+* ``--version`` : affiche la version.
 
 Exemples :
     python -m src.main
     python -m src.main --ui
     python -m src.main --desktop
+    python -m src.main --smoke-test
 """
 
 import argparse
@@ -44,6 +47,91 @@ def _load_menu_bridge() -> None:
         ms.load_state(str(paths.menu_state_file()))
     except Exception:
         pass
+
+
+def _run_smoke_test() -> int:
+    """Test rapide pour CI : vérifie que l'exécutable démarre et que les
+    dépendances critiques sont présentes.
+
+    Ne nécessite pas de micro, haut-parleur, clé API ou config.
+    """
+    print(f"=== JARVIS SMOKE TEST ===")
+    print(f"Version: {get_version()}")
+    print(f"Python: {sys.version}")
+    print(f"Frozen: {getattr(sys, 'frozen', False)}")
+    if getattr(sys, "frozen", False):
+        print(f"Executable: {sys.executable}")
+        print(f"_MEIPASS: {getattr(sys, '_MEIPASS', 'N/A')}")
+
+    # Vérifie la structure PyInstaller si frozen
+    if getattr(sys, "frozen", False):
+        from pathlib import Path
+
+        exe_dir = Path(sys.executable).resolve().parent
+        print(f"Exe dir: {exe_dir}")
+
+        # Vérifie les fichiers critiques
+        critical = [
+            exe_dir / "_internal" / "python311.dll",
+            exe_dir / "_internal" / "base_library.zip",
+        ]
+        all_ok = True
+        for path in critical:
+            exists = path.exists()
+            status = "OK" if exists else "MISSING"
+            print(f"  {path.name}: {status} ({path})")
+            if not exists:
+                all_ok = False
+
+        # Détecte l'aplatissement
+        flattened = [
+            exe_dir / "python311.dll",
+            exe_dir / "base_library.zip",
+        ]
+        for path in flattened:
+            if path.exists():
+                print(f"  FLATTENED DETECTED: {path} should be in _internal/")
+                all_ok = False
+
+        if not all_ok:
+            print("SMOKE TEST FAILED: Structure PyInstaller invalide")
+            return 1
+
+    # Teste les imports critiques (sans les instancier)
+    print("Testing critical imports...")
+    imports_to_test = [
+        ("src.version", "version"),
+        ("src.paths", "paths"),
+        ("src.packaging_validation", "packaging_validation"),
+        ("src.protocols", "protocols"),
+    ]
+
+    for module_name, short in imports_to_test:
+        try:
+            __import__(module_name)
+            print(f"  {short}: OK")
+        except Exception as exc:
+            print(f"  {short}: FAIL - {exc}")
+            return 1
+
+    # Teste les imports optionnels (ne fait pas échouer, mais log)
+    optional_imports = [
+        "PySide6",
+        "numpy",
+        "google.genai",
+        "openwakeword",
+        "sounddevice",
+    ]
+    print("Testing optional imports (bundled in PyInstaller)...")
+    for mod in optional_imports:
+        try:
+            __import__(mod)
+            print(f"  {mod}: OK")
+        except Exception as exc:
+            print(f"  {mod}: MISSING ({exc}) - may be expected in dev")
+
+    print("SMOKE TEST PASSED")
+    return 0
 
 
 async def run_headless():
@@ -196,11 +284,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Joue un protocole cinématique dans la console puis quitte "
              "(wake_up, diagnostic, focus, stand_down).",
     )
+    group.add_argument(
+        "--smoke-test",
+        action="store_true",
+        help="Test rapide de l'exécutable (pour CI, sans audio/API).",
+    )
+    group.add_argument(
+        "--version",
+        action="store_true",
+        help="Affiche la version et quitte.",
+    )
     return parser
 
 
 def main(argv=None) -> int:
     args = build_parser().parse_args(argv)
+
+    # Version simple
+    if getattr(args, "version", False):
+        print(get_version())
+        return 0
+
+    # Smoke test pour CI
+    if getattr(args, "smoke_test", False):
+        return _run_smoke_test()
 
     # Journalisation : un exécutable distribué ne dépend pas d'une console.
     is_gui = args.ui or args.desktop

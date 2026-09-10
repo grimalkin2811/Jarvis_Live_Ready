@@ -18,6 +18,13 @@ Conventions de nommage des artefacts (voir ``.github/workflows``) :
 
 Le launcher (ou le script de build) écrit un ``version.json`` à côté du
 launcher : c'est la source de vérité locale pour « version installée ».
+
+Garde-fous ajoutés (v1.0.2+) :
+
+* Validation de la structure avant remplacement (Jarvis.exe, _internal/python311.dll, etc.)
+* Rejet des archives aplaties (python311.dll à la racine)
+* Validation après extraction
+* Rollback automatique si la nouvelle version est invalide
 """
 
 from __future__ import annotations
@@ -42,6 +49,144 @@ _GITHUB_API = "https://api.github.com/repos/"
 
 class UpdateError(RuntimeError):
     """Erreur récupérable du processus de mise à jour."""
+
+
+# ---------------------------------------------------------------------------
+# Validation de structure (centralisée)
+# ---------------------------------------------------------------------------
+
+# Import défensif : src.packaging_validation peut ne pas être disponible dans
+# certains contextes (launcher minimal), on fournit un fallback.
+try:
+    from .packaging_validation import (
+        CRITICAL_APP_FILES,
+        FORBIDDEN_FLATTENED_FILES,
+        validate_app_dir as _validate_app_dir,
+        validate_zip as _validate_zip,
+    )
+except ImportError:
+    CRITICAL_APP_FILES = [
+        "Jarvis.exe",
+        "_internal/python311.dll",
+        "_internal/base_library.zip",
+    ]
+    FORBIDDEN_FLATTENED_FILES = [
+        "python311.dll",
+        "base_library.zip",
+    ]
+
+    def _validate_app_dir(app_path, strict=False):
+        base = Path(app_path)
+        missing = []
+        forbidden = []
+        for rel in CRITICAL_APP_FILES:
+            if not (base / rel).exists():
+                missing.append(rel)
+        for rel in FORBIDDEN_FLATTENED_FILES:
+            if (base / rel).exists():
+                forbidden.append(rel)
+        if not (base / "_internal").is_dir():
+            missing.append("_internal/ (dossier)")
+        is_valid = not missing and not forbidden
+        return is_valid, missing, forbidden
+
+    def _validate_zip(zip_path, expect_app_prefix=False):
+        try:
+            with zipfile.ZipFile(zip_path, "r") as zf:
+                names = [n.replace("\\", "/") for n in zf.namelist()]
+                missing = []
+                forbidden = []
+                has_app_prefix = any(n.startswith("app/") for n in names)
+                # Vérifie fichiers critiques
+                if has_app_prefix:
+                    for rel in CRITICAL_APP_FILES:
+                        if f"app/{rel}" not in names:
+                            missing.append(f"app/{rel}")
+                    if not any(n.startswith("app/_internal/") for n in names):
+                        missing.append("app/_internal/ (dossier)")
+                    for rel in FORBIDDEN_FLATTENED_FILES:
+                        if f"app/{rel}" in names:
+                            forbidden.append(f"app/{rel}")
+                else:
+                    for rel in CRITICAL_APP_FILES:
+                        if rel not in names:
+                            missing.append(rel)
+                    if not any(n.startswith("_internal/") for n in names):
+                        missing.append("_internal/ (dossier)")
+                    for rel in FORBIDDEN_FLATTENED_FILES:
+                        if rel in names:
+                            forbidden.append(rel)
+                return (not missing and not forbidden), missing, forbidden
+        except Exception as exc:
+            return False, [f"Erreur ZIP: {exc}"], []
+
+
+def _format_validation_error(prefix: str, missing: list[str], forbidden: list[str]) -> str:
+    lines = [prefix]
+    if missing:
+        lines.append("  Fichiers manquants:")
+        for m in missing:
+            lines.append(f"    - {m}")
+    if forbidden:
+        lines.append("  Fichiers aplatis détectés (doivent être dans _internal/):")
+        for f in forbidden:
+            lines.append(f"    - {f}")
+    return "\n".join(lines)
+
+
+def validate_extracted_app_structure(extracted_dir: Path) -> tuple[Path, bool, list[str], list[str]]:
+    """Trouve la racine de l'app dans un dossier extrait et la valide.
+
+    Gère deux formats de ZIP :
+    1. ZIP avec fichiers à la racine (Jarvis.exe, _internal/...) -> extracted_dir est la racine
+    2. ZIP avec un seul dossier (app/ ou Jarvis-v1.0.0/) contenant l'app -> ce dossier est la racine
+
+    Retourne (app_root, is_valid, missing, forbidden)
+    """
+    extracted_dir = Path(extracted_dir)
+    # Liste le contenu
+    contents = [p for p in extracted_dir.iterdir() if p.name != "__MACOSX"]
+
+    # Cas 1 : un seul dossier, probablement l'app
+    if len(contents) == 1 and contents[0].is_dir():
+        candidate = contents[0]
+        # Si ce dossier contient Jarvis.exe, c'est la racine de l'app
+        if (candidate / "Jarvis.exe").exists() or (candidate / "_internal").is_dir():
+            app_root = candidate
+        else:
+            # Peut-être un dossier avec sous-dossier app/
+            if (candidate / "app" / "Jarvis.exe").exists():
+                app_root = candidate / "app"
+            else:
+                app_root = candidate
+    else:
+        # Plusieurs fichiers à la racine, ou directement Jarvis.exe
+        if (extracted_dir / "Jarvis.exe").exists():
+            app_root = extracted_dir
+        elif (extracted_dir / "app" / "Jarvis.exe").exists():
+            app_root = extracted_dir / "app"
+        else:
+            # Par défaut, on considère extracted_dir comme racine
+            app_root = extracted_dir
+
+    is_valid, missing, forbidden = _validate_app_dir(app_root)
+    return app_root, is_valid, missing, forbidden
+
+
+def assert_valid_app_dir(app_path: Path) -> None:
+    """Lève UpdateError si le dossier app est invalide."""
+    is_valid, missing, forbidden = _validate_app_dir(app_path)
+    if not is_valid:
+        msg = _format_validation_error(f"Structure invalide pour {app_path}:", missing, forbidden)
+        raise UpdateError(msg)
+
+
+def assert_valid_zip(zip_path: Path) -> None:
+    """Lève UpdateError si le ZIP est invalide."""
+    is_valid, missing, forbidden = _validate_zip(zip_path)
+    if not is_valid:
+        msg = _format_validation_error(f"Archive invalide {zip_path}:", missing, forbidden)
+        raise UpdateError(msg)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +366,7 @@ def download_asset(asset: dict, dest_dir: str | os.PathLike, sha256: str | None 
 
 
 # ---------------------------------------------------------------------------
-# Installation atomique
+# Installation atomique avec validation
 # ---------------------------------------------------------------------------
 
 def _safe_extract(zip_path: str | os.PathLike, dest: str | os.PathLike) -> None:
@@ -245,27 +390,37 @@ def apply_update(
     keep_backups: int = 2,
     marker_dir: str | os.PathLike | None = None,
 ) -> Path:
-    """Remplace l'application de façon atomique.
+    """Remplace l'application de façon atomique avec validation.
 
     Procédé :
-    1. l'installation courante est déplacée dans un dossier de sauvegarde ;
-    2. l'archive est extraite dans un dossier temporaire ;
-    3. si une étape échoue, l'ancienne installation est restaurée (rollback) ;
-    4. ``version.json`` est écrit pour refléter la version installée.
+    1. Valide l'archive ZIP (structure _internal, pas d'aplatissement)
+    2. Extrait l'archive dans un dossier temporaire
+    3. Valide la structure extraite (Jarvis.exe, _internal/python311.dll, etc.)
+    4. Déplace l'installation courante vers un backup
+    5. Installe la nouvelle version
+    6. Valide la nouvelle installation
+    7. Si une étape échoue, rollback vers l'ancienne version
 
     ``install_dir`` est le dossier remplaçable (ex. ``app/``). ``marker_dir``
-    (défaut : ``install_dir``) indique où écrire ``version.json`` — par défaut
-    sur le même dossier. Le launcher peut l'utiliser pour écrire le marqueur à
-    côté de lui-même tout en remplaçant ``app/``.
+    (défaut : ``install_dir``) indique où écrire ``version.json``.
 
-    Les **données utilisateur** ne sont jamais touchées : elles vivent dans
-    ``%LOCALAPPDATA%\\Jarvis``, hors du dossier d'installation.
+    Les **données utilisateur** ne sont jamais touchées.
     """
     install_dir = Path(install_dir)
     if not install_dir.is_dir():
-        raise UpdateError("Dossier d'installation introuvable.")
+        raise UpdateError(f"Dossier d'installation introuvable: {install_dir}")
     zip_path = Path(zip_path)
+    if not zip_path.is_file():
+        raise UpdateError(f"Archive introuvable: {zip_path}")
     marker_dir = Path(marker_dir) if marker_dir else install_dir
+
+    # 0. Validation préalable du ZIP
+    print(f"[Updater] Validation de l'archive {zip_path}...")
+    is_valid, missing, forbidden = _validate_zip(zip_path)
+    if not is_valid:
+        msg = _format_validation_error(f"Archive invalide {zip_path}:", missing, forbidden)
+        print(f"[Updater] {msg}")
+        raise UpdateError(f"Archive invalide, mise à jour refusée:\n{msg}")
 
     # Dossier de sauvegarde (rollback) *à côté* de l'installation.
     backup_root = install_dir.parent / ".jarvis-backups"
@@ -279,38 +434,86 @@ def apply_update(
     installed = False
     try:
         # 1. Extraire l'archive dans un dossier de préparation.
+        print(f"[Updater] Extraction vers {stage_dir}...")
         _safe_extract(zip_path, stage_dir)
 
-        # 2. Déplacer l'installation courante vers la sauvegarde.
+        # 2. Valider la structure extraite
+        print(f"[Updater] Validation de la structure extraite...")
+        app_root, is_valid, missing, forbidden = validate_extracted_app_structure(stage_dir)
+        if not is_valid:
+            msg = _format_validation_error(f"Structure extraite invalide (racine détectée: {app_root}):", missing, forbidden)
+            print(f"[Updater] {msg}")
+            raise UpdateError(f"Archive extraite invalide, mise à jour refusée:\n{msg}")
+
+        print(f"[Updater] Structure extraite valide: {app_root}")
+
+        # 3. Déplacer l'installation courante vers la sauvegarde.
         if backup_dir.exists():
             shutil.rmtree(backup_dir)
+        print(f"[Updater] Sauvegarde de l'ancienne version vers {backup_dir}...")
         os.rename(str(install_dir), str(backup_dir))
 
-        # 3. Déplacer le contenu préparé vers le dossier d'installation.
-        #    L'archive portable est censée contenir le contenu de l'app
-        #    directement à sa racine (Jarvis.exe, resources/, ...).
-        contents = [p for p in stage_dir.iterdir() if p.name != "__MACOSX"]
-        if len(contents) == 1 and contents[0].is_dir():
-            os.replace(str(contents[0]), str(install_dir))
-        else:
-            shutil.copytree(str(stage_dir), str(install_dir))
+        # 4. Déplacer le contenu préparé vers le dossier d'installation.
+        print(f"[Updater] Installation de la nouvelle version vers {install_dir}...")
+        try:
+            # Si l'app_root est un sous-dossier de stage_dir, on le déplace
+            # Sinon, on copie tout le stage_dir
+            if app_root.resolve() != stage_dir.resolve():
+                # app_root est un sous-dossier (ex: stage/app ou stage/Jarvis-v1.0.0)
+                os.replace(str(app_root), str(install_dir))
+            else:
+                # app_root == stage_dir, contient directement les fichiers
+                # On doit copier le contenu
+                shutil.copytree(str(stage_dir), str(install_dir))
+        except Exception as exc:
+            # Si l'installation échoue, on tente de restaurer immédiatement
+            print(f"[Updater] Échec installation: {exc}, rollback...")
+            if install_dir.exists():
+                shutil.rmtree(install_dir, ignore_errors=True)
+            if backup_dir.is_dir() and not install_dir.exists():
+                os.rename(str(backup_dir), str(install_dir))
+            raise UpdateError(f"Installation impossible: {exc}") from exc
+
         installed = True
 
+        # 5. Valider la nouvelle installation
+        print(f"[Updater] Validation de la nouvelle installation...")
+        is_valid, missing, forbidden = _validate_app_dir(install_dir)
+        if not is_valid:
+            msg = _format_validation_error(f"Nouvelle installation invalide {install_dir}:", missing, forbidden)
+            print(f"[Updater] {msg}")
+            # Rollback
+            if install_dir.exists():
+                shutil.rmtree(install_dir)
+            if backup_dir.is_dir():
+                os.rename(str(backup_dir), str(install_dir))
+            raise UpdateError(f"Installation invalide après extraction, rollback effectué:\n{msg}")
+
+        # 6. Écrire version.json
         write_version_file(version or get_version(), str(marker_dir), channel=channel)
+        print(f"[Updater] Mise à jour réussie vers {version or get_version()}")
         return install_dir
+
+    except UpdateError:
+        # Déjà une UpdateError avec message clair, on la propage
+        raise
     except Exception as exc:
-        # Rollback : restaurer l'installation précédente.
+        # Rollback pour toute autre erreur
+        print(f"[Updater] Erreur inattendue: {exc}, rollback...")
         if installed and install_dir.exists() and backup_dir.is_dir():
-            shutil.rmtree(install_dir)
+            shutil.rmtree(install_dir, ignore_errors=True)
         if backup_dir.is_dir() and not install_dir.is_dir():
-            os.rename(str(backup_dir), str(install_dir))
+            try:
+                os.rename(str(backup_dir), str(install_dir))
+                print(f"[Updater] Rollback réussi")
+            except Exception as rollback_exc:
+                print(f"[Updater] Rollback échoué: {rollback_exc}")
         raise UpdateError(f"Installation de la mise à jour impossible : {exc}") from exc
     finally:
-        # Nettoyer le dossier de préparation (jamais les backups : ils
-        # permettent le rollback).
+        # Nettoyer le dossier de préparation
         if stage_dir.is_dir():
             shutil.rmtree(stage_dir, ignore_errors=True)
-        # Ne garder que les derniers backups.
+        # Ne garder que les derniers backups
         backups = sorted(backup_root.glob("backup-*"), reverse=True)
         for old in backups[keep_backups:]:
             shutil.rmtree(old, ignore_errors=True)
@@ -423,6 +626,7 @@ def perform_update(
     if not asset:
         raise UpdateError("Aucun artefact de mise à jour disponible.")
     dest_dir = Path(dest_dir) if dest_dir else Path(tempfile.gettempdir())
+    print(f"[Updater] Téléchargement de {asset.get('name')}...")
     zip_path = download_asset(asset, dest_dir)
     sha = None
     asset_sha = plan.get("asset_sha256")
@@ -436,10 +640,16 @@ def perform_update(
         sha = None
 
     if sha:
+        print(f"[Updater] Vérification SHA-256...")
         if not verify_sha256(zip_path, sha):
             raise UpdateError("Empreinte SHA-256 invalide : archive corrompue.")
+        print(f"[Updater] SHA-256 OK")
     elif auto_confirm_sha:
         raise UpdateError("Aucune empreinte SHA-256 publiée : mise à jour refusée.")
+
+    # Validation du ZIP avant installation
+    print(f"[Updater] Validation du ZIP téléchargé...")
+    assert_valid_zip(zip_path)
 
     return apply_update(
         zip_path,
