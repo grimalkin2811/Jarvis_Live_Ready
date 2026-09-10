@@ -1,20 +1,6 @@
 # Build Windows de Jarvis (application + launcher + archive portable).
 #
 # À utiliser localement (Windows avec Python) ou en CI (windows-latest).
-#
-# Étapes :
-#   1. télécharger les ressources OpenWakeWord ;
-#   2. construire l'application avec PyInstaller (onedir) ;
-#   3. construire le launcher avec PyInstaller (onefile) ;
-#   4. assembler l'archive portable `Jarvis-v<version>-portable.zip` ;
-#   5. calculer l'empreinte SHA-256.
-#
-# Résultat dans `dist/` :
-#   Jarvis/                      (dossier onedir de l'application)
-#   JarvisLauncher.exe
-#   Jarvis-v<version>-portable.zip
-#   Jarvis-v<version>-portable.zip.sha256
-#   version.json
 
 param(
     [switch]$SkipModels,
@@ -26,7 +12,7 @@ Set-Location (Split-Path -Parent $PSScriptRoot)  # racine du dépôt
 
 Write-Host "=== JARVIS - BUILD WINDOWS ===" -ForegroundColor Cyan
 
-# --- Version (source unique de vérité : src/version.py) ---
+# --- Version ---
 $Version = python -c "import sys; sys.path.insert(0, '.'); from src.version import __version__; print(__version__)"
 if ($LASTEXITCODE -ne 0) { throw "Impossible de lire src.version.__version__" }
 $Version = $Version.Trim()
@@ -34,7 +20,7 @@ $Channel = python -c "import sys; sys.path.insert(0, '.'); from src.version impo
 $Channel = $Channel.Trim()
 Write-Host "Version : $Version (canal : $Channel)"
 
-# Réutilise un .venv existant, sinon le python actif (CI l'a déjà installé).
+# --- Python de build ---
 $venvPython = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
 if (-not (Test-Path $venvPython)) {
     $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe")
@@ -45,12 +31,12 @@ if (-not (Test-Path $venvPython)) {
 }
 Write-Host "Python build : $venvPython"
 
-# Vérifie/installe les dépendances de build (idempotent).
+# Vérifie/installe les dépendances de build.
 & $venvPython -m pip install --upgrade pip
 & $venvPython -m pip install -r requirements.txt
 & $venvPython -m pip install pyinstaller
 
-# --- Modèles OpenWakeWord (sauf si -SkipModels) ---
+# --- Modèles OpenWakeWord ---
 if (-not $SkipModels) {
     Write-Host "[build] Téléchargement des modèles OpenWakeWord..."
     & $venvPython scripts/download_models.py
@@ -59,7 +45,7 @@ if (-not $SkipModels) {
     Write-Host "[build] Téléchargement des modèles ignoré (-SkipModels)."
 }
 
-# --- Construction (dossier temporaire pour éviter de polluer dist) ---
+# --- Construction ---
 $work = Join-Path $DistDir ".build"
 if (Test-Path $work) { Remove-Item $work -Recurse -Force }
 
@@ -71,19 +57,30 @@ Write-Host "[build] Construction du launcher (PyInstaller onefile)..."
 & $venvPython -m PyInstaller packaging/launcher.spec --distpath $DistDir --workpath $work --noconfirm --clean
 if ($LASTEXITCODE -ne 0) { throw "Échec PyInstaller (launcher)." }
 
-# --- Assembler l'archive portable ---
+# --- Assembler l'application portable ---
 $appDir = Join-Path $DistDir "app"
 if (Test-Path $appDir) { Remove-Item $appDir -Recurse -Force }
-# L'application onedir produit dist/Jarvis/contenu ; on copie ce contenu dans app/.
 $onedir = Join-Path $DistDir "Jarvis"
 if (-not (Test-Path (Join-Path $onedir "Jarvis.exe"))) { throw "Jarvis.exe introuvable dans $onedir" }
 
-# Copier Jarvis.exe + _internal (et autres fichiers de l'onedir).
-# Les ressources (modèles OpenWakeWord) sont déjà embarquées par le spec
-# PyInstaller dans `_internal/resources/` — pas besoin de les dupliquer.
-Copy-Item -Recurse -Force (Join-Path $onedir "*") $appDir
+# IMPORTANT : ne pas utiliser Copy-Item avec un wildcard ici.
+# Avec certaines versions/comportements de PowerShell, la copie du contenu
+# d'un dossier PyInstaller peut aplatir la structure `_internal`.
+# Robocopy préserve exactement l'arborescence produite par PyInstaller.
+New-Item -ItemType Directory -Path $appDir -Force | Out-Null
+& robocopy $onedir $appDir /E /NFL /NDL /NJH /NJS /NP
+$robocopyExit = $LASTEXITCODE
+if ($robocopyExit -gt 7) {
+    throw "Robocopy a échoué (code $robocopyExit)."
+}
 
-# Écrire version.json à la racine de l'app (le launcher le lit pour l'update).
+# Garde-fou : un build moderne de PyInstaller doit contenir `_internal`.
+$internalPython = Join-Path $appDir "_internal\python311.dll"
+if (-not (Test-Path $internalPython)) {
+    throw "Layout PyInstaller invalide : $internalPython est introuvable. Le build ne sera pas publié."
+}
+
+# Écrire version.json à la racine de l'app.
 $versionJson = @"
 {
   "version": "$Version",
@@ -93,7 +90,7 @@ $versionJson = @"
 "@
 $versionJson | Out-File -FilePath (Join-Path $appDir "version.json") -Encoding utf8
 
-# Archive portable (contenu de app/ directement, sans sous-dossier app).
+# --- Archive portable ---
 $zipName = "Jarvis-v$Version-portable.zip"
 $zipPath = Join-Path $DistDir $zipName
 if (Test-Path $zipPath) { Remove-Item $zipPath -Force }
@@ -106,7 +103,7 @@ $shaPath = "$zipPath.sha256"
 "$sha  $zipName" | Out-File -FilePath $shaPath -Encoding utf8
 Write-Host "[build] SHA-256 : $sha"
 
-# Copier aussi le launcher et un version.json de référence à la racine.
+# Copier aussi un version.json de référence à la racine.
 Copy-Item -Force (Join-Path $appDir "version.json") $DistDir
 
 Write-Host "=== BUILD TERMINÉ ===" -ForegroundColor Green
