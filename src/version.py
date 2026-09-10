@@ -9,7 +9,7 @@ pour les scripts de développement.
 from __future__ import annotations
 
 #: Version sémantique de l'application (MAJOR.MINOR.PATCH).
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 #: Canal de distribution. ``stable`` est utilisé par le launcher pour filtrer
 #: les mises à jour ; ``beta``/``dev`` servent aux canaux de prépublication.
