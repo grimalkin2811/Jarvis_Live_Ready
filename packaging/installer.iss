@@ -1,7 +1,6 @@
 ; Inno Setup script — Jarvis (installation par utilisateur, sans admin).
 ;
 ; Compile avec :  iscc packaging/installer.iss /DVERSION=1.0.0 /DSourceDir=dist
-;
 ; Le programme est installé dans %LOCALAPPDATA%\Jarvis (per-user) afin que le
 ; launcher puisse remplacer l'application à chaque mise à jour sans demander de
 ; droits administrateur. Les DONNÉES UTILISATEUR (config, mémoire, logs,
@@ -41,7 +40,6 @@ WizardStyle=modern
 UninstallDisplayIcon={#IconFile}
 ArchitecturesInstallIn64BitMode=x64compatible
 ; Ne pas créer de dossier de programme dans le menu Démarrer (un seul raccourci).
-DisableProgramGroupPage=yes
 ; L'installation ne réinitialise pas les données utilisateur existantes.
 ; On ne supprime jamais le contenu de l'installation lors d'une mise à jour.
 
