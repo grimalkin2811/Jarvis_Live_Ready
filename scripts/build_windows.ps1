@@ -270,19 +270,25 @@ Write-Host ""
 Write-Host "=== Smoke testing executable ===" -ForegroundColor Cyan
 $testExe = Join-Path $appDir "Jarvis.exe"
 Write-Host "[build] Test: $testExe --smoke-test"
+# NB : Start-Process n'a PAS de paramètre -Timeout (erreur de paramètre pwsh,
+# qui était avalée par le catch et faisait que le smoke test ne tournait
+# jamais). WaitForExit(ms) fournit un délai borné réel.
 try {
-    $process = Start-Process -FilePath $testExe -ArgumentList "--smoke-test" -PassThru -NoNewWindow -Wait -Timeout 30
-    if ($process.ExitCode -ne 0) {
+    $process = Start-Process -FilePath $testExe -ArgumentList "--smoke-test" -PassThru -NoNewWindow
+    if (-not $process.WaitForExit(30000)) {
+        try { $process.Kill() } catch { }
+        Write-Host "[build] Smoke test: timeout après 30s (processus tué)" -ForegroundColor Yellow
+    } elseif ($process.ExitCode -ne 0) {
         Write-Host "[build] Smoke test exit code: $($process.ExitCode)" -ForegroundColor Yellow
-        # Ne fait pas échouer le build si smoke test échoue, mais log
-        # En CI, le workflow fera un test plus poussé
+        # Ne fait pas échouer le build si smoke test échoue, mais log ;
+        # en CI, le Test 3 du workflow est le verrou bloquant.
     } else {
         Write-Host "[build] Smoke test: OK" -ForegroundColor Green
     }
 } catch {
-    Write-Host "[build] Smoke test exception (peut être normal si timeout): $_" -ForegroundColor Yellow
-    # On ne fait pas échouer le build ici, mais on log
-    # Le test CI fera un smoke test plus robuste
+    Write-Host "[build] Smoke test exception: $_" -ForegroundColor Yellow
+    # On ne fait pas échouer le build ici, mais on log.
+    # Le test CI fera un smoke test plus robuste.
 }
 
 Write-Host ""
