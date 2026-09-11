@@ -2,6 +2,11 @@ google-genai
 sounddevice
 numpy
 openwakeword
+# Framework d'inférence supporté pour les builds distribués : les modèles
+# ONNX (wake word + melspectrogram + embedding) sont embarqués dans le bundle
+# et chargés avec chemins explicites (voir src/wakeword.py). tflite-runtime
+# (dépendance optionnelle d'openwakeword) n'est PAS requis : il n'est utilisé
+# qu'en mode opportuniste si présent avec ses fichiers .tflite.
 onnxruntime
 python-dotenv
 pycaw

@@ -23,9 +23,12 @@ from src.packaging_validation import (
     CRITICAL_APP_FILES,
     FORBIDDEN_FLATTENED_FILES,
     format_validation_result,
+    format_wakeword_result,
     validate_app_dir,
     validate_install_dir,
+    validate_wakeword_models,
     validate_zip,
+    validate_zip_wakeword_models,
 )
 from src.updater import UpdateError, apply_update, validate_extracted_app_structure
 
@@ -261,6 +264,117 @@ class PackagingValidationTests(unittest.TestCase):
         self.assertIn("Validation OK", ok)
         self.assertIn("FAIL", failure)
         self.assertIn("Jarvis.exe", failure)
+
+
+class WakewordValidationTests(unittest.TestCase):
+    """Validation des modèles ONNX embarqués (correctif 1.1.1)."""
+
+    MODELS = ("melspectrogram.onnx", "embedding_model.onnx", "hey_jarvis_v0.1.onnx")
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+
+    def test_valid_package_location(self):
+        app_dir = self.root / "app"
+        target = app_dir / "_internal" / "openwakeword" / "resources" / "models"
+        target.mkdir(parents=True, exist_ok=True)
+        for model in self.MODELS:
+            (target / model).write_bytes(b"fake-onnx")
+        is_valid, missing, found = validate_wakeword_models(app_dir)
+        self.assertTrue(is_valid, missing)
+        self.assertEqual(len(found), 3)
+        self.assertEqual(missing, [])
+
+    def test_valid_resources_location(self):
+        app_dir = self.root / "app"
+        target = app_dir / "_internal" / "resources" / "openwakeword"
+        target.mkdir(parents=True, exist_ok=True)
+        for model in self.MODELS:
+            (target / model).write_bytes(b"fake-onnx")
+        is_valid, missing, found = validate_wakeword_models(app_dir)
+        self.assertTrue(is_valid, missing)
+        self.assertEqual(len(found), 3)
+
+    def test_missing_models_detected(self):
+        app_dir = self.root / "app"
+        (app_dir / "_internal").mkdir(parents=True)
+        is_valid, missing, found = validate_wakeword_models(app_dir)
+        self.assertFalse(is_valid)
+        self.assertEqual(len(missing), 3)
+        self.assertEqual(found, [])
+
+    def test_partial_models_detected(self):
+        app_dir = self.root / "app"
+        target = app_dir / "_internal" / "resources" / "openwakeword"
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "hey_jarvis_v0.1.onnx").write_bytes(b"fake-onnx")
+        is_valid, missing, _found = validate_wakeword_models(app_dir)
+        self.assertFalse(is_valid)
+        # Le wake word seul ne suffit pas : le pré-traitement manque
+        # (c'était exactement le bug 1.1.0).
+        self.assertEqual(len(missing), 2)
+
+    def test_zip_with_models(self):
+        zip_path = self.root / "wake.zip"
+        _make_zip(
+            zip_path,
+            {
+                "Jarvis.exe": b"exe",
+                "_internal/python311.dll": b"dll",
+                "_internal/base_library.zip": b"zip",
+                "_internal/openwakeword/resources/models/melspectrogram.onnx": b"m",
+                "_internal/openwakeword/resources/models/embedding_model.onnx": b"e",
+                "_internal/openwakeword/resources/models/hey_jarvis_v0.1.onnx": b"w",
+            },
+        )
+        is_valid, missing, found = validate_zip_wakeword_models(zip_path)
+        self.assertTrue(is_valid, missing)
+        self.assertEqual(len(found), 3)
+
+    def test_zip_without_models(self):
+        zip_path = self.root / "nowake.zip"
+        _make_zip(
+            zip_path,
+            {
+                "Jarvis.exe": b"exe",
+                "_internal/python311.dll": b"dll",
+                "_internal/base_library.zip": b"zip",
+            },
+        )
+        is_valid, missing, _found = validate_zip_wakeword_models(zip_path)
+        self.assertFalse(is_valid)
+        self.assertEqual(len(missing), 3)
+
+    def test_format_wakeword_result_console_safe(self):
+        ok = format_wakeword_result(True, [], ["_internal/a.onnx"])
+        failure = format_wakeword_result(False, ["melspectrogram.onnx"], [])
+        for text in (ok, failure):
+            text.encode("cp1252")
+            self.assertTrue(text.isascii())
+        self.assertIn("OK", ok)
+        self.assertIn("FAIL", failure)
+
+    def test_jarvis_spec_embeds_wakeword_models(self):
+        """Garde-fou : le spec PyInstaller DOIT copier les modèles ONNX vers
+        l'emplacement du paquet openwakeword (correctif 1.1.1)."""
+        spec = Path(__file__).resolve().parents[1] / "packaging" / "jarvis.spec"
+        text = spec.read_text(encoding="utf-8")
+        self.assertIn("openwakeword/resources/models", text)
+        self.assertIn("resources/openwakeword", text)
+        self.assertIn("src.wakeword", text)
+
+    def test_launcher_spec_bundles_gui_windowed(self):
+        """Garde-fou : le spec du launcher embarque PySide6 en mode windowed."""
+        spec = Path(__file__).resolve().parents[1] / "packaging" / "launcher.spec"
+        text = spec.read_text(encoding="utf-8")
+        self.assertIn("launcher.gui", text)
+        self.assertIn("PySide6.QtWidgets", text)
+        self.assertIn("console=False", text)
+        # Le launcher ne doit pas embarquer les stacks lourdes de Jarvis.
+        for excluded in ("openwakeword", "onnxruntime", "sounddevice"):
+            self.assertIn(f'"{excluded}"', text)
 
 
 if __name__ == "__main__":
