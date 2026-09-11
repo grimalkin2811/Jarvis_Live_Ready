@@ -156,10 +156,17 @@ class DownloadAllowedTests(unittest.TestCase):
 class CandidateDirsTests(unittest.TestCase):
     def test_user_dir_first_and_respects_override(self):
         with tempfile.TemporaryDirectory() as tmp:
+            # Résoudre PENDANT que le dossier existe : sur Windows, resolve()
+            # étend les noms courts (8.3, "...RUNNER~1...") vers le nom long,
+            # mais seulement en ouvrant le chemin ; après suppression, la
+            # forme courte est conservée et la comparaison échoue.
+            expected = Path(tmp).resolve() / "models" / "openwakeword"
             with mock.patch.dict(os.environ, {"JARVIS_DATA_DIR": tmp}):
                 dirs = wakeword.candidate_dirs()
         self.assertTrue(dirs)
-        self.assertEqual(dirs[0], Path(tmp) / "models" / "openwakeword")
+        # paths._user_root() canonise l'override via .resolve() : comparer
+        # des chemins canoniques (cf. commentaire ci-dessus).
+        self.assertEqual(dirs[0], expected)
 
 
 class ResolutionTests(unittest.TestCase):
