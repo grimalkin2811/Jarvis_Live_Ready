@@ -236,22 +236,18 @@ jobs:
           }
 
           Write-Host "Testing $exe --smoke-test"
-          # Lance avec timeout de 30s
-          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow -Wait -Timeout 30
+          # NB : Start-Process n'a PAS de paramètre -Timeout (erreur de
+          # paramètre en pwsh 7). On utilise WaitForExit(ms) de .NET pour un
+          # délai borné, puis on tue le processus en cas de dépassement.
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow
+          if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill() } catch { }
+            throw "Test 3 FAILED: Jarvis.exe --smoke-test n'a pas terminé en 30s (timeout, processus tué)"
+          }
 
-          if ($null -eq $process) {
-            Write-Host "  Process did not start or timed out" -ForegroundColor Yellow
-            # On tente avec --version qui est plus simple
-            Write-Host "  Trying --version..."
-            $process2 = Start-Process -FilePath $exe -ArgumentList "--version" -PassThru -NoNewWindow -Wait -Timeout 15
-            if ($process2.ExitCode -ne 0) {
-              throw "Test 3 FAILED: Executable crash or non-zero exit: $($process2.ExitCode)"
-            }
-          } else {
-            Write-Host "  Exit code: $($process.ExitCode)"
-            if ($process.ExitCode -ne 0) {
-              throw "Test 3 FAILED: Smoke test failed with exit code $($process.ExitCode)"
-            }
+          Write-Host "  Exit code: $($process.ExitCode)"
+          if ($process.ExitCode -ne 0) {
+            throw "Test 3 FAILED: Smoke test failed with exit code $($process.ExitCode)"
           }
 
           Write-Host "Test 3 PASSED: Executable starts correctly" -ForegroundColor Green
@@ -308,7 +304,12 @@ jobs:
 
           Write-Host "Installing $installer to $installDir (silent)..."
           # Inno Setup silent install: /SILENT /DIR="path"
-          $process = Start-Process -FilePath $installer -ArgumentList "/SILENT", "/DIR=`"$installDir`"" -PassThru -Wait -Timeout 120
+          # Start-Process n'a pas de -Timeout : WaitForExit(ms) borné.
+          $process = Start-Process -FilePath $installer -ArgumentList "/SILENT", "/DIR=`"$installDir`"" -PassThru
+          if (-not $process.WaitForExit(120000)) {
+            try { $process.Kill() } catch { }
+            throw "Test 4 FAILED: installation silencieuse non terminée en 120s (timeout, processus tué)"
+          }
 
           if ($process.ExitCode -ne 0) {
             Write-Host "Installer exit code: $($process.ExitCode)" -ForegroundColor Yellow
@@ -376,7 +377,12 @@ jobs:
           Write-Host "Testing installed Jarvis.exe: $exe"
           if (-not (Test-Path $exe)) { throw "Test 5 FAILED: $exe manquant" }
 
-          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow -Wait -Timeout 30
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow
+          # Start-Process n'a pas de -Timeout : WaitForExit(ms) borné.
+          if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill() } catch { }
+            throw "Test 5 FAILED: Jarvis.exe installé --smoke-test non terminé en 30s (timeout)"
+          }
           if ($process.ExitCode -ne 0) {
             throw "Test 5 FAILED: Installed Jarvis.exe smoke test failed: $($process.ExitCode)"
           }
@@ -384,7 +390,11 @@ jobs:
 
           Write-Host "Testing launcher validation: $launcher --validate"
           if (Test-Path $launcher) {
-            $process2 = Start-Process -FilePath $launcher -ArgumentList "--validate", "--no-update" -PassThru -NoNewWindow -Wait -Timeout 15
+            $process2 = Start-Process -FilePath $launcher -ArgumentList "--validate", "--no-update" -PassThru -NoNewWindow
+            if (-not $process2.WaitForExit(15000)) {
+              try { $process2.Kill() } catch { }
+              throw "Test 5 FAILED: Launcher --validate non terminé en 15s (timeout)"
+            }
             if ($process2.ExitCode -ne 0) {
               throw "Test 5 FAILED: Launcher validation failed: $($process2.ExitCode)"
             }
