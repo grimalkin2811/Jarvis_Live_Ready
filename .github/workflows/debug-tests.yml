@@ -1,0 +1,108 @@
+name: Debug tests (TEMPORAIRE)
+# Workflow temporaire de diagnostic : isole les groupes de tests pour
+# identifier un échec Windows sans accès aux logs. À SUPPRIMER ensuite.
+
+on:
+  push:
+    branches: [arena/01a09228-jarvis-live-ready]
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONUTF8: "1"
+
+jobs:
+  control-full:
+    name: "[debug] full suite (control)"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Lancer tous les tests
+        run: python -m unittest discover tests -v
+
+  group-wakeword:
+    name: "[debug] wakeword"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Tests wakeword
+        run: python -m unittest tests.test_wakeword tests.test_wakeword_e2e tests.test_download_models -v
+
+  group-launcher:
+    name: "[debug] launcher"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Tests launcher
+        run: python -m unittest tests.test_launcher_core tests.test_launcher_gui -v
+
+  group-audio:
+    name: "[debug] audio"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Tests audio
+        run: python -m unittest tests.test_audio_controls tests.test_interruption tests.test_interruption_ui -v
+
+  group-qt:
+    name: "[debug] qt-menus"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Tests Qt menus
+        run: python -m unittest tests.test_menu_render_offscreen tests.test_menu_ux tests.test_menu_state_bridge tests.test_protocol_ui tests.test_routines_ui -v
+
+  group-packaging:
+    name: "[debug] packaging-updater"
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Tests packaging/updater
+        run: python -m unittest tests.test_packaging tests.test_updater tests.test_version tests.test_paths -v
