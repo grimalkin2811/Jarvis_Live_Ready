@@ -18,12 +18,18 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.logging_setup import force_utf8_stdio
 from src.packaging_validation import (
     format_validation_result,
     validate_app_dir,
     validate_install_dir,
     validate_zip,
 )
+
+# Un script de validation ne doit JAMAIS mourir sur son propre log :
+# sous Windows la console peut être en cp1252/cp850, incapable d'encoder
+# certains caractères. On force un stdout/stderr UTF-8 sans plantage.
+force_utf8_stdio()
 
 
 def _validate_app_dir(path: Path, strict: bool = False) -> int:

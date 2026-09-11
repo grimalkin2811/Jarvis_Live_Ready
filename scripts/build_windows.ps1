@@ -16,6 +16,12 @@ param(
 $ErrorActionPreference = "Stop"
 Set-Location (Split-Path -Parent $PSScriptRoot)  # racine du dépôt
 
+# Même contrat qu'en CI (.github/workflows/build.yml) : Python doit émettre
+# de l'UTF-8 et ne jamais planter sur l'encodage de la console Windows
+# (cp1252/cp850). Protège validate_build.py, make_portable_zip.py,
+# download_models.py et tous les sous-processus python du build.
+$env:PYTHONUTF8 = "1"
+
 Write-Host "=== JARVIS - BUILD WINDOWS ===" -ForegroundColor Cyan
 Write-Host "Date: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
 Write-Host "DistDir: $DistDir"
@@ -213,7 +219,9 @@ try {
 } catch {
     Write-Host "[build] Python ZIP creation failed, fallback to Compress-Archive: $_" -ForegroundColor Yellow
     Compress-Archive -Path (Join-Path $appDir "*") -DestinationPath $zipPath -Force
-    if ($LASTEXITCODE -ne 0) { throw "Compress-Archive a échoué" }
+    # NB : Compress-Archive est une cmdlet et ne définit pas $LASTEXITCODE ;
+    # on valide par la présence du fichier plutôt que par un code périmé.
+    if (-not (Test-Path $zipPath)) { throw "Compress-Archive a échoué" }
 }
 
 if (-not (Test-Path $zipPath)) {
