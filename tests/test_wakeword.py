@@ -166,7 +166,10 @@ class ResolutionTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        # Chemin canonique : src/paths.py applique .resolve() à JARVIS_DATA_DIR
+        # et les comparaisons doivent utiliser la même forme (noms courts 8.3
+        # sous Windows, cf. test_user_dir_first_and_respects_override).
+        self.root = Path(self.tmp.name).resolve()
         patcher = mock.patch.dict(os.environ, {"JARVIS_DATA_DIR": str(self.root)})
         patcher.start()
         self.addCleanup(patcher.stop)
