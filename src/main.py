@@ -64,17 +64,35 @@ def _run_smoke_test() -> int:
         print(f"_MEIPASS: {getattr(sys, '_MEIPASS', 'N/A')}")
 
     # Vérifie la structure PyInstaller si frozen
-    if getattr(sys, "frozen", False):
+    frozen = getattr(sys, "frozen", False)
+    if frozen:
+        import os as _os
+
         from pathlib import Path
 
         exe_dir = Path(sys.executable).resolve().parent
         print(f"Exe dir: {exe_dir}")
 
-        # Vérifie les fichiers critiques
-        critical = [
-            exe_dir / "_internal" / "python311.dll",
-            exe_dir / "_internal" / "base_library.zip",
-        ]
+        # Fichiers critiques (noms dépendants de la plateforme : le smoke
+        # test reste utilisable pour un build Linux/macOS de validation).
+        if _os.name == "nt":
+            critical = [
+                exe_dir / "_internal" / "python311.dll",
+                exe_dir / "_internal" / "base_library.zip",
+            ]
+            flattened = [
+                exe_dir / "python311.dll",
+                exe_dir / "base_library.zip",
+            ]
+        else:
+            internal = exe_dir / "_internal"
+            libpython = sorted(internal.glob("libpython3*.so*")) if internal.is_dir() else []
+            critical = [exe_dir / "_internal" / "base_library.zip"] + libpython[:1]
+            flattened = [
+                exe_dir / "base_library.zip",
+            ]
+            if not libpython:
+                critical.append(exe_dir / "_internal" / "libpython3.so (attendu)")
         all_ok = True
         for path in critical:
             exists = path.exists()
@@ -84,10 +102,6 @@ def _run_smoke_test() -> int:
                 all_ok = False
 
         # Détecte l'aplatissement
-        flattened = [
-            exe_dir / "python311.dll",
-            exe_dir / "base_library.zip",
-        ]
         for path in flattened:
             if path.exists():
                 print(f"  FLATTENED DETECTED: {path} should be in _internal/")
@@ -104,6 +118,7 @@ def _run_smoke_test() -> int:
         ("src.paths", "paths"),
         ("src.packaging_validation", "packaging_validation"),
         ("src.protocols", "protocols"),
+        ("src.wakeword", "wakeword"),
     ]
 
     for module_name, short in imports_to_test:
@@ -120,6 +135,7 @@ def _run_smoke_test() -> int:
         "numpy",
         "google.genai",
         "openwakeword",
+        "onnxruntime",
         "sounddevice",
     ]
     print("Testing optional imports (bundled in PyInstaller)...")
@@ -129,6 +145,25 @@ def _run_smoke_test() -> int:
             print(f"  {mod}: OK")
         except Exception as exc:
             print(f"  {mod}: MISSING ({exc}) - may be expected in dev")
+
+    # Vérifie la chaîne wake word de bout en bout (correctif 1.1.1) :
+    # résolution des .onnx, sessions onnxruntime, prédiction sur audio
+    # synthétique. Bloquant en bundle (le bug 1.1.0 venait d'ici), informatif
+    # en développement (les modèles peuvent ne pas être téléchargés).
+    print("Testing wake word chain (openWakeWord + onnxruntime)...")
+    try:
+        from . import wakeword as _wakeword
+
+        wake_ok, wake_message = _wakeword.smoke_check(download=False, verbose=True)
+    except Exception as exc:
+        wake_ok, wake_message = False, f"smoke_check a leve : {exc}"
+    print(f"  wake word: {'OK' if wake_ok else 'FAIL'} - {wake_message}")
+    if not wake_ok and frozen:
+        print("SMOKE TEST FAILED: Chaine wake word non fonctionnelle dans le bundle")
+        print("  (modeles ONNX manquants ou sessions onnxruntime non chargeables)")
+        return 1
+    if not wake_ok:
+        print("  (non bloquant en developpement : lancez scripts/download_models.py)")
 
     print("SMOKE TEST PASSED")
     return 0

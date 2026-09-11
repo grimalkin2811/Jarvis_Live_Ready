@@ -36,6 +36,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from pathlib import Path
 
 from .version import REPO_SLUG, get_version, is_newer
@@ -314,6 +315,21 @@ def verify_sha256(path: str | os.PathLike, expected: str) -> bool:
     return sha256_file(path).lower() == expected
 
 
+#: Signature du rappel de progression : ``(octets_recus, total_ou_None)``.
+#: ``total`` vaut ``None`` quand la taille est inconnue (pas de Content-Length).
+ProgressCallback = Callable[[int, "int | None"], None]
+
+
+def _report_progress(progress: ProgressCallback | None, received: int, total: int | None) -> None:
+    """Appelle le rappel de progression sans jamais faire échouer l'opération."""
+    if progress is None:
+        return
+    try:
+        progress(received, total)
+    except Exception:
+        pass
+
+
 def download(
     url: str,
     dest: str | os.PathLike,
@@ -321,12 +337,16 @@ def download(
     sha256: str | None = None,
     timeout: int = 60,
     chunksize: int = 1024 * 256,
+    progress: ProgressCallback | None = None,
 ) -> Path:
     """Télécharge un fichier, vérifie son empreinte et retourne le chemin.
 
     Télécharge d'abord dans un fichier temporaire du répertoire cible, puis
     vérifie l'empreinte avant de déplacer vers ``dest`` : si le fichier est
     corrompu, la destination n'est jamais touchée.
+
+    ``progress`` (optionnel, utilisé par le launcher graphique) est appelé
+    après chaque morceau avec ``(octets_recus, total_ou_None)``.
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -336,12 +356,27 @@ def download(
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Jarvis-Updater"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            total: int | None = None
+            try:
+                raw_length = resp.getheader("Content-Length")
+            except Exception:
+                raw_length = None
+            if raw_length:
+                try:
+                    total = int(str(raw_length).strip())
+                except ValueError:
+                    total = None
+            received = 0
+            _report_progress(progress, 0, total)
             with tmp_path.open("wb") as handle:
                 while True:
                     chunk = resp.read(chunksize)
                     if not chunk:
                         break
                     handle.write(chunk)
+                    received += len(chunk)
+                    _report_progress(progress, received, total)
+            _report_progress(progress, received, total)
         if sha256 and not verify_sha256(tmp_path, sha256):
             raise UpdateError("Empreinte SHA-256 invalide : fichier corrompu.")
         os.replace(tmp_path, dest)
@@ -356,13 +391,19 @@ def download(
                 pass
 
 
-def download_asset(asset: dict, dest_dir: str | os.PathLike, sha256: str | None = None) -> Path:
+def download_asset(
+    asset: dict,
+    dest_dir: str | os.PathLike,
+    sha256: str | None = None,
+    *,
+    progress: ProgressCallback | None = None,
+) -> Path:
     """Télécharge un artefact de release GitHub vers ``dest_dir``."""
     url = str(asset.get("browser_download_url", "")).strip()
     if not url:
         raise UpdateError("L'artefact ne dispose pas d'URL de téléchargement.")
     dest = Path(dest_dir) / str(asset["name"])
-    return download(url, dest, sha256=sha256)
+    return download(url, dest, sha256=sha256, progress=progress)
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +653,7 @@ def perform_update(
     dest_dir: str | os.PathLike | None = None,
     auto_confirm_sha: bool = True,
     marker_dir: str | os.PathLike | None = None,
+    progress: ProgressCallback | None = None,
 ) -> Path:
     """Télécharge, vérifie et installe la mise à jour décrite par ``plan``.
 
@@ -621,13 +663,16 @@ def perform_update(
 
     ``marker_dir`` est transmis à ``apply_update`` pour écrire ``version.json``
     à un endroit stable (à côté du launcher) tout en remplaçant ``app/``.
+
+    ``progress`` (optionnel, utilisé par le launcher graphique) reçoit
+    ``(octets_recus, total_ou_None)`` pendant le téléchargement de l'archive.
     """
     asset = plan.get("asset")
     if not asset:
         raise UpdateError("Aucun artefact de mise à jour disponible.")
     dest_dir = Path(dest_dir) if dest_dir else Path(tempfile.gettempdir())
     print(f"[Updater] Téléchargement de {asset.get('name')}...")
-    zip_path = download_asset(asset, dest_dir)
+    zip_path = download_asset(asset, dest_dir, progress=progress)
     sha = None
     asset_sha = plan.get("asset_sha256")
     try:

@@ -220,6 +220,119 @@ class UpdaterTests(unittest.TestCase):
 
         self.assertEqual((install_dir / "Jarvis.exe").read_bytes(), b"old")
 
+    def test_download_reports_progress(self):
+        """Le rappel de progression reçoit (recus, total) sans casser le flux."""
+        import urllib.request
+
+        dest = self.root / "file.bin"
+        payload = b"0123456789abcdef"  # 16 octets en 2 morceaux
+
+        def fake_urlopen(req, timeout=None):
+            class Resp:
+                def __init__(self):
+                    self._chunks = [payload[:10], payload[10:]]
+
+                def getheader(self, name):
+                    if name == "Content-Length":
+                        return str(len(payload))
+                    return None
+
+                def read(self, size=None):
+                    if not self._chunks:
+                        return b""
+                    return self._chunks.pop(0)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return Resp()
+
+        calls: list[tuple[int, int | None]] = []
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = download(
+                "https://example.com/x", dest, progress=lambda r, t: calls.append((r, t))
+            )
+        self.assertEqual(out.read_bytes(), payload)
+        self.assertTrue(calls)
+        self.assertEqual(calls[0], (0, 16))
+        self.assertEqual(calls[-1], (16, 16))
+        received_values = [r for r, _ in calls]
+        self.assertEqual(received_values, sorted(received_values))
+        self.assertTrue(all(total == 16 for _, total in calls))
+
+    def test_download_progress_unknown_total(self):
+        """Sans Content-Length, le total vaut None mais les recus avancent."""
+        import urllib.request
+
+        dest = self.root / "file.bin"
+
+        def fake_urlopen(req, timeout=None):
+            class Resp:
+                def __init__(self):
+                    self._served = False
+
+                def getheader(self, name):
+                    return None
+
+                def read(self, size=None):
+                    if self._served:
+                        return b""
+                    self._served = True
+                    return b"payload"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return Resp()
+
+        calls: list[tuple[int, int | None]] = []
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            download("https://example.com/x", dest, progress=lambda r, t: calls.append((r, t)))
+        self.assertTrue(calls)
+        self.assertTrue(all(total is None for _, total in calls))
+        self.assertEqual(calls[-1][0], 7)
+
+    def test_download_progress_exception_is_ignored(self):
+        """Un rappel défaillant ne doit pas interrompre le téléchargement."""
+        import urllib.request
+
+        dest = self.root / "file.bin"
+
+        def fake_urlopen(req, timeout=None):
+            class Resp:
+                def __init__(self):
+                    self._served = False
+
+                def getheader(self, name):
+                    return None
+
+                def read(self, size=None):
+                    if self._served:
+                        return b""
+                    self._served = True
+                    return b"payload"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+            return Resp()
+
+        def bad_progress(received, total):
+            raise RuntimeError("callback HS")
+
+        with patch.object(urllib.request, "urlopen", side_effect=fake_urlopen):
+            out = download("https://example.com/x", dest, progress=bad_progress)
+        self.assertEqual(out.read_bytes(), b"payload")
+
 
 if __name__ == "__main__":
     unittest.main()

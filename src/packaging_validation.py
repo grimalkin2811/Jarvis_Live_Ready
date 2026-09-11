@@ -79,6 +79,23 @@ FORBIDDEN_FLATTENED_FILES: list[str] = [
     "VCRUNTIME140.dll",
 ]
 
+#: Modèles ONNX OpenWakeWord requis dans le bundle (correctif 1.1.1).
+#: Chemins relatifs à la racine de l'app (dist/Jarvis/ ou dist/app/).
+#: Chaque modèle est accepté à l'un OU l'autre des deux emplacements :
+#: l'emplacement du paquet (résolution par défaut d'openWakeWord) ou le
+#: dossier de ressources (résolution explicite de src/wakeword.py).
+REQUIRED_WAKEWORD_MODELS: list[str] = [
+    "melspectrogram.onnx",
+    "embedding_model.onnx",
+    "hey_jarvis_v0.1.onnx",
+]
+
+#: Dossiers du bundle où chaque modèle est accepté (relatifs à l'app).
+WAKEWORD_MODEL_DIRS: list[str] = [
+    "_internal/openwakeword/resources/models",
+    "_internal/resources/openwakeword",
+]
+
 
 # ---------------------------------------------------------------------------
 # Validation de répertoires
@@ -151,6 +168,72 @@ def validate_install_dir(install_path: str | Path) -> tuple[bool, list[str], lis
 
     is_valid = len(missing) == 0 and len(forbidden) == 0
     return is_valid, missing, forbidden
+
+
+# ---------------------------------------------------------------------------
+# Validation des modèles OpenWakeWord (correctif 1.1.1)
+# ---------------------------------------------------------------------------
+
+def validate_wakeword_models(app_path: str | Path) -> tuple[bool, list[str], list[str]]:
+    """Valide la présence des modèles ONNX dans un dossier d'application.
+
+    Retourne ``(is_valid, missing, found)`` où ``missing`` liste les modèles
+    introuvables aux deux emplacements acceptés et ``found`` les chemins
+    relatifs effectivement trouvés (pour les logs).
+    """
+    base = Path(app_path)
+    missing: list[str] = []
+    found: list[str] = []
+    for model in REQUIRED_WAKEWORD_MODELS:
+        locations = [f"{d}/{model}" for d in WAKEWORD_MODEL_DIRS]
+        hits = [rel for rel in locations if (base / rel).is_file()]
+        if hits:
+            found.extend(hits)
+        else:
+            missing.append(f"{model} (ni {locations[0]} ni {locations[1]})")
+    return (len(missing) == 0), missing, found
+
+
+def validate_zip_wakeword_models(zip_path: str | Path) -> tuple[bool, list[str], list[str]]:
+    """Valide la présence des modèles ONNX dans une archive portable.
+
+    Retourne ``(is_valid, missing, found)``. Gère les ZIP avec ou sans
+    préfixe ``app/``.
+    """
+    zip_path = Path(zip_path)
+    if not zip_path.is_file():
+        return False, [f"ZIP introuvable: {zip_path}"], []
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            names = {n.replace("\\", "/") for n in zf.namelist()}
+    except Exception as exc:
+        return False, [f"Erreur lecture ZIP: {exc}"], []
+    has_app_prefix = any(n.startswith("app/") for n in names)
+    prefix = "app/" if has_app_prefix else ""
+    missing: list[str] = []
+    found: list[str] = []
+    for model in REQUIRED_WAKEWORD_MODELS:
+        locations = [f"{prefix}{d}/{model}" for d in WAKEWORD_MODEL_DIRS]
+        hits = [rel for rel in locations if rel in names]
+        if hits:
+            found.extend(hits)
+        else:
+            missing.append(f"{model} (ni {locations[0]} ni {locations[1]})")
+    return (len(missing) == 0), missing, found
+
+
+def format_wakeword_result(is_valid: bool, missing: list[str], found: list[str]) -> str:
+    """Formate un résultat de validation wake word (100 % ASCII)."""
+    lines: list[str] = []
+    if is_valid:
+        lines.append("[OK] Modeles wake word presents")
+    else:
+        lines.append("[FAIL] Modeles wake word MANQUANTS")
+    for rel in found:
+        lines.append(f"    + {rel}")
+    for rel in missing:
+        lines.append(f"    - {rel}")
+    return "\n".join(lines).encode("ascii", errors="backslashreplace").decode("ascii")
 
 
 # ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ hiddenimports += collect_submodules("google.genai")
 hiddenimports += collect_submodules("google.genai.live")
 
 # Validation de packaging (utilisé par --smoke-test et updater)
-hiddenimports += ["src.packaging_validation", "src.updater", "src.version", "src.paths"]
+hiddenimports += ["src.packaging_validation", "src.updater", "src.version", "src.paths", "src.wakeword"]
 
 # openwakeword télécharge parfois ses modèles dans resources/models ;
 # on les récupère s'ils existent déjà (CI les télécharge avant le build).
@@ -42,6 +42,24 @@ if os.path.isdir(resources_dir):
         full = os.path.join(resources_dir, f)
         if os.path.isdir(full):
             datas.append((full, f"resources/{f}"))
+
+# CORRECTIF 1.1.1 (bug OpenWakeWord du build distribué) : openWakeWord résout
+# ses modèles de pré-traitement (melspectrogram.*, embedding_model.*)
+# UNIQUEMENT depuis le dossier du paquet ``openwakeword/resources/models``,
+# qui est vide dans l'environnement de build (les modèles sont téléchargés
+# vers ``resources/openwakeword/``, pas dans site-packages). Sans cette copie,
+# le bundle contient le wake word mais pas son pré-traitement, et le
+# chargement échoue avec ``NO_SUCHFILE ... melspectrogram.onnx``.
+# On copie donc chaque modèle téléchargé vers l'emplacement du paquet dans le
+# bundle, en PLUS de ``resources/openwakeword`` (utilisé par la résolution
+# explicite de src/wakeword.py). Ainsi, même la résolution par défaut
+# d'openWakeWord fonctionne dans l'application packagée.
+oww_resources = os.path.join(resources_dir, "openwakeword")
+if os.path.isdir(oww_resources):
+    for entry in sorted(os.listdir(oww_resources)):
+        full = os.path.join(oww_resources, entry)
+        if os.path.isfile(full):
+            datas.append((full, "openwakeword/resources/models"))
 
 # Icône de l'application.
 icon = os.path.join(root, "assets", "jarvis.ico")

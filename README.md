@@ -36,6 +36,18 @@ Ces informations sont enregistrées **sur votre PC**, dans
 `%LOCALAPPDATA%\Jarvis\config\config.json`. Aucune clé n'est envoyée ailleurs ni
 stockée dans l'application elle-même.
 
+### Le launcher (interface graphique)
+
+Double-cliquer le raccourci **Jarvis** ouvre le launcher, une vraie fenêtre
+(PySide6) qui affiche :
+
+* la **version installée** et la **dernière version** disponible ;
+* l'**état** de l'installation (prêt, mise à jour disponible, corrompue…) ;
+* un **journal** détaillant chaque opération ;
+* les boutons **Lancer Jarvis**, **Vérifier les mises à jour**,
+  **Mettre à jour** et **Quitter** ;
+* le choix du mode : **Orbe** (recommandé), **Overlay bureau** ou **Console**.
+
 ### Mises à jour
 
 Le launcher vérifie automatiquement les **GitHub Releases** au démarrage :
@@ -45,9 +57,15 @@ JarvisLauncher.exe
    ├─ vérifie la version locale
    ├─ interroge GitHub (dernière release)
    ├─ si une version plus récente existe : vous demande confirmation
-   ├─ télécharge et vérifie (SHA-256)
-   └─ remplace l'application, préserve vos données, puis lance Jarvis
+   ├─ télécharge (barre de progression) et vérifie (SHA-256)
+   └─ remplace l'application, préserve vos données
 ```
+
+Cliquez ensuite **Lancer Jarvis**. Pour les scripts et le diagnostic, le
+launcher conserve un mode console : `JarvisLauncher.exe --check`,
+`--validate`, `--no-gui`, `--console`, `--force`… (voir
+`JarvisLauncher.exe --help`, historiquement : `--no-update` lance directement
+sans vérifier).
 
 Vos données **survivent** aux mises à jour :
 
@@ -832,10 +850,31 @@ C:\...\Jarvis\app\_internal\python311.dll # manquant (BAD)
 - `recursesubdirs` + `createallsubdirs` préservent `_internal/`
 - Validation post-install dans `[Code]` : log si `_internal/python311.dll` manquant
 
-**4. Launcher (`launcher/main.py`) :**
+**4. Launcher (`launcher/`) :**
+- `core.py` : logique sans Qt (validation, version, mise à jour, lancement),
+  partagée par les deux interfaces
+- `gui.py` : fenêtre PySide6 (version, état, progression, journal) ; tâches
+  réseau en `QThread`, exécutable compilé en mode *windowed*
+- `main.py` : GUI par défaut sans arguments, console sinon (`--check`,
+  `--validate`, `--no-gui`, `--force`, …) avec rattachement automatique au
+  terminal parent
 - Valide `app/_internal/python311.dll` avant lancement
 - Message d'erreur clair si installation corrompue
 - `--validate` : valide l'installation et quitte
+
+**4b. Wake word embarqué (`src/wakeword.py`, correctif 1.1.1) :**
+- Stratégie **ONNX d'abord** (`onnxruntime`, dépendance directe) : les trois
+  modèles `melspectrogram.onnx`, `embedding_model.onnx`, `hey_jarvis_v0.1.onnx`
+  sont résolus explicitement (bundle, dossier utilisateur, paquet installé)
+  et passés avec chemins absolus à openWakeWord — aucune dépendance aux
+  chemins par défaut du paquet ni à `tflite-runtime` en distribution
+- `packaging/jarvis.spec` copie aussi les `.onnx` vers
+  `openwakeword/resources/models` dans le bundle (filet de sécurité)
+- `scripts/download_models.py` refuse un téléchargement incomplet (gate build)
+- `scripts/validate_build.py --require-wakeword` exige les modèles (CI bloquant)
+- `Jarvis.exe --smoke-test` instancie réellement le modèle et prédit sur de
+  l'audio synthétique (bloquant en bundle, informatif en dev)
+- La clé de score est détectée dynamiquement (`hey_jarvis` ou `hey_jarvis_v0.1`)
 
 **5. Updater (`src/updater.py`) :**
 - Valide le ZIP avant extraction (rejette les archives aplaties)
@@ -845,12 +884,12 @@ C:\...\Jarvis\app\_internal\python311.dll # manquant (BAD)
 - Ne remplace jamais l'installation par une archive invalide
 
 **6. CI (`/.github/workflows/build.yml`) :**
-- Test 1 : PyInstaller layout (`Jarvis.exe` + `_internal/python311.dll`)
-- Test 1b : `dist/app` layout
-- Test 2 : ZIP layout (conserve `_internal/` sans flattening)
-- Test 3 : Executable smoke test (`Jarvis.exe --smoke-test`)
+- Test 1 : PyInstaller layout (`Jarvis.exe` + `_internal/python311.dll` + modèles ONNX)
+- Test 1b : `dist/app` layout (+ modèles ONNX)
+- Test 2 : ZIP layout (conserve `_internal/` sans flattening, + modèles ONNX)
+- Test 3 : Executable smoke test (`Jarvis.exe --smoke-test`, dont chaîne wake word réelle)
 - Test 4 : Installer layout (installation silencieuse + validation)
-- Test 5 : Installed executable smoke test
+- Test 5 : Installed executable smoke test (+ `JarvisLauncher.exe --validate`)
 - Test 6 : Update validation (archive invalide rejetée)
 
 Si un test échoue, **aucune release n'est publiée**.
@@ -869,6 +908,9 @@ python scripts/validate_build.py --zip dist/Jarvis-v1.0.1-portable.zip
 
 # Valide une installation
 python scripts/validate_build.py --install-dir %LOCALAPPDATA%/Jarvis
+
+# Exige les modèles ONNX du wake word (bloquant en CI)
+python scripts/validate_build.py --app-dir dist/app --require-wakeword
 
 # Crée le ZIP de façon robuste
 python scripts/make_portable_zip.py --app-dir dist/app --output dist/Jarvis-v1.0.1-portable.zip

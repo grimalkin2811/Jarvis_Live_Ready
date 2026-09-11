@@ -6,6 +6,9 @@ Usage:
     python scripts/validate_build.py --zip dist/Jarvis-v1.0.1-portable.zip
     python scripts/validate_build.py --install-dir /tmp/jarvis-install
     python scripts/validate_build.py --pyinstaller dist/Jarvis
+
+Avec --require-wakeword, la présence des modèles ONNX OpenWakeWord est
+exigée (correctif 1.1.1) ; sans ce flag, elle est seulement signalée.
 """
 
 from __future__ import annotations
@@ -21,9 +24,12 @@ sys.path.insert(0, str(ROOT))
 from src.logging_setup import force_utf8_stdio
 from src.packaging_validation import (
     format_validation_result,
+    format_wakeword_result,
     validate_app_dir,
     validate_install_dir,
+    validate_wakeword_models,
     validate_zip,
+    validate_zip_wakeword_models,
 )
 
 # Un script de validation ne doit JAMAIS mourir sur son propre log :
@@ -32,7 +38,31 @@ from src.packaging_validation import (
 force_utf8_stdio()
 
 
-def _validate_app_dir(path: Path, strict: bool = False) -> int:
+def _check_wakeword_dir(path: Path, *, require: bool) -> int:
+    is_valid, missing, found = validate_wakeword_models(path)
+    print(format_wakeword_result(is_valid, missing, found))
+    if is_valid:
+        return 0
+    if require:
+        print(f"ERROR: Modèles wake word manquants dans {path} (--require-wakeword)")
+        return 1
+    print("WARNING: Modèles wake word manquants (non bloquant sans --require-wakeword)")
+    return 0
+
+
+def _check_wakeword_zip(path: Path, *, require: bool) -> int:
+    is_valid, missing, found = validate_zip_wakeword_models(path)
+    print(format_wakeword_result(is_valid, missing, found))
+    if is_valid:
+        return 0
+    if require:
+        print(f"ERROR: Modèles wake word manquants dans {path} (--require-wakeword)")
+        return 1
+    print("WARNING: Modèles wake word manquants (non bloquant sans --require-wakeword)")
+    return 0
+
+
+def _validate_app_dir(path: Path, strict: bool = False, require_wakeword: bool = False) -> int:
     print(f"=== Validating application layout: {path} ===")
     is_valid, missing, forbidden = validate_app_dir(path, strict=strict)
     print(format_validation_result(is_valid, missing, forbidden))
@@ -43,11 +73,13 @@ def _validate_app_dir(path: Path, strict: bool = False) -> int:
             status = "OK" if target.exists() else "MISSING"
             print(f"  {rel}: {status}")
         # Vérifie aussi qu'il n'y a pas de flatten
-        print(f"  Checking for flattened files (should NOT exist at root)...")
+        print("  Checking for flattened files (should NOT exist at root)...")
         for forbidden_name in ["python311.dll", "base_library.zip"]:
             exists = (path / forbidden_name).exists()
             print(f"    {forbidden_name} at root: {'FOUND (BAD)' if exists else 'OK (not present)'}")
-        return 0
+        print("  Checking wake word models...")
+        wakeword_rc = _check_wakeword_dir(path, require=require_wakeword)
+        return wakeword_rc
     else:
         print(f"ERROR: Expected file missing or flattened structure detected in {path}")
         if missing:
@@ -59,7 +91,7 @@ def _validate_app_dir(path: Path, strict: bool = False) -> int:
         return 1
 
 
-def _validate_zip(path: Path) -> int:
+def _validate_zip(path: Path, require_wakeword: bool = False) -> int:
     print(f"=== Validating portable ZIP: {path} ===")
     is_valid, missing, forbidden = validate_zip(path)
     print(format_validation_result(is_valid, missing, forbidden))
@@ -73,28 +105,30 @@ def _validate_zip(path: Path) -> int:
             for critical in ["Jarvis.exe", "_internal/python311.dll", "_internal/base_library.zip"]:
                 found = any(n.replace("\\", "/").endswith(critical) or n.replace("\\", "/") == critical for n in names)
                 print(f"  {critical}: {'OK' if found else 'MISSING'}")
-        return 0
+        print("  Checking wake word models...")
+        return _check_wakeword_zip(path, require=require_wakeword)
     else:
         print(f"ERROR: ZIP validation failed for {path}")
         return 1
 
 
-def _validate_install_dir(path: Path) -> int:
+def _validate_install_dir(path: Path, require_wakeword: bool = False) -> int:
     print(f"=== Validating installed application: {path} ===")
     is_valid, missing, forbidden = validate_install_dir(path)
     print(format_validation_result(is_valid, missing, forbidden))
     if is_valid:
-        print(f"  app/Jarvis.exe: OK")
-        print(f"  app/_internal/python311.dll: OK")
-        return 0
+        print("  app/Jarvis.exe: OK")
+        print("  app/_internal/python311.dll: OK")
+        print("  Checking wake word models...")
+        return _check_wakeword_dir(path / "app", require=require_wakeword)
     else:
         print(f"ERROR: Installation validation failed for {path}")
         return 1
 
 
-def _validate_pyinstaller(path: Path) -> int:
+def _validate_pyinstaller(path: Path, require_wakeword: bool = False) -> int:
     print(f"=== Validating PyInstaller output: {path} ===")
-    return _validate_app_dir(path, strict=False)
+    return _validate_app_dir(path, strict=False, require_wakeword=require_wakeword)
 
 
 def main() -> int:
@@ -105,16 +139,21 @@ def main() -> int:
     group.add_argument("--zip", type=Path, help="Valide le ZIP portable")
     group.add_argument("--install-dir", type=Path, help="Valide une installation complète")
     parser.add_argument("--strict", action="store_true", help="Vérifie aussi les fichiers recommandés")
+    parser.add_argument(
+        "--require-wakeword",
+        action="store_true",
+        help="Exige la présence des modèles ONNX OpenWakeWord (défaut : avertissement).",
+    )
     args = parser.parse_args()
 
     if args.app_dir:
-        return _validate_app_dir(args.app_dir, strict=args.strict)
+        return _validate_app_dir(args.app_dir, strict=args.strict, require_wakeword=args.require_wakeword)
     if args.pyinstaller:
-        return _validate_pyinstaller(args.pyinstaller)
+        return _validate_pyinstaller(args.pyinstaller, require_wakeword=args.require_wakeword)
     if args.zip:
-        return _validate_zip(args.zip)
+        return _validate_zip(args.zip, require_wakeword=args.require_wakeword)
     if args.install_dir:
-        return _validate_install_dir(args.install_dir)
+        return _validate_install_dir(args.install_dir, require_wakeword=args.require_wakeword)
     return 1
 
 
