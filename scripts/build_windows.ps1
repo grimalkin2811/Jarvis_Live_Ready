@@ -228,13 +228,13 @@ if (-not (Test-Path $zipPath)) {
     throw "ZIP non créé: $zipPath"
 }
 
-# Validation du ZIP
+# Validation du ZIP (dont modèles wake word : bloquant)
 Write-Host ""
 Write-Host "=== Validating portable ZIP ===" -ForegroundColor Cyan
 Write-Host "[build] Validation Python du ZIP..."
-& $venvPython scripts/validate_build.py --zip $zipPath
+& $venvPython scripts/validate_build.py --zip $zipPath --require-wakeword
 if ($LASTEXITCODE -ne 0) {
-    throw "Validation ZIP échouée: $zipPath est invalide (structure _internal manquante ou aplatie)"
+    throw "Validation ZIP échouée: $zipPath est invalide (structure _internal manquante ou aplatie, ou modèles wake word absents)"
 }
 
 # Vérifie aussi le contenu du ZIP avec PowerShell pour logs
@@ -264,6 +264,30 @@ Write-Host "[build] SHA file content: $shaContent"
 # Copier aussi un version.json de référence à la racine.
 Copy-Item -Force (Join-Path $appDir "version.json") $DistDir
 Write-Host "[build] version.json copié vers dist/"
+
+# --- Smoke test du launcher en mode console ---
+# À ce stade, dist/ a la disposition d'une installation complète
+# (JarvisLauncher.exe + app/ + version.json) : --validate doit réussir.
+# Cela exerce aussi le rattachement au terminal parent de l'exécutable
+# windowed (console=False). Bloquant : un launcher qui ne démarre pas ne
+# doit jamais être publié.
+Write-Host ""
+Write-Host "=== Smoke testing launcher (CLI) ===" -ForegroundColor Cyan
+$launcherExe = Join-Path $DistDir "JarvisLauncher.exe"
+Write-Host "[build] Test: $launcherExe --validate"
+try {
+    $launcherProc = Start-Process -FilePath $launcherExe -ArgumentList "--validate" -PassThru -NoNewWindow
+    if (-not $launcherProc.WaitForExit(30000)) {
+        try { $launcherProc.Kill() } catch { }
+        throw "Launcher smoke test: timeout après 30s (processus tué)"
+    }
+    if ($launcherProc.ExitCode -ne 0) {
+        throw "Launcher smoke test: exit code $($launcherProc.ExitCode)"
+    }
+    Write-Host "[build] Launcher smoke test: OK" -ForegroundColor Green
+} catch {
+    throw "Launcher smoke test échoué : $_"
+}
 
 # --- Smoke test de l'exécutable ---
 Write-Host ""

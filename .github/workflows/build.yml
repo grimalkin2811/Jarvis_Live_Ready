@@ -105,7 +105,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Test 1: PyInstaller layout ===" -ForegroundColor Cyan
-          python scripts/validate_build.py --pyinstaller dist/Jarvis
+          python scripts/validate_build.py --pyinstaller dist/Jarvis --require-wakeword
           if ($LASTEXITCODE -ne 0) { throw "Test 1 FAILED: PyInstaller layout invalide" }
 
           # Vérifications explicites supplémentaires
@@ -146,7 +146,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Test 1b: dist/app layout ===" -ForegroundColor Cyan
-          python scripts/validate_build.py --app-dir dist/app
+          python scripts/validate_build.py --app-dir dist/app --require-wakeword
           if ($LASTEXITCODE -ne 0) { throw "Test 1b FAILED: dist/app layout invalide" }
 
           $checks = @(
@@ -180,7 +180,7 @@ jobs:
           }
 
           Write-Host "Validating ZIP: $zipPath"
-          python scripts/validate_build.py --zip $zipPath
+          python scripts/validate_build.py --zip $zipPath --require-wakeword
           if ($LASTEXITCODE -ne 0) { throw "Test 2 FAILED: ZIP validation échouée" }
 
           # Vérifie le contenu du ZIP en détail
@@ -489,7 +489,7 @@ jobs:
 
           # Validation finale du ZIP
           Write-Host "Final ZIP validation..."
-          python scripts/validate_build.py --zip $zip
+          python scripts/validate_build.py --zip $zip --require-wakeword
           if ($LASTEXITCODE -ne 0) { throw "Final ZIP validation FAILED" }
 
           # Vérifie que le nom du ZIP correspond à la version
