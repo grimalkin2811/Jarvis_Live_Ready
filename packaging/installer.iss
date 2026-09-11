@@ -36,6 +36,16 @@
 #define AppName "Jarvis"
 #define AppPublisher "Jarvis"
 #define AppExeName "JarvisLauncher.exe"
+; Dossier d'installation PAR DÉFAUT (per-user). Uniquement destiné à
+; DefaultDirName. NE JAMAIS l'utiliser comme DestDir/Filename dans les
+; sections runtime : {#AppDir} est une constante de PRÉPROCESSEUR qui
+; s'étend en la chaîne littérale "{localappdata}\Jarvis", que Inno résout
+; alors à l'exécution SANS tenir compte du dossier réellement choisi
+; (/DIR=..., page de destination, ...). Bug historique : l'uninstaller
+; était écrit dans {app} mais les fichiers partaient dans
+; %LOCALAPPDATA%\Jarvis. Les sections [Files]/[Icons]/[Run]/
+; [UninstallDelete]/[Code] ci-dessous utilisent donc la constante runtime
+; {app}, qui reflète toujours le dossier d'installation réel.
 #define AppDir "{localappdata}\\Jarvis"
 
 [Setup]
@@ -70,30 +80,30 @@ Name: "startmenuicon"; Description: "Créer un raccourci dans le menu Démarrer"
 ; Application (dossier app/ remplacé à chaque mise à jour).
 ; CRITIQUE : recursesubdirs + createallsubdirs préservent _internal/
 ; Sans ces flags, python311.dll pourrait être aplati et l'app ne démarrerait plus.
-Source: "{#SourceDir}\app\*"; DestDir: "{#AppDir}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#SourceDir}\app\*"; DestDir: "{app}\app"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Launcher (stable, non remplacé par les mises à jour in-app).
-Source: "{#SourceDir}\JarvisLauncher.exe"; DestDir: "{#AppDir}"; Flags: ignoreversion
+Source: "{#SourceDir}\JarvisLauncher.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Marqueur de version.
-Source: "{#SourceDir}\version.json"; DestDir: "{#AppDir}"; Flags: ignoreversion
+Source: "{#SourceDir}\version.json"; DestDir: "{app}"; Flags: ignoreversion
 ; Icône.
-Source: "{#IconFile}"; DestDir: "{#AppDir}"; Flags: ignoreversion
+Source: "{#IconFile}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 ; Menu Démarrer -> launcher.
-Name: "{group}\{#AppName}"; Filename: "{#AppDir}\{#AppExeName}"; IconFilename: "{#AppDir}\jarvis.ico"; Tasks: startmenuicon
+Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\jarvis.ico"; Tasks: startmenuicon
 ; Bureau -> launcher.
-Name: "{autodesktop}\{#AppName}"; Filename: "{#AppDir}\{#AppExeName}"; IconFilename: "{#AppDir}\jarvis.ico"; Tasks: desktopicon
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; IconFilename: "{app}\jarvis.ico"; Tasks: desktopicon
 
 [Run]
 ; Proposer de lancer Jarvis après l'installation.
-Filename: "{#AppDir}\{#AppExeName}"; Description: "Lancer {#AppName}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExeName}"; Description: "Lancer {#AppName}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 ; Uniquement les fichiers que nous avons installés — jamais les données.
-Type: filesandordirs; Name: "{#AppDir}\app"
-Type: files; Name: "{#AppDir}\{#AppExeName}"
-Type: files; Name: "{#AppDir}\version.json"
-Type: files; Name: "{#AppDir}\jarvis.ico"
+Type: filesandordirs; Name: "{app}\app"
+Type: files; Name: "{app}\{#AppExeName}"
+Type: files; Name: "{app}\version.json"
+Type: files; Name: "{app}\jarvis.ico"
 
 [Code]
 // Validation après installation : vérifie que _internal/python311.dll existe
@@ -104,7 +114,7 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    InternalDll := ExpandConstant('{#AppDir}\app\_internal\python311.dll');
+    InternalDll := ExpandConstant('{app}\app\_internal\python311.dll');
     if not FileExists(InternalDll) then
     begin
       // Ne bloque pas l'installation, mais avertit
