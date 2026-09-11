@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.packaging_validation import (
     CRITICAL_APP_FILES,
     FORBIDDEN_FLATTENED_FILES,
+    format_validation_result,
     validate_app_dir,
     validate_install_dir,
     validate_zip,
@@ -242,6 +243,24 @@ class PackagingValidationTests(unittest.TestCase):
         self.assertIn("_internal/python311.dll", CRITICAL_APP_FILES)
         self.assertIn("_internal/base_library.zip", CRITICAL_APP_FILES)
         self.assertIn("python311.dll", FORBIDDEN_FLATTENED_FILES)
+
+    def test_format_validation_result_console_safe(self):
+        """Régression run #45 : le rapport doit être encodable en cp1252.
+
+        Le formateur utilisait « ✓ »/« ✗ », non encodables dans la page de
+        codes cp1252 de la console Windows du CI : ``UnicodeEncodeError``
+        dans scripts/validate_build.py faisait échouer le build même quand
+        la structure PyInstaller était valide.
+        """
+        ok = format_validation_result(True, [], [])
+        failure = format_validation_result(False, ["Jarvis.exe"], ["python311.dll"])
+        for text in (ok, failure):
+            # Doit passer sur toute console Windows ANSI (cp1252 en CI).
+            text.encode("cp1252")
+            self.assertTrue(text.isascii(), f"Rapport non ASCII: {text!r}")
+        self.assertIn("Validation OK", ok)
+        self.assertIn("FAIL", failure)
+        self.assertIn("Jarvis.exe", failure)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from src.logging_setup import force_utf8_stdio
 from src.packaging_validation import validate_app_dir
+
+# Script exécuté en CI Windows (console cp1252) : force un affichage sans
+# risque d'UnicodeEncodeError quel que soit le texte loggé.
+force_utf8_stdio()
 
 
 def create_portable_zip(app_dir: Path, output_zip: Path) -> None:
@@ -72,7 +77,7 @@ def create_portable_zip(app_dir: Path, output_zip: Path) -> None:
             print(f"  FLATTENED: {f}")
         raise RuntimeError(f"ZIP invalide après création: {output_zip}")
 
-    print(f"✓ ZIP créé et validé: {output_zip} ({output_zip.stat().st_size} bytes)")
+    print(f"[OK] ZIP créé et validé: {output_zip} ({output_zip.stat().st_size} bytes)")
 
 
 def main() -> int:

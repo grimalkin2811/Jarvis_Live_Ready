@@ -266,21 +266,33 @@ def validate_zip_strict(zip_path: str | Path) -> tuple[bool, list[str], list[str
 # ---------------------------------------------------------------------------
 
 def format_validation_result(is_valid: bool, missing: list[str], forbidden: list[str]) -> str:
-    """Formate un résultat de validation pour les logs CI."""
+    """Formate un résultat de validation pour les logs CI.
+
+    Le résultat est destiné à être ``print()``-é dans des consoles dont
+    l'encodage n'est pas contrôlable (CI Windows en cp1252, cmd.exe local,
+    consoles utilisateur sur n'importe quelle locale). La sortie est donc
+    volontairement 100 % ASCII : des glyphes Unicode (« ✓ », « ✗ », « É »)
+    lèvent ``UnicodeEncodeError`` sur certaines pages de codes Windows et
+    feraient échouer le build — ou le rapport d'erreur lui-même — à cause
+    d'un simple problème d'affichage, en masquant le vrai diagnostic.
+    """
     lines: list[str] = []
     if is_valid:
-        lines.append("✓ Validation OK")
+        lines.append("[OK] Validation OK")
     else:
-        lines.append("✗ Validation ÉCHOUÉE")
+        lines.append("[FAIL] Validation ECHOUEE")
     if missing:
         lines.append("  Fichiers manquants:")
         for m in missing:
             lines.append(f"    - {m}")
     if forbidden:
-        lines.append("  Fichiers aplatis détectés (doivent être dans _internal/):")
+        lines.append("  Fichiers aplatis detectes (doivent etre dans _internal/):")
         for f in forbidden:
             lines.append(f"    - {f}")
-    return "\n".join(lines)
+    # Garantie finale : les entrées dynamiques (chemins, messages d'exception
+    # ZIP, etc.) peuvent contenir n'importe quel caractère ; on les échappe
+    # plutôt que de risquer un UnicodeEncodeError dans la console.
+    return "\n".join(lines).encode("ascii", errors="backslashreplace").decode("ascii")
 
 
 def assert_app_dir(app_path: str | Path, *, strict: bool = False) -> None:

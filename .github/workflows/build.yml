@@ -11,6 +11,10 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   REPO_SLUG: ${{ github.repository }}
+  # Force le mode UTF-8 de Python sur les runners Windows (console cp1252) :
+  # sans lui, un simple print() de caractère non cp1252 (ex. « ✓ ») lève
+  # UnicodeEncodeError et fait échouer le build pour un problème d'affichage.
+  PYTHONUTF8: "1"
 
 jobs:
   test:

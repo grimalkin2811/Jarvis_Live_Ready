@@ -117,6 +117,35 @@ def get_logger(name: str | None = None) -> logging.Logger:
     return logging.getLogger(f"{ROOT_LOGGER}.{name}" if name else ROOT_LOGGER)
 
 
+def force_utf8_stdio() -> None:
+    """Force stdout/stderr en UTF-8, sans jamais planter sur l'affichage.
+
+    Sur Windows, la sortie standard d'un processus hérite de la page de codes
+    ANSI de la console (cp1252 en CI GitHub, cp850 dans cmd.exe français,
+    autre selon la locale). Un ``print()`` de caractère hors de cette page
+    (par exemple « ✓ ») lève alors ``UnicodeEncodeError`` et tue le processus
+    pour un simple problème d'affichage — c'est exactement ce qui a fait
+    échouer le pipeline v1.0.2 (run #45) : la validation PyInstaller avait
+    réussi, mais l'affichage du « ✓ » a crashé le script de validation.
+
+    On reconfigure donc les flux en UTF-8 avec repli ``backslashreplace`` :
+    les scripts de build et de validation peuvent logger n'importe quel
+    texte sans risque, quelle que soit la console. Ne lève jamais ; sans
+    effet si les flux ne supportent pas ``reconfigure()`` (flux remplacés
+    en tests, Python < 3.7).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="backslashreplace")
+        except (ValueError, OSError):
+            # Flux déjà fermé ou non reconfigurable : ne jamais bloquer le
+            # processus pour un problème de journalisation.
+            pass
+
+
 def log_exception(logger: logging.Logger, message: str, exc: BaseException | None = None) -> None:
     """Journalise une exception avec pile complète (informe sans masquer)."""
     if exc is not None:
