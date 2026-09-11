@@ -304,8 +304,12 @@ jobs:
 
           Write-Host "Installing $installer to $installDir (silent)..."
           # Inno Setup silent install: /SILENT /DIR="path"
+          # /LOG=... : journal complet de l'installateur, affiché en cas
+          # d'échec (sinon un installateur silencieux ne laisse aucune trace).
           # Start-Process n'a pas de -Timeout : WaitForExit(ms) borné.
-          $process = Start-Process -FilePath $installer -ArgumentList "/SILENT", "/DIR=`"$installDir`"" -PassThru
+          $setupLog = Join-Path $env:TEMP "jarvis-setup-$version.log"
+          if (Test-Path $setupLog) { Remove-Item $setupLog -Force }
+          $process = Start-Process -FilePath $installer -ArgumentList "/SILENT", "/DIR=`"$installDir`"", "/LOG=`"$setupLog`"" -PassThru
           if (-not $process.WaitForExit(120000)) {
             try { $process.Kill() } catch { }
             throw "Test 4 FAILED: installation silencieuse non terminée en 120s (timeout, processus tué)"
@@ -330,13 +334,16 @@ jobs:
             "$installDir/app/_internal/base_library.zip"
           )
 
-          foreach ($file in $checks) {
-            if (Test-Path $file) {
-              Write-Host "  $file : OK" -ForegroundColor Green
-            } else {
+          $missing = @($checks | Where-Object { -not (Test-Path $_) })
+          if ($missing.Count -gt 0) {
+            foreach ($file in $missing) {
               Write-Host "  $file : MISSING" -ForegroundColor Red
-              throw "Test 4 FAILED: $file manquant après installation"
             }
+            if (Test-Path $setupLog) {
+              Write-Host "--- Journal Inno Setup (extrait) : $setupLog ---" -ForegroundColor Yellow
+              Get-Content $setupLog -Tail 40 | ForEach-Object { Write-Host "  $_" }
+            }
+            throw "Test 4 FAILED: $($missing[0]) manquant après installation"
           }
 
           # Vérifie qu'il n'y a PAS de flattening dans l'installation
