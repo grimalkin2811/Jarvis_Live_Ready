@@ -166,6 +166,34 @@ class LaunchTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn("--desktop", popen.call_args.args[0])
 
+    def test_creationflags_posix_are_zero(self):
+        # Hors Windows, aucun flag de création (pas de console à masquer).
+        # ``os.name`` est simulé pour rester déterministe sur les runners
+        # Windows du CI (où la valeur réelle serait ``nt``).
+        with mock.patch("launcher.core.os.name", "posix"):
+            self.assertEqual(core._creationflags("ui"), 0)
+            self.assertEqual(core._creationflags("desktop"), 0)
+            self.assertEqual(core._creationflags("console"), 0)
+
+    def test_creationflags_windows_hide_console_except_console_mode(self):
+        # Correctif anti-console : CREATE_NO_WINDOW pour les modes graphiques,
+        # console conservée uniquement pour le mode console explicite.
+        flag = 0x08000000  # CREATE_NO_WINDOW
+        with mock.patch("launcher.core.os.name", "nt"):
+            with mock.patch("launcher.core.subprocess.CREATE_NO_WINDOW", flag, create=True):
+                self.assertEqual(core._creationflags("ui"), flag)
+                self.assertEqual(core._creationflags("desktop"), flag)
+                self.assertEqual(core._creationflags("console"), 0)
+
+    def test_dev_launch_ui_passes_no_window_flag_on_windows(self):
+        flag = 0x08000000
+        with mock.patch("launcher.core.os.name", "nt"):
+            with mock.patch("launcher.core.subprocess.CREATE_NO_WINDOW", flag, create=True):
+                with mock.patch("launcher.core.subprocess.Popen") as popen:
+                    result = core.launch_jarvis("ui")
+        self.assertTrue(result.ok)
+        self.assertEqual(popen.call_args.kwargs.get("creationflags"), flag)
+
     def test_wait_mode_returns_code(self):
         completed = mock.Mock()
         completed.returncode = 3

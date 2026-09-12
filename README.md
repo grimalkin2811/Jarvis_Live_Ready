@@ -876,6 +876,14 @@ C:\...\Jarvis\app\_internal\python311.dll # manquant (BAD)
   l'audio synthétique (bloquant en bundle, informatif en dev)
 - La clé de score est détectée dynamiquement (`hey_jarvis` ou `hey_jarvis_v0.1`)
 
+**4c. Anti-console (`launcher/core.py`, correctif 1.1.2) :**
+- `Jarvis.exe` est compilé en sous-système console (mode headless) ; lancé
+  depuis le launcher *windowed*, Windows ouvrait une fenêtre console parasite
+  en mode orbe/overlay
+- `launch_jarvis` passe désormais `CREATE_NO_WINDOW` au sous-processus pour
+  les modes `ui`/`desktop`, et ne conserve la console que pour le mode
+  `console` explicite (headless, sortie visible)
+
 **5. Updater (`src/updater.py`) :**
 - Valide le ZIP avant extraction (rejette les archives aplaties)
 - Valide la structure extraite avant remplacement
