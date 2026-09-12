@@ -323,6 +323,20 @@ class LaunchResult:
     returncode: int = 0
 
 
+def _creationflags(mode: str) -> int:
+    """Flags de création du sous-processus Jarvis (correctif anti-console).
+
+    ``Jarvis.exe`` est compilé en sous-système console (``console=True`` dans
+    ``packaging/jarvis.spec``) car le mode headless doit afficher sa sortie.
+    Lancé depuis le launcher *windowed* (``console=False``), Windows allouerait
+    donc une fenêtre console parasite en mode orbe/overlay. On la supprime avec
+    ``CREATE_NO_WINDOW`` ; seul le mode ``console`` explicite la conserve.
+    """
+    if os.name != "nt" or mode == "console":
+        return 0
+    return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
 def launch_jarvis(mode: str = "ui", *, wait: bool = False) -> LaunchResult:
     """Lance Jarvis.
 
@@ -362,9 +376,10 @@ def launch_jarvis(mode: str = "ui", *, wait: bool = False) -> LaunchResult:
             cmd.append("--desktop")
         elif mode == "ui":
             cmd.append("--ui")
+    creationflags = _creationflags(mode)
     try:
         if wait:
-            completed = subprocess.run(cmd)
+            completed = subprocess.run(cmd, creationflags=creationflags)
             if completed.returncode == 0:
                 return LaunchResult(True, "Jarvis s'est terminé.", returncode=0)
             return LaunchResult(
@@ -372,7 +387,7 @@ def launch_jarvis(mode: str = "ui", *, wait: bool = False) -> LaunchResult:
                 f"Jarvis s'est terminé avec le code {completed.returncode}.",
                 returncode=completed.returncode,
             )
-        subprocess.Popen(cmd)
+        subprocess.Popen(cmd, creationflags=creationflags)
         return LaunchResult(True, "Jarvis lancé.")
     except FileNotFoundError:
         return LaunchResult(
