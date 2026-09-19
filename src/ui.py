@@ -144,6 +144,7 @@ def _run_voice_loop(
             volume_provider=menu_state.LIVE.get_tts_volume,
             listen_mode_provider=menu_state.LIVE.get_listen_mode,
             barge_in_provider=menu_state.LIVE.get_barge_in,
+            post_response_provider=menu_state.LIVE.get_post_response_listen,
             on_barge_in=on_barge_in,
         )
         # Le menu radial (thread Qt) peut désormais couper la réponse en
@@ -362,6 +363,10 @@ def run_ui(mode: str = "desktop") -> int:
                     return
             except Exception:
                 pass
+            # L'orbe peut avoir été masqué depuis le menu (Appearance →
+            # « Blob Visible ») : l'icône de notification est le chemin de
+            # retour prévu, elle lève donc aussi ce réglage.
+            window.set_blob_visible(True)
             window.showFullScreen()
             window.raise_()
             window.activateWindow()

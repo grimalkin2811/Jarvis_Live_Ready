@@ -69,6 +69,69 @@ def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
 
 
+# ---------------------------------------------------------------------------
+# SURVOL DU MENU (fond sombre derrière l'item ciblé)
+# ---------------------------------------------------------------------------
+
+#: Marge autour du libellé : le rectangle épouse le texte, il ne le déplace
+#: jamais (aucun décalage de mise en page au survol).
+HOVER_PAD_X = 7.0
+HOVER_PAD_Y = 3.5
+#: Coins arrondis, dans l'esprit des pastilles déjà utilisées par le menu.
+HOVER_RADIUS = 6.0
+#: Luminosité du fond : volontairement très basse pour trancher sur n'importe
+#: quel bureau, avec un léger éclaircissement à mesure que le survol s'installe.
+HOVER_LIGHTNESS = 0.075
+HOVER_LIGHTNESS_LIFT = 0.045
+#: Opacité maximale du fond (le fondu est piloté par ``hover_amount``).
+HOVER_MAX_ALPHA = 220
+#: Liseré discret, couleur du thème, qui détoure le rectangle.
+HOVER_BORDER_ALPHA = 105
+
+
+def _theme_hsl(glow_color: QColor) -> tuple[float, float]:
+    """Teinte et saturation du thème courant, tolérantes aux couleurs invalides.
+
+    ``QColor.getHslF()`` renvoie une teinte de ``-1.0`` pour une couleur
+    achromatique/invalide : on retombe alors sur un gris neutre plutôt que de
+    construire une couleur invalide.
+    """
+    try:
+        hue, saturation, _light, _alpha = glow_color.getHslF()
+    except Exception:
+        return 0.0, 0.0
+    if hue is None or hue < 0.0:
+        return 0.0, 0.0
+    return float(hue), float(saturation)
+
+
+def hover_background_color(glow_color: QColor, amount: float) -> QColor:
+    """Fond du survol : variante sombre de la couleur actuelle du Blob.
+
+    La teinte du thème est conservée (bleu, rouge, vert, blanc…) mais la
+    luminosité est fortement abaissée : le rectangle reste lisible et suit
+    automatiquement un changement de couleur de l'orbe. Aucune couleur n'est
+    codée en dur — tout dérive de ``glow_color``.
+    """
+    amount = clamp(amount, 0.0, 1.0)
+    hue, saturation = _theme_hsl(glow_color)
+    color = QColor.fromHslF(
+        hue,
+        clamp(saturation * 0.9, 0.0, 1.0),
+        clamp(HOVER_LIGHTNESS + HOVER_LIGHTNESS_LIFT * amount, 0.0, 1.0),
+    )
+    color.setAlphaF(amount * (HOVER_MAX_ALPHA / 255.0))
+    return color
+
+
+def hover_border_color(glow_color: QColor, amount: float) -> QColor:
+    """Liseré du rectangle de survol, dans la couleur du Blob."""
+    amount = clamp(amount, 0.0, 1.0)
+    color = QColor(glow_color)
+    color.setAlpha(int(HOVER_BORDER_ALPHA * amount))
+    return color
+
+
 @dataclass
 class BlobPoint:
     angle: float
@@ -125,6 +188,7 @@ MENU_SPECS = [
             MenuItemSpec("Mic Toggle", "toggle"),
             MenuItemSpec("Hotword Sens.", "slider"),
             MenuItemSpec("Always Listening", "toggle"),
+            MenuItemSpec("Listen After Reply", "toggle"),
             MenuItemSpec("Interrupt Word", "toggle"),
             MenuItemSpec("Stop Speaking", "pulse"),
             MenuItemSpec("Audio Test", "pulse"),
@@ -183,6 +247,7 @@ MENU_SPECS = [
             MenuItemSpec("Blob Size -", "action"),
             MenuItemSpec("Minimal Mode", "toggle"),
             MenuItemSpec("Cinematic Mode", "toggle"),
+            MenuItemSpec("Blob Visible", "toggle"),
         ],
         reveal_scale=0.98,
         branch_bias=1.12,
@@ -268,6 +333,14 @@ class MorphingOrbWidget(QWidget):
         self.appearance_state = appearance_actions.load_state(self._appearance_state_path)
         self._appearance_signature = None
         self._apply_appearance_state()
+        # L'orbe était masqué à la dernière session : le réglage est conservé,
+        # on indique donc immédiatement comment le retrouver (aucune fenêtre
+        # ne sera visible).
+        if self.appearance_state.blob_hidden:
+            print(
+                "[Jarvis] Orbe masqué (réglage conservé). "
+                + appearance_actions.BLOB_RESTORE_HINT
+            )
         self._system_state_path = str(paths.system_state_file())
         self.system_state = system_actions.load_state(self._system_state_path)
 
@@ -336,8 +409,11 @@ class MorphingOrbWidget(QWidget):
         self._menu_state_last_save = -10.0
         # Curseur pointeur au survol d'une cible cliquable.
         self._pointer_cursor_active = False
-        # En mode jeu, l'orbe se masque totalement pour ne rien afficher par-dessus le jeu.
-        self._hidden_by_game_mode = False
+        # L'orbe se masque totalement (a) en mode jeu, pour ne rien afficher
+        # par-dessus le jeu, et (b) quand l'utilisateur le masque depuis le
+        # menu Appearance. Dans les deux cas l'assistant vocal continue de
+        # tourner : seule la fenêtre disparaît.
+        self._window_hidden = False
         self._mode_checked_at = -10.0
         self._visuals_suppressed_by_mode = False
         # État interactif persistant du menu.
@@ -410,15 +486,16 @@ class MorphingOrbWidget(QWidget):
         ):
             self._save_menu_state(force=True)
 
-        # Mode jeu : aucune surimpression ni menu au-dessus du jeu.
-        if self._mode_suppresses_visuals():
+        # Mode jeu, ou orbe masqué depuis le menu : aucune surimpression ni
+        # menu. L'assistant vocal, lui, continue de tourner normalement.
+        if self._mode_suppresses_visuals() or self._blob_hidden_by_user():
             if self.isVisible():
                 self._close_radial_menu()
                 self.hide()
-            self._hidden_by_game_mode = True
+            self._window_hidden = True
             return
-        if self._hidden_by_game_mode:
-            self._hidden_by_game_mode = False
+        if self._window_hidden:
+            self._window_hidden = False
             if not self.isVisible():
                 self.showFullScreen()
 
@@ -1195,6 +1272,14 @@ class MorphingOrbWidget(QWidget):
     def _invalidate_status_cache(self) -> None:
         self._status_cache.clear()
 
+    def _blob_hidden_by_user(self) -> bool:
+        """L'orbe a-t-il été masqué depuis le menu (Appearance → Blob Visible) ?
+
+        Lecture directe de l'état d'apparence en mémoire : le changement est
+        donc pris en compte dès l'image suivante, sans redémarrage.
+        """
+        return bool(getattr(self.appearance_state, "blob_hidden", False))
+
     def _mode_suppresses_visuals(self) -> bool:
         """Lecture légère du mode jeu : l'orbe ne doit rien afficher en jeu."""
         if (self.time - self._mode_checked_at) < 0.5:
@@ -1325,6 +1410,8 @@ class MorphingOrbWidget(QWidget):
             return "On" if self.appearance_state.minimal_mode else "Off"
         if label == "Cinematic Mode":
             return "On" if self.appearance_state.cinematic_mode else "Off"
+        if label == "Blob Visible":
+            return "Off" if self.appearance_state.blob_hidden else "On"
         if label.startswith("Glow"):
             return f"{self.appearance_state.glow_intensity:.2f}"
         if label.startswith("Blob Size"):
@@ -1345,6 +1432,8 @@ class MorphingOrbWidget(QWidget):
             return f"{st.hotword_sensitivity}%"
         if label == "Always Listening":
             return "On" if st.listen_mode else "Off"
+        if label == "Listen After Reply":
+            return "On" if st.post_response_listen else "Off"
         if label == "Interrupt Word":
             return "On" if st.barge_in else "Off"
         if label == "Stop Speaking":
@@ -1510,6 +1599,8 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.mic_enabled
         if name == "Voice" and label == "Always Listening":
             return self.menu_state.listen_mode
+        if name == "Voice" and label == "Listen After Reply":
+            return self.menu_state.post_response_listen
         if name == "Voice" and label == "Interrupt Word":
             return self.menu_state.barge_in
         if name == "System" and label == "Startup":
@@ -1524,6 +1615,14 @@ class MorphingOrbWidget(QWidget):
                 manager = get_default_memory_manager()
                 return bool(manager.enabled and manager.available)
             return self._cached_status("memory_enabled", _enabled) == "True"
+        if name == "Appearance" and label == "Minimal Mode":
+            return self.appearance_state.minimal_mode
+        if name == "Appearance" and label == "Cinematic Mode":
+            return self.appearance_state.cinematic_mode
+        if name == "Appearance" and label == "Blob Visible":
+            # Toggle « visible » : l'indicateur est actif tant que l'orbe est
+            # affiché, et s'éteint dès qu'il est masqué.
+            return not self.appearance_state.blob_hidden
         return False
 
     def _menu_set_toggle(self, spec: MenuSpec, item: MenuItemSpec, value: bool) -> None:
@@ -1540,6 +1639,26 @@ class MorphingOrbWidget(QWidget):
                 if value
                 else "Écoute continue : désactivée (« Hey Jarvis » à nouveau requis)"
             )
+        elif name == "Voice" and label == "Listen After Reply":
+            self.menu_state.post_response_listen = value
+            # Appliqué immédiatement : le backend vocal lit le pont à chaque
+            # fin de tour, aucun redémarrage n'est nécessaire.
+            menu_state.LIVE.set_post_response_listen(value)
+            if value:
+                self._flash(
+                    "Écoute post-réponse : activée "
+                    "(Jarvis reste à l'écoute après sa réponse)"
+                )
+            elif self.menu_state.listen_mode:
+                self._flash(
+                    "Écoute post-réponse : désactivée — mais « Always Listening » "
+                    "reste actif et prime"
+                )
+            else:
+                self._flash(
+                    "Écoute post-réponse : désactivée "
+                    "(« Hey Jarvis » requis à chaque fois)"
+                )
         elif name == "Voice" and label == "Interrupt Word":
             self.menu_state.barge_in = value
             menu_state.LIVE.set_barge_in(value)
@@ -1750,6 +1869,7 @@ class MorphingOrbWidget(QWidget):
                 # via _flash ; on n'écrase pas leur libellé.
                 if label in {
                     "Always Listening",
+                    "Listen After Reply",
                     "Interrupt Word",
                     "Startup",
                     "Long-term Memory",
@@ -1812,6 +1932,7 @@ class MorphingOrbWidget(QWidget):
             "Blob Size -": appearance_actions.decrease_blob_size,
             "Minimal Mode": appearance_actions.toggle_minimal_mode,
             "Cinematic Mode": appearance_actions.toggle_cinematic_mode,
+            "Blob Visible": appearance_actions.toggle_blob_visibility,
         }
         action = action_map.get(item.label)
         if action is None:
@@ -1820,8 +1941,49 @@ class MorphingOrbWidget(QWidget):
             action(self.appearance_state)
             self._apply_appearance_state()
             appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
+            if item.label == "Blob Visible":
+                # Masquer l'orbe ferme la fenêtre qui porte le menu : on
+                # applique la visibilité et on court-circuite le flash, qui ne
+                # serait de toute façon pas visible.
+                self._apply_blob_visibility(save=False)
+                return
             self._flash(f"{item.label}: {self._appearance_value(item.label)}")
         return _callback
+
+    def _apply_blob_visibility(self, save: bool = True) -> None:
+        """Masque ou réaffiche l'orbe selon ``appearance_state.blob_hidden``.
+
+        Masquer l'orbe ne suspend RIEN d'autre : l'assistant vocal (wake word,
+        Gemini Live, routines, rappels) tourne dans son propre thread — voir
+        ``src/ui.py``. Seule la fenêtre disparaît, exactement comme le fait
+        déjà le mode jeu. Le retour se fait via l'icône de notification
+        (« Afficher Jarvis ») ou en relançant Jarvis.
+        """
+        hidden = bool(self.appearance_state.blob_hidden)
+        if save:
+            appearance_actions.save_state(
+                self.appearance_state, self._appearance_state_path
+            )
+        if hidden:
+            self._close_radial_menu()
+            if self.isVisible():
+                self.hide()
+            self._window_hidden = True
+            print(f"[Jarvis] Orbe masqué. {appearance_actions.BLOB_RESTORE_HINT}")
+            return
+        self._window_hidden = False
+        if not self.isVisible():
+            self.showFullScreen()
+        self._flash("Blob affiché")
+
+    def set_blob_visible(self, visible: bool = True) -> None:
+        """Réaffiche (ou masque) l'orbe depuis l'extérieur.
+
+        Point d'entrée utilisé par l'icône de notification : elle doit pouvoir
+        ramener l'orbe même quand celui-ci a été masqué depuis le menu.
+        """
+        self.appearance_state.blob_hidden = not bool(visible)
+        self._apply_blob_visibility()
 
     def _apply_appearance_state(self) -> None:
         state = self.appearance_state
@@ -2135,11 +2297,60 @@ class MorphingOrbWidget(QWidget):
             value_text = self._menu_value(spec, node)
             if value_text and value_text != "Clear":
                 label_text = f"{node.label} · {value_text}"
+        # Fond de survol : dessiné SOUS le texte, d'après la position finale du
+        # libellé. Il n'ajoute aucune marge et ne déplace donc rien.
+        self._draw_hover_background(
+            painter,
+            state.glow_color,
+            label_rect,
+            label_alignment,
+            label_text,
+            hover * visible,
+        )
+        painter.setPen(QColor(state.text_color.red(), state.text_color.green(), state.text_color.blue(), text_alpha))
         painter.drawText(
             label_rect,
             label_alignment,
             label_text,
         )
+
+    def _draw_hover_background(
+        self,
+        painter: QPainter,
+        theme_color: QColor,
+        label_rect: QRectF,
+        label_alignment,
+        label_text: str,
+        amount: float,
+    ) -> None:
+        """Rectangle sombre derrière le libellé survolé (effet de survol).
+
+        Le rectangle épouse le texte mesuré avec les métriques de la police
+        courante : il n'ajoute aucune marge au libellé et ne déplace donc ni le
+        texte ni les autres nœuds. Sa couleur est dérivée du thème courant du
+        Blob (``theme_color``), jamais codée en dur.
+        """
+        amount = clamp(amount, 0.0, 1.0)
+        if amount <= 0.02:
+            return
+        metrics = painter.fontMetrics()
+        lines = str(label_text).split("\n")
+        text_width = max(metrics.horizontalAdvance(line) for line in lines)
+        text_height = metrics.lineSpacing() * len(lines)
+        if bool(label_alignment & Qt.AlignRight):
+            left = label_rect.right() - text_width
+        else:
+            left = label_rect.left()
+        top = label_rect.center().y() - text_height / 2.0
+        rect = QRectF(
+            left - HOVER_PAD_X,
+            top - HOVER_PAD_Y,
+            text_width + 2.0 * HOVER_PAD_X,
+            text_height + 2.0 * HOVER_PAD_Y,
+        )
+        painter.setPen(QPen(hover_border_color(theme_color, amount), 1.0))
+        painter.setBrush(hover_background_color(theme_color, amount))
+        painter.drawRoundedRect(rect, HOVER_RADIUS, HOVER_RADIUS)
 
     # =========================================================
     # DRAWING

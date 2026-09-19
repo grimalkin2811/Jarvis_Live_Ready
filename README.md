@@ -266,6 +266,12 @@ réglages :
 | **Audio Test** | Émet un bip de test synthétisé. |
 | **Routines** | `Catalogue` affiche toutes les routines et leurs interrupteurs ; les noms du menu lancent les macros personnelles actives. `Reload` recharge le fichier. |
 
+**Survol (hover)** : survoler un item affiche un rectangle sombre aux coins
+arrondis derrière son libellé, pour montrer clairement quelle option est
+ciblée. Le fond est dérivé de la couleur actuelle de l'orbe (il suit donc le
+thème automatiquement), reste suffisamment sombre pour garder le texte
+lisible, et n'ajoute aucune marge : rien ne se déplace au survol.
+
 Les réglages sont conservés dans `UI/menu_state.json` au redémarrage — ils
 s'appliquent aussi au mode console.
 
@@ -290,7 +296,9 @@ Chaque contrôle du menu agit vraiment :
 | **Voice Select** | Change la voix prébuilt Gemini (reconnexion automatique et silencieuse de la session). |
 | **Speech Speed** | Consigne de débit injectée dans le prompt système (posé / normal / vif). |
 | **Always Listening** | Écoute continue : Jarvis reste actif sans dire « Hey Jarvis » (désactivé par défaut). |
+| **Listen After Reply** | Écoute post-réponse : après sa réponse, Jarvis reste à l'écoute pendant la fenêtre de suivi (8 s) et l'on peut enchaîner sans « Hey Jarvis » (activé par défaut). Désactivé, le wake word redevient obligatoire à chaque interaction. |
 | **Interrupt Word** | Interruption vocale : parler par-dessus Jarvis (« stop ») coupe sa réponse (activé par défaut). |
+| **Blob Visible** (Appearance) | Masque ou réaffiche l'orbe. Masqué, la fenêtre disparaît mais l'assistant continue de tourner ; l'icône de notification (« Afficher Jarvis ») le ramène. |
 | **Startup** | Crée/supprime réellement le lanceur dans le dossier de démarrage Windows. |
 | **Long-term Memory** | Active/désactive la mémoire persistante en direct. |
 | **Reset Settings** | Remet les réglages du menu à leurs valeurs par défaut. |

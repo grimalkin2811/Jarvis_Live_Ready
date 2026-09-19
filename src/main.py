@@ -230,6 +230,9 @@ async def run_headless():
             mic_enabled=MENU_LIVE.get_mic_enabled if MENU_LIVE else None,
             wake_threshold=MENU_LIVE.get_wake_threshold if MENU_LIVE else None,
             barge_in_provider=MENU_LIVE.get_barge_in if MENU_LIVE else None,
+            post_response_provider=(
+                MENU_LIVE.get_post_response_listen if MENU_LIVE else None
+            ),
             on_barge_in=on_barge_in,
         )
         gemini = GeminiLive(

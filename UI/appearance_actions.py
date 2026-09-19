@@ -18,6 +18,9 @@ class AppearanceState:
     time_scale: float = 1.25
     minimal_mode: bool = False
     cinematic_mode: bool = False
+    #: Orbe masqué depuis le menu (Appearance → « Blob Visible »). L'assistant
+    #: vocal continue de tourner : seule la fenêtre de l'orbe est cachée.
+    blob_hidden: bool = False
 
 
 THEME_ORDER = ["white", "yellow", "red", "purple", "pink", "green", "blue"]
@@ -48,6 +51,7 @@ def state_to_dict(state: AppearanceState) -> dict:
         "time_scale": state.time_scale,
         "minimal_mode": state.minimal_mode,
         "cinematic_mode": state.cinematic_mode,
+        "blob_hidden": state.blob_hidden,
     }
 
 
@@ -61,6 +65,9 @@ def apply_state_dict(state: AppearanceState, payload: dict) -> None:
     state.time_scale = float(payload.get("time_scale", state.time_scale))
     state.minimal_mode = bool(payload.get("minimal_mode", state.minimal_mode))
     state.cinematic_mode = bool(payload.get("cinematic_mode", state.cinematic_mode))
+    # Absent des fichiers écrits avant la 1.2.0 : bool() garde alors l'état
+    # par défaut (orbe visible), aucune migration nécessaire.
+    state.blob_hidden = bool(payload.get("blob_hidden", state.blob_hidden))
     if state.minimal_mode:
         state.glow_intensity = min(state.glow_intensity, 0.85)
     if state.cinematic_mode:
@@ -150,3 +157,25 @@ def toggle_cinematic_mode(state: AppearanceState) -> None:
     else:
         state.time_scale = 1.25
     _print_action(f"cinematic_mode={state.cinematic_mode}")
+
+
+#: Message affiché quand l'orbe disparaît : sans fenêtre visible, c'est la
+#: seule trace du chemin de retour.
+BLOB_RESTORE_HINT = (
+    "Icône de notification → « Afficher Jarvis » pour réafficher l'orbe."
+)
+
+
+def set_blob_hidden(state: AppearanceState, hidden: bool) -> None:
+    """Masque (``True``) ou réaffiche (``False``) l'orbe.
+
+    Ne touche qu'à l'affichage : l'assistant vocal (wake word, Gemini Live,
+    routines, rappels) tourne dans son propre thread et n'est jamais arrêté.
+    """
+    state.blob_hidden = bool(hidden)
+    _print_action(f"blob_hidden={state.blob_hidden}")
+
+
+def toggle_blob_visibility(state: AppearanceState) -> None:
+    """Bascule l'affichage de l'orbe (menu Appearance → « Blob Visible »)."""
+    set_blob_hidden(state, not state.blob_hidden)

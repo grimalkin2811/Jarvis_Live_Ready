@@ -1,7 +1,8 @@
 """Tests du pont thread-safe UI/menu_state (réglages temps réel du backend).
 
 Couvre les nouveaux contrôles : voix Gemini, volume TTS, débit de parole,
-écoute continue, et la migration honnête de l'ancien toggle « Startup ».
+écoute continue, écoute post-réponse, et la migration honnête de l'ancien
+toggle « Startup ».
 """
 
 import json
@@ -89,6 +90,87 @@ class LiveControlsTests(unittest.TestCase):
             self.assertEqual(live.get_voice_name(), menu_state.GEMINI_VOICE_NAMES["Orion"])
         finally:
             menu_state.LIVE = menu_state.LiveControls()
+
+
+class PostResponseListenTests(unittest.TestCase):
+    """Réglage « Listen After Reply » : persistance + pont temps réel."""
+
+    def _write_state(self, payload: dict) -> str:
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+        return path
+
+    def test_default_is_enabled(self) -> None:
+        # Compatibilité ascendante : le comportement historique est conservé.
+        self.assertTrue(menu_state.MenuState().post_response_listen)
+        self.assertTrue(menu_state.LiveControls().get_post_response_listen())
+
+    def test_bridge_getter_setter(self) -> None:
+        live = menu_state.LiveControls()
+        live.set_post_response_listen(False)
+        self.assertFalse(live.get_post_response_listen())
+        live.set_post_response_listen(True)
+        self.assertTrue(live.get_post_response_listen())
+
+    def test_bridge_coerces_to_bool(self) -> None:
+        live = menu_state.LiveControls()
+        live.set_post_response_listen(0)
+        self.assertIs(live.get_post_response_listen(), False)
+        live.set_post_response_listen("oui")
+        self.assertIs(live.get_post_response_listen(), True)
+
+    def test_sync_live_pushes_the_setting(self) -> None:
+        live = menu_state.LiveControls()
+        previous = menu_state.LIVE
+        menu_state.LIVE = live
+        try:
+            menu_state._sync_live(menu_state.MenuState(post_response_listen=False))
+            self.assertFalse(live.get_post_response_listen())
+            menu_state._sync_live(menu_state.MenuState(post_response_listen=True))
+            self.assertTrue(live.get_post_response_listen())
+        finally:
+            menu_state.LIVE = previous
+
+    def test_round_trip_through_json(self) -> None:
+        previous = menu_state.LIVE
+        menu_state.LIVE = menu_state.LiveControls()
+        try:
+            path = self._write_state({})
+            try:
+                state = menu_state.MenuState(post_response_listen=False)
+                menu_state.save_state(state, path)
+                with open(path, "r", encoding="utf-8") as handle:
+                    self.assertFalse(json.load(handle)["post_response_listen"])
+                reloaded = menu_state.load_state(path)
+                self.assertFalse(reloaded.post_response_listen)
+                self.assertFalse(menu_state.LIVE.get_post_response_listen())
+            finally:
+                os.remove(path)
+        finally:
+            menu_state.LIVE = previous
+
+    def test_legacy_file_without_the_key_stays_enabled(self) -> None:
+        # menu_state.json écrit avant la 1.2.0 : aucune clé, donc le défaut.
+        previous = menu_state.LIVE
+        menu_state.LIVE = menu_state.LiveControls()
+        try:
+            path = self._write_state({"mic_enabled": False, "listen_mode": True})
+            try:
+                state = menu_state.load_state(path)
+                self.assertTrue(state.post_response_listen)
+                self.assertFalse(state.mic_enabled)
+                self.assertTrue(state.listen_mode)
+                self.assertTrue(menu_state.LIVE.get_post_response_listen())
+            finally:
+                os.remove(path)
+        finally:
+            menu_state.LIVE = previous
+
+    def test_state_is_serialized(self) -> None:
+        payload = menu_state.state_to_dict(menu_state.MenuState())
+        self.assertIn("post_response_listen", payload)
+        self.assertTrue(payload["post_response_listen"])
 
 
 class StartupMigrationTests(unittest.TestCase):
