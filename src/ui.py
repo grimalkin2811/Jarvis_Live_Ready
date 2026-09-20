@@ -355,21 +355,19 @@ def run_ui(mode: str = "desktop") -> int:
         presence_hook = jarvis_menu.set_presence_state
 
         def _activate() -> None:
+            # Clic de la zone de notification = commande explicite
+            # d'affichage : même chemin central que « affiche le blob »
+            # (fonctionne donc dans tous les modes, y compris le mode jeu).
             try:
-                from .modes import get_default_mode_manager
-
-                if get_default_mode_manager().should_suppress_visuals():
-                    window.hide()
-                    return
+                window.show_blob()
             except Exception:
-                pass
+                window.showFullScreen()
+                window.raise_()
+                window.activateWindow()
             # L'orbe peut avoir été masqué depuis le menu (Appearance →
             # « Blob Visible ») : l'icône de notification est le chemin de
             # retour prévu, elle lève donc aussi ce réglage.
             window.set_blob_visible(True)
-            window.showFullScreen()
-            window.raise_()
-            window.activateWindow()
 
         tray = _build_tray_icon(_activate, app.quit)
 

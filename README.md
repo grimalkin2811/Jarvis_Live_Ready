@@ -254,6 +254,14 @@ En mode `--ui`, survole les bords de l'orbe pour déplier les menus radiaux
 (Voice, System, Memory, Appearance, Routines) et interagis directement avec les
 réglages :
 
+* à l'ouverture, **tous les fonds d'items du menu sont visibles
+  simultanément**, quel que soit le survol ; le survol n'ajoute qu'un
+  surcroît d'accent sur l'item pointé ;
+* à la fermeture (ou au changement de menu, ou si le blob est masqué par un
+  mode), les fonds disparaissent **en bloc** : aucun résidu ne subsiste,
+  quelle que soit la séquence d'ouverture/fermeture ;
+* rouvrir le menu réaffiche tous les fonds.
+
 | Contrôle | Interaction |
 |---|---|
 | **Toggles** | Clic pour activer/désactiver (indicateur vert = actif). |
@@ -302,6 +310,7 @@ Chaque contrôle du menu agit vraiment :
 | **Startup** | Crée/supprime réellement le lanceur dans le dossier de démarrage Windows. |
 | **Long-term Memory** | Active/désactive la mémoire persistante en direct. |
 | **Reset Settings** | Remet les réglages du menu à leurs valeurs par défaut. |
+| **Mode Apps** (menu System) | Ouvre la fenêtre des applications fermées par les modes jeu/focus : cases du catalogue + entrées sur mesure, indépendantes par mode, enregistrées immédiatement (`~/.jarvis/mode.json`). |
 
 Les compteurs (mémoire, rappels, routines) sont lus au plus une fois par
 seconde et mis en cache : le rendu de l'orbe reste fluide (~60 FPS) sans
@@ -488,12 +497,44 @@ PC.
   refuse les distractions (jeux, YouTube/Twitch/Netflix, réseaux sociaux,
   achats, hasard, commandes multimédia) et garde les actions utiles aux
   révisions.
-- « Active le mode jeu » : Jarvis ferme en best effort des processus lourds non
-  essentiels, abaisse sa priorité quand Windows/psutil le permettent, masque
-  halo/orbe/notifications et bloque tout ce qui peut toucher au jeu ou à
-  l'écran. Les commandes de volume (`set_volume`, `volume_up`, `volume_down`,
-  mute/unmute) restent disponibles.
+- « Active le mode jeu » : Jarvis ferme en best effort les applications de la
+  liste **Mode jeu** (voir ci-dessous), abaisse sa priorité quand
+  Windows/psutil le permettent, masque halo/orbe/notifications et bloque tout
+  ce qui peut toucher au jeu ou à l'écran. Les commandes de volume
+  (`set_volume`, `volume_up`, `volume_down`, mute/unmute) restent disponibles.
 - « Désactive le mode Jarvis » / « quitte le mode jeu » revient au mode normal.
+
+**Applications fermées : listes personnalisables, pas de nom codé en dur.**
+Chaque mode possède sa **propre liste** d'applications à fermer à
+l'activation, indépendante de l'autre (ex. Discord dans le mode jeu, Opera GX
+dans le mode focus : les deux coexistent sans interaction). Les listes :
+
+* se règlent **sans toucher au code source** : menu System → **Mode Apps**
+  (cases du catalogue + champ « sur mesure »), ou à la voix (« dans le mode
+  jeu, ne ferme pas Opera GX », « ajoute Spotify à la liste du mode focus »,
+  « réinitialise les applications du mode jeu ») ;
+* sont **persistées** dans `~/.jarvis/mode.json` (v2, clés `game_apps` /
+  `focus_apps`) et rechargées au démarrage ; les anciennes configs (v1, sans
+  ces clés) sont migrées automatiquement sur les valeurs par défaut, sans
+  régression ;
+* acceptent n'importe quelle application : un catalogue générique
+  (`src/mode_apps.py`, ~28 apps avec identification robuste par image de
+  processus) plus des entrées « sur mesure » ajoutées par l'utilisateur ;
+* tolèrent le corrompu : une clé illisible retombe sur les valeurs par
+  défaut, une liste vide est conservée (ne rien fermer est un choix valide),
+  et une application non ouverte au moment de l'activation ne provoque
+  aucune erreur.
+
+**Commandes d'affichage explicites : « affiche le blob », « affiche le
+menu ».** Cacher l'orbe ou un menu est un réglage (état par défaut) ; dire
+« affiche le blob » / « montre l'orbe », « masque le blob », « affiche le
+menu *X* » ou « ferme le menu » est une **commande** qui s'exécute
+immédiatement, dans **tous les états** : mode jeu/focus actif, orbe
+configuré caché, menus masqués par la politique du mode. L'affichage passe
+par un point d'entrée unique (pont `UI/visibility_bridge.py`, consommé par
+l'orbe) : pas de sources contradictoires, et le menu ouvert est nettoyé en
+bloc si le blob est masqué. « Afficher Jarvis » de la zone de notification
+suit exactement le même chemin.
 
 L'état actif est conservé dans `~/.jarvis/mode.json` (configurable avec
 `JARVIS_MODES_PATH`). Un mode peut être lancé avec une durée en minutes ; à
@@ -610,7 +651,7 @@ données.
 
 ## Fonctions
 
-Jarvis dispose de **86 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **95 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -626,6 +667,8 @@ Jarvis dispose de **86 outils** déclarés dans `src/tools.py` (voir
 | **Rappels persistants** | `set_reminder`, `list_reminders`, `cancel_reminder` |
 | **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
 | **Modes focus/jeu** | `activate_focus_mode`, `activate_game_mode`, `disable_jarvis_mode`, `get_jarvis_mode` |
+| **Config des modes** | `list_mode_applications`, `set_mode_applications`, `toggle_mode_application`, `reset_mode_applications` |
+| **Affichage (orbe/menus)** | `show_blob`, `hide_blob`, `show_menu`, `hide_menu`, `get_ui_state` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
 | **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
@@ -638,7 +681,10 @@ minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 3 ? », « note que je dois appeler Paul », « capture l'écran », « verrouille le
 PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
 mode travail », « active le mode focus », « active le mode jeu », « désactive le
-mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h ».
+mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h », « affiche le
+blob », « cache le blob », « affiche le menu système », « dans le mode jeu, ne
+ferme pas Opera GX », « ajoute Spotify à la liste du mode focus »,
+« réinitialise les applications du mode jeu ».
 
 ## Les Protocoles — « Jarvis, wake up »
 

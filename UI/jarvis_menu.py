@@ -32,6 +32,7 @@ from PySide6.QtWidgets import QApplication, QWidget
 from . import appearance_actions
 from . import menu_state
 from . import system_actions
+from . import visibility_bridge
 from src import paths
 
 
@@ -209,6 +210,7 @@ MENU_SPECS = [
             MenuItemSpec("Always on Top", "toggle"),
             MenuItemSpec("Transparency", "slider"),
             MenuItemSpec("Response Mode", "meter"),
+            MenuItemSpec("Mode Apps", "action"),
             MenuItemSpec("Reset Settings", "pulse"),
             MenuItemSpec("Quit", "pulse"),
         ],
@@ -416,6 +418,29 @@ class MorphingOrbWidget(QWidget):
         self._window_hidden = False
         self._mode_checked_at = -10.0
         self._visuals_suppressed_by_mode = False
+        # ------------------------------------------------------------
+        # Visibilité explicite (commandes « affiche/masque le blob » et
+        # « affiche/masque le menu ») : les intentions arrivent via le pont
+        # thread-safe UI/visibility_bridge (backend vocal) et sont appliquées
+        # ici, dans le thread Qt. C'est la SEULE source de vérité de
+        # l'affichage/blocage des commandes explicites.
+        #   _blob_hidden_by_command : la commande « masque le blob » a
+        #   demandé le masquage (le réglage Appearance → « Blob Visible »
+        #   est lu par la méthode _blob_hidden_by_user() — les deux sont
+        #   levés par « affiche le blob »).
+        #   _blob_show_override  : l'utilisateur a demandé l'affichage alors
+        #                          que la politique de mode masque l'orbe ;
+        #                          l'affichage explicite passe devant le mode,
+        #                          mais une TRANSITION de mode rétablit la
+        #                          politique (pas d'état « impossible »).
+        # ------------------------------------------------------------
+        self._blob_hidden_by_command = False
+        self._blob_show_override = False
+        self._mode_was_suppressed = False
+        self._last_reported_state = None
+        # Dernier menu affiché par la voix : « affiche le menu » (sans
+        # précision) rouvre le même menu — plus prévisible qu'un arbitraire.
+        self._last_voice_menu_sector = 0
         # État interactif persistant du menu.
         self._menu_state_path = str(paths.menu_state_file())
         self.menu_state = menu_state.load_state(self._menu_state_path)
@@ -486,18 +511,44 @@ class MorphingOrbWidget(QWidget):
         ):
             self._save_menu_state(force=True)
 
-        # Mode jeu, ou orbe masqué depuis le menu : aucune surimpression ni
-        # menu. L'assistant vocal, lui, continue de tourner normalement.
-        if self._mode_suppresses_visuals() or self._blob_hidden_by_user():
+        # Commandes explicites d'affichage/masquage (« affiche le blob »,
+        # « masque le menu »…) : appliquées avant toute politique de mode —
+        # une commande explicite est une action, pas un filtre.
+        self._consume_visibility_requests()
+
+        # Masquage effectif : politique unique, une seule source de vérité.
+        #   - réglage (Appearance → « Blob Visible ») OU commande « masque
+        #     le blob » → l'orbe est caché, son menu ouvert est nettoyé en
+        #     bloc, l'assistant vocal continue de tourner normalement ;
+        #   - mode jeu/focus → caché, SAUF commande explicite « affiche le
+        #     blob » (surcote de session, réinitialisée à la transition de
+        #     mode : jamais d'état « blob affiché en plein jeu par oubli »).
+        user_hidden = self._blob_hidden_by_user() or self._blob_hidden_by_command
+        suppressed = self._mode_suppresses_visuals()
+        if suppressed != self._mode_was_suppressed:
+            # Transition de mode (jeu/focus activé/désactivé) : la surcote
+            # d'affichage est réinitialisée pour que le mode rétablisse sa
+            # politique. Le masquage utilisateur (réglage ou commande), lui,
+            # survit : « masque le blob » reste valable tant que
+            # « affiche le blob ».
+            self._blob_show_override = False
+        self._mode_was_suppressed = suppressed
+        if user_hidden or (suppressed and not self._blob_show_override):
             if self.isVisible():
-                self._close_radial_menu()
+                # Nettoyage en bloc du menu ouvert : aucun fond de nœud ne
+                # survit au masquage (ni ne « fuite » au retour).
+                self._reset_menu_visuals()
                 self.hide()
             self._window_hidden = True
+            self._report_visibility_state()
             return
         if self._window_hidden:
             self._window_hidden = False
             if not self.isVisible():
                 self.showFullScreen()
+                self.raise_()
+                self.activateWindow()
+            self._report_visibility_state()
 
         # Nettoyage du flash d'action (indépendant de l'état du menu : le
         # flash doit aussi disparaître quand aucun menu n'est ouvert).
@@ -587,7 +638,6 @@ class MorphingOrbWidget(QWidget):
         global_fade = global_fade ** 1.3
 
         border_dist = dist - visual_radius
-        border_zone = math.exp(-(border_dist * border_dist) / (2 * 85.0 * 85.0))
 
         border_lock = 1.0 - clamp(abs(border_dist) / 160.0, 0.0, 1.0)
         border_lock = border_lock ** 1.5
@@ -657,12 +707,10 @@ class MorphingOrbWidget(QWidget):
         core_dist = math.hypot(core_dx, core_dy)
         sector_dx = core_dx
         sector_dy = core_dy
-        sector_dist = core_dist
         sector, sector_alignment, sector_margin = self._sector_from_cursor(sector_dx, sector_dy)
 
         direction_stability = clamp((sector_margin - 0.06) / 0.42, 0.0, 1.0)
         open_distance = self.base_radius * 0.92
-        close_distance = self.base_radius * 2.50
         hard_close_distance = self.base_radius * 3
         sector_ok = sector_alignment >= 0.72 and direction_stability >= 0.28
         menu_gate = clamp((core_dist - open_distance) / (self.base_radius * 0.80), 0.0, 1.0)
@@ -906,6 +954,8 @@ class MorphingOrbWidget(QWidget):
                 point.target_radius = target
                 point.radius = lerp(point.radius, point.target_radius, radius_lerp)
 
+        # État réel publié pour get_ui_state (écriture seulement au changement).
+        self._report_visibility_state()
         self.update()
 
     # =========================================================
@@ -1173,6 +1223,17 @@ class MorphingOrbWidget(QWidget):
         appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
         system_actions.save_state(self.system_state, self._system_state_path)
         self._save_menu_state(force=True)
+        # L'interface ne consomme plus les commandes vocales : le pont le
+        # signale pour que get_ui_state reste honnête.
+        try:
+            visibility_bridge.VISIBILITY.report_state(
+                ui_attached=False,
+                blob_visible=False,
+                menu_open=False,
+                menu=None,
+            )
+        except Exception:
+            pass
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -1232,7 +1293,7 @@ class MorphingOrbWidget(QWidget):
             return False
 
     def _close_radial_menu(self) -> None:
-        """Ferme le menu radial ouvert (Échap ou clic droit)."""
+        """Ferme le menu radial ouvert (Échap, clic droit, commande vocale)."""
         self._menu_sector = -1
         self._menu_candidate = -1
         self._menu_focus_index = -1
@@ -1240,8 +1301,35 @@ class MorphingOrbWidget(QWidget):
         self._menu_keyboard_open = False
         self.update()
 
+    def _reset_menu_visuals(self) -> None:
+        """Nettoyage COMPLET de l'état visuel du menu.
+
+        Utilisé quand l'orbe doit disparaître d'un bloc (masquage par un
+        mode, « masque le blob ») : sector, révélation, alpha et nœuds sont
+        remis à zéro pour qu'aucun fond/libellé ne survive ni ne « fuite »
+        d'un état à l'autre. Les nœuds existants poursuivent leur fondu de
+        sortie normalement ; la reconstruction se fait au prochain
+        ``_update_menu_nodes`` (secteur fermé → nœuds vides).
+        """
+        self._menu_sector = -1
+        self._menu_candidate = -1
+        self._menu_focus_index = -1
+        self._menu_drag_index = -1
+        self._menu_keyboard_open = False
+        self._menu_reveal = 0.0
+        self._menu_alpha = 0.0
+        self._menu_branch_strength = 0.0
+        for node in self._menu_nodes:
+            node.visible_amount = 0.0
+            node.hover_amount = 0.0
+            node.click_amount = 0.0
+        self._menu_nodes.clear()
+        self._menu_hot_node = -1
+        self._set_pointer_cursor(False)
+        self.update()
+
     def _open_radial_menu(self, sector: int) -> None:
-        """Ouvre le menu radial demandé (raccourcis clavier 1..N)."""
+        """Ouvre le menu radial demandé (raccourcis clavier 1..N, voix)."""
         if not (0 <= sector < len(MENU_SPECS)):
             return
         self._menu_sector = sector
@@ -1252,6 +1340,125 @@ class MorphingOrbWidget(QWidget):
         self._menu_keyboard_open = True
         self._sync_menu_nodes(MENU_SPECS[sector])
         self.update()
+
+    # ------------------------------------------------------------------
+    # Visibilité CENTRALE du Blob et du menu (source unique de vérité)
+    # ------------------------------------------------------------------
+    # Toutes les entrées (commande vocale via le pont, clic de la zone de
+    # notification, modes) passent par ces quatre méthodes. Aucune autre
+    # partie du code ne « cache » l'orbe en manipulant directement ses
+    # propriétés de fenêtre, sauf la politique de mode dans tick() qui
+    # respecte ces drapeaux.
+    def is_blob_visible(self) -> bool:
+        """Vrai si le Blob est réellement affiché à l'écran."""
+        return self.isVisible()
+
+    def is_menu_open(self) -> bool:
+        return self._menu_sector >= 0 and self._menu_alpha > 0.05
+
+    def current_menu_name(self) -> str | None:
+        if not (0 <= self._menu_sector < len(MENU_SPECS)):
+            return None
+        return MENU_SPECS[self._menu_sector].name
+
+    def show_blob(self) -> None:
+        """(Ré)affiche le Blob quelle que soit la configuration courante.
+
+        Une commande explicite est une action : elle lève le masquage
+        utilisateur ET met l'orbe devant la politique de mode (jeu/focus)
+        — la transition de mode suivante rétablira la politique normale.
+        """
+        self._blob_hidden_by_command = False
+        self._blob_show_override = True
+        # La commande lève aussi le réglage persistant (Appearance →
+        # « Blob Visible ») : l'affichage explicite doit tenir dans tous
+        # les états, y compris « blob configuré caché ».
+        if getattr(self.appearance_state, "blob_hidden", False):
+            self.appearance_state.blob_hidden = False
+            appearance_actions.save_state(
+                self.appearance_state, self._appearance_state_path
+            )
+        if not self.isVisible():
+            self.showFullScreen()
+            self.raise_()
+            self.activateWindow()
+        self.update()
+
+    def hide_blob(self) -> None:
+        """Masque le Blob (et son menu ouvert) jusqu'à « affiche le blob »."""
+        self._blob_hidden_by_command = True
+        self._blob_show_override = False
+        self._reset_menu_visuals()
+        if self.isVisible():
+            self.hide()
+        self.update()
+
+    def show_menu(self, name: str | None = None) -> int | None:
+        """(Ré)affiche le menu radial demandé (ou le dernier/par défaut).
+
+        Le menu fait partie du Blob : afficher un menu réaffiche
+        d'abord l'orbe. Retourne le secteur ouvert (None si invalide).
+        """
+        self.show_blob()
+        sector = self._menu_sector_for_name(name)
+        if sector is None:
+            return None
+        self._last_voice_menu_sector = sector
+        self._open_radial_menu(sector)
+        return sector
+
+    def hide_menu(self) -> None:
+        """Ferme le menu radial (les fonds s'estompent avec le fondu)."""
+        self._close_radial_menu()
+
+    def _menu_sector_for_name(self, name: str | None) -> int | None:
+        if name is None or not str(name).strip():
+            # Pas de précision : le dernier menu affiché par la voix,
+            # sinon le premier menu.
+            return self._last_voice_menu_sector
+        resolved = visibility_bridge.resolve_menu_name(name)
+        if resolved is None:
+            return None
+        for index, spec in enumerate(MENU_SPECS):
+            if spec.name == resolved:
+                return index
+        return None
+
+    def _consume_visibility_requests(self) -> None:
+        """Applique les intentions du pont thread-safe (appelé par tick()).
+
+        L'ordre suit les actions : le blob d'abord (un menu ouvert impose
+        un blob visible), les menus ensuite — une seule passe par frame.
+        """
+        requests = visibility_bridge.VISIBILITY.consume_requests()
+        for request in requests:
+            action = request.get("action")
+            try:
+                if action == "show_blob":
+                    self.show_blob()
+                elif action == "hide_blob":
+                    self.hide_blob()
+                elif action == "show_menu":
+                    self.show_menu(request.get("menu"))
+                elif action == "hide_menu":
+                    self.hide_menu()
+            except Exception as exc:  # pragma: no cover - ne jamais tuer l'orbe
+                print(f"[Visibilité] Requête {action} ignorée : {exc}")
+
+    def _report_visibility_state(self) -> None:
+        """Publie l'état réel dans le pont (seulement quand il change)."""
+        state = {
+            "ui_attached": True,
+            "blob_visible": self.isVisible(),
+            "menu_open": self.is_menu_open(),
+            "menu": self.current_menu_name(),
+        }
+        if state != self._last_reported_state:
+            self._last_reported_state = state
+            try:
+                visibility_bridge.VISIBILITY.report_state(**state)
+            except Exception:
+                pass
 
     def _cached_status(self, key: str, producer, ttl: float = 1.0) -> str:
         """Valeur statique coûteuse (SQLite, disque) mise en cache.
@@ -1826,6 +2033,29 @@ class MorphingOrbWidget(QWidget):
         self._invalidate_status_cache()
         self._flash("Réglages réinitialisés")
 
+    def _open_mode_apps_dialog(self) -> None:
+        """Ouvre le réglage des applications fermées par les modes jeu/focus.
+
+        La fermeture réelle reste du ressort du mode (src/modes.py) ; la
+        fenêtre ne fait que lire/écrire la configuration persistante.
+        """
+        try:
+            from src.modes import get_default_mode_manager
+
+            if get_default_mode_manager().should_suppress_visuals():
+                # En mode jeu, aucun affichage au-dessus du jeu.
+                self._flash("Mode jeu actif : sans affichage")
+                return
+        except Exception:
+            pass
+        try:
+            from .mode_apps_dialog import show_mode_apps_dialog
+
+            self._close_radial_menu()
+            show_mode_apps_dialog(self)
+        except Exception as exc:
+            self._flash(f"Réglage indisponible : {exc}")
+
     def _save_menu_state(self, force: bool = False) -> None:
         """Sauvegarde l'état du menu, débouncée pendant les interactions.
 
@@ -1898,6 +2128,8 @@ class MorphingOrbWidget(QWidget):
                 system_actions.save_state(self.system_state, self._system_state_path)
                 menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
                 self._flash(f"Réponses : {self.system_state.response_mode_label}")
+            elif name == "System" and label == "Mode Apps":
+                self._open_mode_apps_dialog()
             elif name == "System" and label == "Reset Settings":
                 self._reset_settings()
             elif name == "System" and label == "Quit":
@@ -2187,9 +2419,16 @@ class MorphingOrbWidget(QWidget):
         if index == self._menu_focus_index:
             hover = max(hover, 0.85)
         click = clamp(node.click_amount, 0.0, 1.0)
+        # FOND D'ITEM — comportement contractuel des 5 menus :
+        #   menu fermé  (visible ≈ 0) → aucun fond n'est dessiné du tout ;
+        #   menu ouvert (visible ≈ 1) → le fond de CHAQUE item est affiché
+        #   simultanément, indépendamment du survol.
+        # Le survol (hover) n'ajoute qu'un surcroît d'accent : il n'est
+        # plus nécessaire pour que le fond existe.
+        item_bg = int((150 + 80 * hover + 60 * click) * visible)
         line_alpha = int((52 + 120 * hover + 80 * click) * visible)
-        node_alpha = int((130 + 90 * hover + 60 * click) * visible)
         text_alpha = int((175 + 60 * hover + 40 * click) * visible)
+        node_alpha = item_bg
         state = self.appearance_state
 
         # Couleur d'accent pour les toggles actifs (état ON).
@@ -2217,18 +2456,20 @@ class MorphingOrbWidget(QWidget):
         painter.setBrush(glow_color)
         painter.drawEllipse(node.position, glow_radius, glow_radius)
 
+        # Fond du nœud : coefficient volontairement lisible dès
+        # visible ≈ 1 (menu ouvert, sans survol) ; le toggle ON reste net.
         fill_color = QColor(
             state.glow_color.red(),
             state.glow_color.green(),
             state.glow_color.blue(),
-            int(node_alpha * 0.18),
+            int(node_alpha * 0.26),
         )
         if is_toggle_on:
             fill_color = QColor(
                 state.glow_color.red(),
                 state.glow_color.green(),
                 state.glow_color.blue(),
-                int(node_alpha * 0.40),
+                int(node_alpha * 0.45),
             )
         outline_color = QColor(
             state.text_color.red(),
