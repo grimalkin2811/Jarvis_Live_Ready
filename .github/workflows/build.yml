@@ -59,6 +59,36 @@ jobs:
       - name: "diag: test_audio_controls + test_menu_state_bridge"
         if: always()
         run: python -m unittest tests.test_audio_controls tests.test_menu_state_bridge -v
+      - name: "diag: test_menu_backgrounds"
+        if: always()
+        run: python -m unittest tests.test_menu_backgrounds -v
+      - name: "diag: test_orb_visibility"
+        if: always()
+        run: python -m unittest tests.test_orb_visibility -v
+      - name: "diag: test_visibility_bridge"
+        if: always()
+        run: python -m unittest tests.test_visibility_bridge -v
+      - name: "diag: test_mode_apps"
+        if: always()
+        run: python -m unittest tests.test_mode_apps -v
+      - name: "diag: test_mode_apps_dialog"
+        if: always()
+        run: python -m unittest tests.test_mode_apps_dialog -v
+      - name: "diag: test_tool_declarations"
+        if: always()
+        run: python -m unittest tests.test_tool_declarations -v
+      - name: "diag: test_menu_render_offscreen"
+        if: always()
+        run: python -m unittest tests.test_menu_render_offscreen -v
+      - name: "diag: test_menu_ux"
+        if: always()
+        run: python -m unittest tests.test_menu_ux -v
+      - name: "diag: test_protocol_ui"
+        if: always()
+        run: python -m unittest tests.test_protocol_ui -v
+      - name: "diag: test_interruption_ui"
+        if: always()
+        run: python -m unittest tests.test_interruption_ui -v
 
   lint:
     name: Lint
