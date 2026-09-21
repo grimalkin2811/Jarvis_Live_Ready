@@ -62,6 +62,9 @@ jobs:
       - name: "diag: test_menu_backgrounds"
         if: always()
         run: python -m unittest tests.test_menu_backgrounds -v
+      - name: "diag: backgrounds - test differentiel seul"
+        if: always()
+        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_fond_reellement_dessine_sans_survol_dans_les_5_menus -v
       - name: "diag: test_orb_visibility"
         if: always()
         run: python -m unittest tests.test_orb_visibility -v
