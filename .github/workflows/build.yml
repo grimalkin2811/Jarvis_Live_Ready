@@ -62,30 +62,6 @@ jobs:
       - name: "diag: test_menu_backgrounds"
         if: always()
         run: python -m unittest tests.test_menu_backgrounds -v
-      - name: "diag: backgrounds - test differentiel seul"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_fond_reellement_dessine_sans_survol_dans_les_5_menus -v
-      - name: "diag: bg test_blob_hidden_by_mode_cleans_open_menu"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_blob_hidden_by_mode_cleans_open_menu -v
-      - name: "diag: bg test_blob_hidden_by_mode_repeated_cycles"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_blob_hidden_by_mode_repeated_cycles -v
-      - name: "diag: bg test_every_menu_backgrounds_full_cycle"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_every_menu_backgrounds_full_cycle -v
-      - name: "diag: bg test_hover_does_not_make_background_required"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_hover_does_not_make_background_required -v
-      - name: "diag: bg test_menu_switch_cleans_previous_backgrounds"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_menu_switch_cleans_previous_backgrounds -v
-      - name: "diag: bg test_reopen_restores_all_backgrounds"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_reopen_restores_all_backgrounds -v
-      - name: "diag: bg test_voice_show_menu_restores_backgrounds"
-        if: always()
-        run: python -m unittest tests.test_menu_backgrounds.MenuBackgroundTests.test_voice_show_menu_restores_backgrounds -v
       - name: "diag: test_orb_visibility"
         if: always()
         run: python -m unittest tests.test_orb_visibility -v
@@ -101,18 +77,6 @@ jobs:
       - name: "diag: test_tool_declarations"
         if: always()
         run: python -m unittest tests.test_tool_declarations -v
-      - name: "diag: test_menu_render_offscreen"
-        if: always()
-        run: python -m unittest tests.test_menu_render_offscreen -v
-      - name: "diag: test_menu_ux"
-        if: always()
-        run: python -m unittest tests.test_menu_ux -v
-      - name: "diag: test_protocol_ui"
-        if: always()
-        run: python -m unittest tests.test_protocol_ui -v
-      - name: "diag: test_interruption_ui"
-        if: always()
-        run: python -m unittest tests.test_interruption_ui -v
 
   lint:
     name: Lint

@@ -78,6 +78,22 @@ def _sector_vector(widget: "jm.MorphingOrbWidget", sector: int):
     return widget._sector_vector(sector)
 
 
+def _peint_par_le_menu_courant(widget: "jm.MorphingOrbWidget", pos) -> bool:
+    """Vrai si le point peut être peint par un item du menu actuel.
+
+    Un item = sa pastille (rayon ≈ 15) + le rectangle de son libellé, qui
+    s'étend jusqu'à ~170 px à gauche ou à droite selon le sens de
+    déploiement du menu. Toute position située dans cette bande est
+    légitimement peinte par le menu courant : on ne peut pas y chercher la
+    fuite d'un ancien menu.
+    """
+    for node in widget._menu_nodes:
+        if abs(pos.y() - node.position.y()) <= 30.0:
+            if -180.0 <= (pos.x() - node.position.x()) <= 180.0:
+                return True
+    return False
+
+
 class MenuBackgroundTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -241,6 +257,7 @@ class MenuBackgroundTests(unittest.TestCase):
             self.sectors["Routines"],
             self.sectors["Voice"],
         ]
+        positions_verifiees = 0
         for previous, current in zip(order, order[1:]):
             with self.subTest(previous=previous, current=current):
                 widget._open_radial_menu(previous)
@@ -265,13 +282,28 @@ class MenuBackgroundTests(unittest.TestCase):
                         f"menu {current} ouvert : fond de {node.label} absent",
                     )
                 # L'ancien menu : aucun fond ne fuite.
+                # On ne peut vérifier que les positions que le menu COURANT ne
+                # peint pas : le rectangle d'un libellé est large (il suit la
+                # longueur du texte) et recouvre parfois l'emplacement d'un
+                # item de l'ancien menu — ce n'est pas une fuite, c'est le
+                # nouvel item qui est légitimement dessiné là.
                 pix = widget.grab().toImage()
                 for pos in previous_positions:
+                    if _peint_par_le_menu_courant(widget, pos):
+                        continue
+                    positions_verifiees += 1
                     alpha = int(pix.pixelColor(int(pos.x()), int(pos.y())).alpha())
                     self.assertLessEqual(
                         alpha, BG_GONE,
                         f"un fond du menu {previous} fuite dans le menu {current}",
                     )
+        # Garde-fou : si aucune position n'était vérifiable, le test ne
+        # prouverait plus rien (un menu qui recouvrirait tout passerait).
+        self.assertGreaterEqual(
+            positions_verifiees, 3,
+            "aucune position de l'ancien menu n'a pu être vérifiée : "
+            "le test ne démontre plus l'absence de fuite",
+        )
 
     # ------------------------------------------------------------------
     # 7-8. Blob masqué par un mode avec un menu ouvert : nettoyage complet,
