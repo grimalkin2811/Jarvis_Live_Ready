@@ -391,6 +391,69 @@ class MenuBackgroundTests(unittest.TestCase):
         # survolé : il n'est plus subordonné au hover.
         self.assertGreaterEqual(rest_alpha, hover_alpha * 0.5)
 
+    def test_fond_reellement_dessine_sans_survol_dans_les_5_menus(self) -> None:
+        """Le fond d'item existe VRAIMENT sans survol, dans les 5 menus.
+
+        Test en DIFFÉRENTIEL : on rend le menu ouvert deux fois, avec puis
+        sans le fond permanent (``ITEM_BG_REST`` forcé à 0), et on compte les
+        pixels qui changent. Mesurer une valeur absolue ne prouvait rien (le
+        texte et la pastille sont déjà opaques) : la 1.3.0 passait ses
+        propres tests alors qu'aucun fond n'était visible à l'écran
+        (5/255 mesuré). La géométrie du rectangle variant selon le menu
+        (libellés à droite ou à gauche), le test ne dépend d'aucune
+        position : il compare deux rendus complets.
+        """
+        widget = self.widget
+        for name, sector in sorted(self.sectors.items(), key=lambda item: item[1]):
+            with self.subTest(menu=name):
+                widget.cursor = widget.center
+                widget._open_radial_menu(sector)
+                _settle(widget)
+                _force_fully_open(widget)
+                self.assertTrue(widget._menu_nodes, name)
+
+                with patch.object(jm, "ITEM_BG_REST", 0.0):
+                    sans_fond = widget.grab().toImage()
+                avec_fond = widget.grab().toImage()
+
+                boite = _nodes_bounding_box(widget, marge=190)
+                modifies = 0
+                for y in range(boite.top(), boite.bottom(), 2):
+                    for x in range(boite.left(), boite.right(), 2):
+                        delta = abs(
+                            avec_fond.pixelColor(x, y).alpha()
+                            - sans_fond.pixelColor(x, y).alpha()
+                        )
+                        if delta > 20:
+                            modifies += 1
+
+                # Chaque item couvre une large surface : un fond réellement
+                # dessiné modifie des centaines de pixels (mesuré ≈ 3 000).
+                self.assertGreater(
+                    modifies,
+                    400,
+                    f"{name} : le fond permanent ne dessine presque rien "
+                    f"({modifies} pixels modifiés) — le fond reste invisible "
+                    f"sans survol.",
+                )
+                widget._close_radial_menu()
+                _settle(widget, 30)
+
+
+def _nodes_bounding_box(widget: "jm.MorphingOrbWidget", marge: int = 190):
+    """Rectangle englobant les nœuds du menu (pour limiter la comparaison)."""
+    from PySide6.QtCore import QRect
+
+    xs = [node.position.x() for node in widget._menu_nodes]
+    ys = [node.position.y() for node in widget._menu_nodes]
+    boite = QRect(
+        int(min(xs)) - marge,
+        int(min(ys)) - marge,
+        int(max(xs) - min(xs)) + 2 * marge,
+        int(max(ys) - min(ys)) + 2 * marge,
+    )
+    return boite.intersected(widget.rect())
+
 
 if __name__ == "__main__":
     unittest.main()

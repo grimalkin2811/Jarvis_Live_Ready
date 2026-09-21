@@ -88,6 +88,13 @@ HOVER_LIGHTNESS_LIFT = 0.045
 HOVER_MAX_ALPHA = 220
 #: Liseré discret, couleur du thème, qui détoure le rectangle.
 HOVER_BORDER_ALPHA = 105
+#: Part du fond d'item dessinée en PERMANENCE quand le menu est ouvert.
+#: ``0.0`` = fond uniquement au survol (comportement d'origine, où les items
+#: non survolés n'avaient aucun fond), ``1.0`` = fond identique au survol.
+#: À 0.55, chaque item a un rectangle franchement visible dès l'ouverture du
+#: menu — dans les 5 menus, indépendamment du survol — tandis que le survol
+#: reste nettement plus marqué (il ne fait plus que renforcer le fond).
+ITEM_BG_REST = 0.55
 
 
 def _theme_hsl(glow_color: QColor) -> tuple[float, float]:
@@ -2538,15 +2545,19 @@ class MorphingOrbWidget(QWidget):
             value_text = self._menu_value(spec, node)
             if value_text and value_text != "Clear":
                 label_text = f"{node.label} · {value_text}"
-        # Fond de survol : dessiné SOUS le texte, d'après la position finale du
-        # libellé. Il n'ajoute aucune marge et ne déplace donc rien.
+        # Fond d'item permanent : dessiné SOUS le texte, d'après la position
+        # finale du libellé. Il n'ajoute aucune marge et ne déplace donc rien.
+        # Le rectangle existe dès que le menu est ouvert (visible ≈ 1), pour
+        # CHAQUE item et sans attendre le survol ; le survol ne fait que le
+        # renforcer (il monte jusqu'à l'opacité maximale).
+        background_amount = visible * (ITEM_BG_REST + (1.0 - ITEM_BG_REST) * hover)
         self._draw_hover_background(
             painter,
             state.glow_color,
             label_rect,
             label_alignment,
             label_text,
-            hover * visible,
+            background_amount,
         )
         painter.setPen(QColor(state.text_color.red(), state.text_color.green(), state.text_color.blue(), text_alpha))
         painter.drawText(

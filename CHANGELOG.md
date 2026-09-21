@@ -9,6 +9,34 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## 1.3.1 — Fonds des items réellement visibles
+
+### Correction
+
+- **Les fonds d'items des 5 menus sont enfin visibles.** En 1.3.0, le fond
+  permanent ajouté ne concernait que la pastille du nœud : le rectangle
+  derrière le libellé restait réservé au survol. À l'écran, rien ne
+  changeait — mesuré sur un rendu réel : opacité du fond **5/255** sans
+  survol, contre **224/255** au survol.
+  Désormais chaque item affiche son rectangle dès l'ouverture du menu
+  (**≈ 121/255**, soit 55 % du fond de survol), dans les 5 menus et
+  indépendamment du survol ; le survol ne fait plus que le renforcer.
+- Nouvelle constante `ITEM_BG_REST` (0.55) : `0.0` = comportement d'origine
+  (fond uniquement au survol), `1.0` = fond identique au survol.
+
+### Qualité
+
+- **Garde-fou des outils** : tout outil implémenté doit être déclaré à
+  Gemini (`tests/test_tool_declarations.py`). Un outil absent de
+  `TOOL_DECLARATIONS` n'existe pas pour le modèle — il n'est jamais appelé à
+  la voix, alors que son code fonctionne et que ses tests directs passent.
+- **Test des fonds en différentiel** : le menu est rendu deux fois (avec puis
+  sans le fond permanent) et on compte les pixels modifiés. Mesurer une
+  valeur absolue ne prouvait rien ici, le texte et la pastille étant déjà
+  opaques : c'est ainsi que la 1.3.0 passait ses propres tests sans qu'aucun
+  fond ne soit visible. Le test échoue sur la 1.3.0 pour les 5 menus.
+- Suite complète : **532 tests + 403 subtests, 0 échec**.
+
 ## 1.3.0 — Modes configurables, commandes d'affichage, fonds des menus
 
 Version construite **au-dessus de la 1.2.0** (masquage du Blob, écoute
