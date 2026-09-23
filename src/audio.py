@@ -72,6 +72,7 @@ class AudioIO:
                  mic_enabled=None, wake_threshold=None,
                  volume_provider=None, listen_mode_provider=None,
                  barge_in_provider=None, on_barge_in=None,
+                 post_response_provider=None,
                  wakeword_download=None):
         self.on_input = on_input
 
@@ -85,6 +86,9 @@ class AudioIO:
         # barge_in_provider()   : bool — autorise l'interruption vocale.
         # on_barge_in()         : appelé quand l'utilisateur coupe la parole
         #                         à Jarvis (« stop ») ou clique sur Stop.
+        # post_response_provider(): bool — Jarvis reste-t-il à l'écoute après
+        #                         sa réponse ? (None = comportement historique :
+        #                         la fenêtre de suivi est accordée.)
         self.presence_hook = presence_hook
         self.voice_hook = voice_hook
         self.mic_enabled = mic_enabled
@@ -93,6 +97,7 @@ class AudioIO:
         self.listen_mode_provider = listen_mode_provider
         self.barge_in_provider = barge_in_provider
         self.on_barge_in = on_barge_in
+        self.post_response_provider = post_response_provider
         self._last_voice_emit = 0.0
 
         self.running = False
@@ -389,6 +394,21 @@ class AudioIO:
         except Exception:
             return False
 
+    def _post_response_enabled(self) -> bool:
+        """Écoute post-réponse : Jarvis reste-t-il éveillé après sa réponse ?
+
+        ``True`` (défaut, y compris sans provider branché) conserve le
+        comportement historique : une fenêtre de ``FOLLOW_UP_SECONDS`` est
+        ouverte à la fin du tour de Gemini. ``False`` renvoie immédiatement
+        Jarvis en veille : « Hey Jarvis » redevient le seul moyen de réveil.
+        """
+        if self.post_response_provider is None:
+            return True
+        try:
+            return bool(self.post_response_provider())
+        except Exception:
+            return True
+
     # =========================================================
     # INTERRUPTION VOCALE (« stop » pendant une réponse)
     # =========================================================
@@ -669,6 +689,14 @@ class AudioIO:
         if not self.awake:
             return
 
+        # Écoute post-réponse désactivée (menu Voice → « Listen After Reply ») :
+        # aucune fenêtre de suivi n'est accordée, on retourne en veille tout de
+        # suite. C'est le même chemin que le timeout de conversation, donc le
+        # wake word « Hey Jarvis » redevient l'unique moyen de réveil.
+        if not self._post_response_enabled():
+            self._go_to_sleep("Écoute post-réponse désactivée.")
+            return
+
         self.follow_up_until = (
             time.monotonic()
             + self.FOLLOW_UP_SECONDS
@@ -727,18 +755,29 @@ class AudioIO:
                 )
                 return
 
-            self.awake = False
-            self._emit_presence("hidden")
+            self._go_to_sleep()
 
-            try:
-                self.wake_model.reset()
-            except Exception:
-                pass
+    def _go_to_sleep(self, reason: str = "") -> None:
+        """Retour en veille : seul « Hey Jarvis » peut réveiller Jarvis.
 
-            print(
-                '[Jarvis] Retour en veille. '
-                'Dites "Hey Jarvis".'
-            )
+        Chemin unique de mise en veille (timeout de conversation ou écoute
+        post-réponse désactivée) : l'état, la présence UI et le modèle de
+        wake word sont remis à zéro de la même façon dans les deux cas.
+        """
+        self.awake = False
+        self._emit_presence("hidden")
+
+        try:
+            self.wake_model.reset()
+        except Exception:
+            pass
+
+        if reason:
+            print(f"[Jarvis] {reason}")
+        print(
+            '[Jarvis] Retour en veille. '
+            'Dites "Hey Jarvis".'
+        )
 
     # =========================================================
     # SORTIE AUDIO

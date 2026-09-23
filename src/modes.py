@@ -21,7 +21,7 @@ try:  # Informations/processus système enrichis, optionnel.
 except Exception:  # pragma: no cover - dépend de l'environnement
     psutil = None
 
-from . import paths  # noqa: E402
+from . import mode_apps, paths  # noqa: E402
 
 DEFAULT_DATA_DIR = str(paths.data_dir())
 DEFAULT_MODES_PATH = os.environ.get("JARVIS_MODES_PATH", str(paths.modes_file()))
@@ -42,6 +42,20 @@ MODE_CONTROL_TOOLS = {
     "activate_game_mode",
     "disable_jarvis_mode",
     "get_jarvis_mode",
+    # Configuration des applications fermées par les modes (réglable même
+    # pendant un mode actif : c'est un réglage, pas une action écran).
+    "list_mode_applications",
+    "set_mode_applications",
+    "toggle_mode_application",
+    "reset_mode_applications",
+    # Commandes explicites d'affichage/masquage du Blob et du menu : l'action
+    # est demandée par l'utilisateur lui-même, elle doit passer dans tous les
+    # modes (voir show_blob / show_menu).
+    "show_blob",
+    "hide_blob",
+    "show_menu",
+    "hide_menu",
+    "get_ui_state",
 }
 
 AUDIO_TOOLS = {
@@ -277,54 +291,10 @@ FOCUS_DISTRACTION_KEYWORDS = {
     "shorts",
 }
 
-FOCUS_BLOCKED_PROCESS_IMAGES = {
-    "Discord.exe",
-    "Spotify.exe",
-    "vlc.exe",
-    "wmplayer.exe",
-    "steam.exe",
-    "Telegram.exe",
-    "WhatsApp.exe",
-    "Teams.exe",
-    "ms-teams.exe",
-    "Slack.exe",
-    "Zoom.exe",
-    "EpicGamesLauncher.exe",
-    "Battle.net.exe",
-    "RiotClientServices.exe",
-    "UbisoftConnect.exe",
-    "EADesktop.exe",
-    "XboxPcApp.exe",
-}
-
-GAME_BACKGROUND_PROCESS_IMAGES = {
-    # Navigateurs
-    "chrome.exe",
-    "msedge.exe",
-    "firefox.exe",
-    "brave.exe",
-    "opera.exe",
-    # Messagerie / réunions
-    "Discord.exe",
-    "Teams.exe",
-    "ms-teams.exe",
-    "Slack.exe",
-    "Zoom.exe",
-    "Telegram.exe",
-    "WhatsApp.exe",
-    # Multimédia
-    "Spotify.exe",
-    "vlc.exe",
-    "wmplayer.exe",
-    # Bureautique/dev souvent lourds ; on ne touche pas aux launchers de jeux.
-    "WINWORD.EXE",
-    "EXCEL.EXE",
-    "POWERPNT.EXE",
-    "OUTLOOK.EXE",
-    "ONENOTE.EXE",
-    "Code.exe",
-    "pycharm64.exe",
-}
+# Les listes d'applications *fermées* à l'activation ne sont plus codées en
+# dur ici : chaque utilisateur les choisit (configuration persistante
+# ``focus_apps`` / ``game_apps``). Les comportements historiques v1.x restent
+# les valeurs par défaut (voir ``src/mode_apps.py`` : LEGACY_*_IMAGES).
 
 
 _MODE_LABELS = {
@@ -403,10 +373,15 @@ class JarvisModeManager:
     # ------------------------------------------------------------------
     def _empty(self) -> dict:
         return {
-            "version": 1,
+            "version": 2,
             "active_mode": MODE_NORMAL,
             "activated_at": None,
             "expires_at": None,
+            # Applications fermées par chaque mode : réglées par
+            # l'utilisateur, persistées ici, indépendantes entre elles.
+            # Valeurs par défaut = comportement historique v1.x.
+            "game_apps": mode_apps.default_apps_for(MODE_GAME),
+            "focus_apps": mode_apps.default_apps_for(MODE_FOCUS),
         }
 
     def _load(self) -> dict:
@@ -417,7 +392,28 @@ class JarvisModeManager:
         state = self._empty()
         state.update(payload)
         state["active_mode"] = mode
+        # Migration v1.x → v2 : les fichiers sans clés *_apps héritent des
+        # valeurs par défaut (comportement historique inchangé) ; des clés
+        # malformées (pas une liste, éléments non textuels, doublons…) sont
+        # assainies plutôt que rejetées, sans jamais lever.
+        state["version"] = 2
+        state["game_apps"] = self._migrate_apps_key(payload, "game_apps", MODE_GAME)
+        state["focus_apps"] = self._migrate_apps_key(payload, "focus_apps", MODE_FOCUS)
         return self._normalize_expiration(state)
+
+    @staticmethod
+    def _migrate_apps_key(payload: dict, key: str, mode: str) -> list[str]:
+        raw = payload.get(key)
+        if key not in payload or raw is None:
+            return mode_apps.default_apps_for(mode)
+        cleaned = mode_apps.sanitize_app_list(raw)
+        if not cleaned and raw != []:
+            # La clé existait mais rien n'y était lisible (corruption,
+            # liste illisible, non-liste…) : on retombe sur les défauts.
+            # En revanche ``[]`` est conservé : l'utilisateur a volontairement
+            # choisi de ne rien fermer.
+            return mode_apps.default_apps_for(mode)
+        return cleaned
 
     def _save(self) -> None:
         if not self.enabled:
@@ -482,7 +478,161 @@ class JarvisModeManager:
                 expires_at=self._state.get("expires_at"),
                 notifications_silencieuses=self.should_suppress_notifications(),
                 affichage_bloque=self.should_suppress_visuals(),
+                # Configuration personnalisée des applications fermées :
+                # visible pour le modèle (il peut la lire ou la modifier via
+                # les outils list/set/toggle/reset_mode_applications).
+                applications_jeu=[
+                    mode_apps.app_label(entry)
+                    for entry in self._state.get("game_apps") or []
+                ],
+                applications_focus=[
+                    mode_apps.app_label(entry)
+                    for entry in self._state.get("focus_apps") or []
+                ],
             )
+
+    # ------------------------------------------------------------------
+    # Configuration des applications fermées par mode (persistante)
+    # ------------------------------------------------------------------
+    def get_mode_apps(self, mode) -> list[str]:
+        """Liste courante (libellés) des applications du mode."""
+        resolved = mode_apps.valid_mode_name(mode)
+        if resolved is None:
+            return []
+        key = "game_apps" if resolved == MODE_GAME else "focus_apps"
+        with self._lock:
+            return list(self._state.get(key) or [])
+
+    def list_mode_apps(self, mode) -> dict:
+        """Détail de la configuration d'un mode : catalogue + sélection.
+
+        Chaque entrée du catalogue porte ``selectionnee`` (vraie si l'app
+        est fermée par ce mode) et ``sur_mesure`` est listé à part pour les
+        applications définies par l'utilisateur et absentes du catalogue.
+        """
+        resolved = mode_apps.valid_mode_name(mode)
+        if resolved is None:
+            return _err(f"Mode inconnu : {mode}. Utilisez 'jeu' (game) ou 'focus'.")
+        selected = self.get_mode_apps(resolved)
+        selected_keys = {
+            mode_apps.normalize_app_name(entry) for entry in selected
+        }
+        entries = [
+            {
+                "id": app.id,
+                "libelle": app.label,
+                "selectionnee": mode_apps.normalize_app_name(app.label) in selected_keys,
+            }
+            for app in mode_apps.KNOWN_APPS
+        ]
+        custom = [
+            {"libelle": entry, "id": mode_apps.normalize_app_name(entry)}
+            for entry in selected
+            if mode_apps.find_app(entry) is None
+        ]
+        return _ok(
+            mode=resolved,
+            libelle="jeu" if resolved == MODE_GAME else "focus",
+            applications=entries,
+            sur_mesure=custom,
+            selectionnees=[entry for entry in selected],
+            par_defaut=mode_apps.default_apps_for(resolved),
+        )
+
+    def set_mode_apps(self, mode, applications) -> dict:
+        """Remplace la liste complète d'un mode.
+
+        ``applications`` accepte une liste ou une chaîne séparée par des
+        virgules (« Discord, Spotify, Opera GX »). Les noms inconnus sont
+        conservés tels quels (application sur mesure) : aucun refus, aucun
+        comportement imposé.
+        """
+        resolved = mode_apps.valid_mode_name(mode)
+        if resolved is None:
+            return _err(f"Mode inconnu : {mode}. Utilisez 'jeu' (game) ou 'focus'.")
+        if applications is None:
+            return _err("Aucune application fournie.")
+        if isinstance(applications, str):
+            raw = [part.strip() for part in applications.split(",")]
+        elif isinstance(applications, (list, tuple)):
+            raw = list(applications)
+        else:
+            return _err("Format de liste incompréhensible.")
+        cleaned = mode_apps.sanitize_app_list(raw)
+        key = "game_apps" if resolved == MODE_GAME else "focus_apps"
+        with self._lock:
+            self._state[key] = cleaned
+            self._save()
+        return _ok(
+            mode=resolved,
+            libelle="jeu" if resolved == MODE_GAME else "focus",
+            applications=cleaned,
+            message=f"Applications fermées par le mode {'jeu' if resolved == MODE_GAME else 'focus'} : "
+            + (", ".join(mode_apps.app_label(entry) for entry in cleaned) or "aucune"),
+        )
+
+    def toggle_mode_app(self, mode, application, enabled=None) -> dict:
+        """Ajoute ou retire UNE application d'un mode.
+
+        ``enabled=None`` inverse l'état courant ; ``True``/``False`` le fixe.
+        L'application résolue au catalogue est stockée sous son libellé
+        canonique (pas de doublons « Discord » / « discord »).
+        """
+        resolved = mode_apps.valid_mode_name(mode)
+        if resolved is None:
+            return _err(f"Mode inconnu : {mode}. Utilisez 'jeu' (game) ou 'focus'.")
+        name = str(application or "").strip()
+        if not name:
+            return _err("Aucune application fournie.")
+        known = mode_apps.find_app(name)
+        label = known.label if known is not None else mode_apps.app_label(name)
+        key = "game_apps" if resolved == MODE_GAME else "focus_apps"
+        with self._lock:
+            entries = list(self._state.get(key) or [])
+            existing = next(
+                (
+                    entry
+                    for entry in entries
+                    if mode_apps.normalize_app_name(entry)
+                    == mode_apps.normalize_app_name(label)
+                ),
+                None,
+            )
+            if enabled is None:
+                should_enable = existing is None
+            else:
+                should_enable = bool(enabled)
+            if should_enable and existing is None:
+                # Ajout : l'orthographe d'origine est conservée (le
+                # re-sélectionner ne doit pas la faire changer).
+                entries.append(label)
+            elif not should_enable and existing is not None:
+                entries.remove(existing)
+            self._state[key] = entries
+            self._save()
+            new_list = list(self._state[key])
+        return _ok(
+            mode=resolved,
+            application=mode_apps.app_label(label),
+            selectionnee=should_enable,
+            applications=new_list,
+        )
+
+    def reset_mode_apps(self, mode) -> dict:
+        """Repart du comportement d'origine (v1.x) pour un mode."""
+        resolved = mode_apps.valid_mode_name(mode)
+        if resolved is None:
+            return _err(f"Mode inconnu : {mode}. Utilisez 'jeu' (game) ou 'focus'.")
+        defaults = mode_apps.default_apps_for(resolved)
+        key = "game_apps" if resolved == MODE_GAME else "focus_apps"
+        with self._lock:
+            self._state[key] = list(defaults)
+            self._save()
+        return _ok(
+            mode=resolved,
+            applications=list(defaults),
+            message="Configuration d'origine rétablie.",
+        )
 
     def _set_mode(self, mode: str, duration_minutes=None) -> dict:
         if not self.enabled:
@@ -510,13 +660,13 @@ class JarvisModeManager:
         )
 
     def activate_focus_mode(self, duration_minutes=None, close_distractions=True) -> dict:
-        """Active le mode révision et ferme les distractions connues."""
+        """Active le mode révision et ferme les distractions configurées."""
         result = self._set_mode(MODE_FOCUS, duration_minutes=duration_minutes)
         if not result.get("success"):
             return result
         cleanup = None
         if bool(close_distractions):
-            cleanup = self._close_processes(FOCUS_BLOCKED_PROCESS_IMAGES)
+            cleanup = self._close_configured_apps(MODE_FOCUS)
         result.update(
             description=(
                 "Mode focus actif : jeux, streaming, réseaux sociaux, achats, "
@@ -525,18 +675,24 @@ class JarvisModeManager:
             ),
             sites_bloques=sorted(FOCUS_BLOCKED_SITES),
             applications_bloquees=sorted(FOCUS_BLOCKED_APPS),
+            applications_fermees=cleanup.get("applications") if cleanup else None,
             nettoyage=cleanup,
         )
         return result
 
     def activate_game_mode(self, duration_minutes=None, close_background=True) -> dict:
-        """Active le mode jeu : performances + zéro interaction visuelle."""
+        """Active le mode jeu : performances + zéro interaction visuelle.
+
+        Les applications fermées sont celles **choisies par l'utilisateur**
+        dans la configuration du mode (``game_apps``) : Jarvis n'impose plus
+        de liste à quiconque.
+        """
         result = self._set_mode(MODE_GAME, duration_minutes=duration_minutes)
         if not result.get("success"):
             return result
         cleanup = None
         if bool(close_background):
-            cleanup = self._close_processes(GAME_BACKGROUND_PROCESS_IMAGES)
+            cleanup = self._close_configured_apps(MODE_GAME)
         protocol = self._cancel_active_protocol()
         priority = self._set_jarvis_low_priority()
         result.update(
@@ -549,6 +705,7 @@ class JarvisModeManager:
             affichage_bloque=True,
             interactions_ecran_bloquees=True,
             outils_autorises=sorted(GAME_ALLOWED_TOOLS),
+            applications_fermees=cleanup.get("applications") if cleanup else None,
             nettoyage=cleanup,
             protocole=protocol,
             priorite_jarvis=priority,
@@ -685,39 +842,85 @@ class JarvisModeManager:
     # ------------------------------------------------------------------
     # Nettoyage / priorité, best effort et non destructif.
     # ------------------------------------------------------------------
-    def _close_processes(self, images: set[str]) -> dict:
-        requested = sorted(images, key=str.lower)
+    def _close_configured_apps(self, mode: str) -> dict:
+        """Ferme (best effort) les applications configurées pour un mode.
+
+        Totalement inoffensif : application absente/non installée → ignorée
+        ; fermeture impossible → consignée dans ``erreurs`` ; Jarvis ne
+        lève jamais à cause d'une fermeture.
+        """
+        resolved = mode_apps.valid_mode_name(mode)
+        if resolved is None:
+            return _err(f"Mode inconnu : {mode}.")
+        key = "game_apps" if resolved == MODE_GAME else "focus_apps"
+        with self._lock:
+            labels = list(self._state.get(key) or [])
+        result = self._close_processes(labels)
+        result["applications"] = [mode_apps.app_label(entry) for entry in labels]
+        return result
+
+    def _close_processes(self, apps) -> dict:
+        """Ferme une liste d'applications (libellés du catalogue ou noms
+        libres) sous Windows via taskkill, avec repli par titre de fenêtre
+        pour les applications « sur mesure ». Best effort, jamais fatal."""
+        if not isinstance(apps, (list, tuple, set, frozenset)):
+            apps = [apps]
+        requested = [str(entry) for entry in apps if str(entry or "").strip()]
         if not requested:
-            return _ok(tentes=[], fermes=[], ignores=[])
+            return _ok(tente=True, fermes=[], ignores=[], applications=[])
         if not _IS_WINDOWS:
             return _ok(
                 tente=False,
                 fermes=[],
                 ignores=requested,
-                raison="Fermeture automatique des processus disponible uniquement sous Windows.",
+                applications=[mode_apps.app_label(entry) for entry in requested],
+                raison="Fermeture automatique des applications disponible uniquement sous Windows.",
             )
 
         closed: list[str] = []
         ignored: list[str] = []
         errors: list[dict] = []
-        for image in requested:
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/IM", image, "/F"],
-                    capture_output=True,
-                    text=True,
-                    timeout=5,
-                )
-            except Exception as exc:  # pragma: no cover - dépend de Windows
-                errors.append({"processus": image, "erreur": str(exc)})
+        for label in requested:
+            images = mode_apps.process_images_for(label)
+            if not images:
+                ignored.append(label)
                 continue
-            output = (result.stdout or result.stderr or "").strip()
-            if result.returncode == 0:
-                closed.append(image)
-            elif "not found" in output.lower() or "introuvable" in output.lower():
-                ignored.append(image)
-            else:
-                errors.append({"processus": image, "erreur": output or "taskkill a échoué"})
+            app_closed = False
+            for image in images:
+                try:
+                    result = subprocess.run(
+                        ["taskkill", "/IM", image, "/F"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5,
+                    )
+                except Exception as exc:  # pragma: no cover - dépend de Windows
+                    errors.append({"processus": image, "erreur": str(exc)})
+                    continue
+                output = (result.stdout or result.stderr or "").strip()
+                if result.returncode == 0:
+                    app_closed = True
+                elif "not found" in output.lower() or "introuvable" in output.lower():
+                    # Processus absent (application non ouverte ou non
+                    # installée) : normal, on l'ignore sans erreur.
+                    continue
+                else:
+                    errors.append({"processus": image, "erreur": output or "taskkill a échoué"})
+            if app_closed:
+                closed.append(label)
+            elif not any(
+                err.get("processus") in set(images) for err in errors
+            ):
+                # Aucune image trouvée (ou image non installée) : l'app
+                # configurée n'est pas ouverte — comportement attendu.
+                # Repli pour les applications sur mesure : titre de fenêtre.
+                if not mode_apps.is_known_app(label):
+                    if self._close_by_window_title(label):
+                        closed.append(label)
+                    else:
+                        ignored.append(label)
+                else:
+                    ignored.append(label)
         return {
             "success": not errors,
             "tente": True,
@@ -725,6 +928,36 @@ class JarvisModeManager:
             "ignores": ignored,
             "erreurs": errors,
         }
+
+    @staticmethod
+    def _close_by_window_title(label: str) -> bool:
+        """Repli Windows pour une application « sur mesure » : ferme les
+        fenêtres dont le titre contient le nom (majuscules ignorées).
+        Retourne True si au moins une fenêtre a été fermée."""
+        query = str(label or "").strip()
+        if not query:
+            return False
+        script = (
+            "Get-Process | Where-Object { "
+            f"($_.MainWindowTitle -like '*{query}*') -and ($_.MainWindowTitle) "
+            "} | ForEach-Object { try { Stop-Process -Id $_.Id -Force } catch {} }"
+        )
+        try:
+            result = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    script,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+        except Exception:  # pragma: no cover - dépend de Windows
+            return False
+        return result.returncode == 0
 
     def _cancel_active_protocol(self) -> dict:
         try:
