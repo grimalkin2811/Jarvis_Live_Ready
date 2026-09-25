@@ -69,6 +69,24 @@ jobs:
       - name: "suite 0-6 +gemini"
         if: always()
         run: python scripts/run_test_range.py 0 6
+      - name: "suite 0-12"
+        if: always()
+        run: python scripts/run_test_range.py 0 12
+      - name: "suite 0-18"
+        if: always()
+        run: python scripts/run_test_range.py 0 18
+      - name: "suite 0-24"
+        if: always()
+        run: python scripts/run_test_range.py 0 24
+      - name: "suite 0-30"
+        if: always()
+        run: python scripts/run_test_range.py 0 30
+      - name: "suite 0-36"
+        if: always()
+        run: python scripts/run_test_range.py 0 36
+      - name: "suite 0-43"
+        if: always()
+        run: python scripts/run_test_range.py 0 43
       - name: "diag: test_blob_visibility"
         if: always()
         run: python -m unittest tests.test_blob_visibility -v
