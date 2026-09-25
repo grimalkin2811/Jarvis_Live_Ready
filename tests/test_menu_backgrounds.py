@@ -81,15 +81,26 @@ def _sector_vector(widget: "jm.MorphingOrbWidget", sector: int):
 def _peint_par_le_menu_courant(widget: "jm.MorphingOrbWidget", pos) -> bool:
     """Vrai si le point peut être peint par un item du menu actuel.
 
-    Un item = sa pastille (rayon ≈ 15) + le rectangle de son libellé, qui
-    s'étend jusqu'à ~170 px à gauche ou à droite selon le sens de
-    déploiement du menu. Toute position située dans cette bande est
-    légitimement peinte par le menu courant : on ne peut pas y chercher la
-    fuite d'un ancien menu.
+    La bande fixe de 180 px ne couvre plus les libellés Voice (12 items,
+    valeur « On » / « Off »). On utilise les boîtes réelles du solveur de
+    layout : un pixel du menu courant n'est pas une fuite de l'ancien.
     """
+    spec = widget._menu_spec()
+    if spec is not None and widget._menu_nodes:
+        try:
+            positions = [node.position for node in widget._menu_nodes]
+            widths, heights, y_shifts = widget._layout_label_metrics(spec)
+            boxes = widget._layout_boxes(spec, positions, widths, heights, y_shifts)
+            x, y = pos.x(), pos.y()
+            for label_box, body_box in boxes:
+                for box in (label_box, body_box):
+                    if box[0] - 12 <= x <= box[2] + 12 and box[1] - 12 <= y <= box[3] + 12:
+                        return True
+        except Exception:
+            pass
     for node in widget._menu_nodes:
-        if abs(pos.y() - node.position.y()) <= 30.0:
-            if -180.0 <= (pos.x() - node.position.x()) <= 180.0:
+        if abs(pos.y() - node.position.y()) <= 36.0:
+            if -240.0 <= (pos.x() - node.position.x()) <= 240.0:
                 return True
     return False
 
