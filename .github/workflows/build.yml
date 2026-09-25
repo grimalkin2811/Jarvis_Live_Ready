@@ -51,134 +51,27 @@ jobs:
           fi
           exit "$code"
 
-      - name: "diag: writing IntentTests"
+      - name: "suite through test_gemini_live"
         if: always()
-        run: python -m unittest tests.test_writing.IntentTests -v
-      - name: "diag: writing TextFinalizeTests"
+        run: python scripts/run_test_range.py 0 6
+      - name: "suite through test_logging_setup"
         if: always()
-        run: python -m unittest tests.test_writing.TextFinalizeTests -v
-      - name: "diag: writing FilenameTests"
+        run: python scripts/run_test_range.py 0 12
+      - name: "suite through test_menu_render_offscreen"
         if: always()
-        run: python -m unittest tests.test_writing.FilenameTests -v
-      - name: "diag: writing ActiveFieldPlanTests"
+        run: python scripts/run_test_range.py 0 18
+      - name: "suite through test_notifications"
         if: always()
-        run: python -m unittest tests.test_writing.ActiveFieldPlanTests -v
-      - name: "diag: writing ClipboardTests"
+        run: python scripts/run_test_range.py 0 24
+      - name: "suite through test_routine_presets"
         if: always()
-        run: python -m unittest tests.test_writing.ClipboardTests -v
-      - name: "diag: writing InserterTests"
+        run: python scripts/run_test_range.py 0 30
+      - name: "suite through test_tool_declarations"
         if: always()
-        run: python -m unittest tests.test_writing.InserterTests -v
-      - name: "diag: writing ServiceTests"
+        run: python scripts/run_test_range.py 0 36
+      - name: "suite through test_writing"
         if: always()
-        run: python -m unittest tests.test_writing.ServiceTests -v
-      - name: "diag: writing SettingsPersistenceTests"
-        if: always()
-        run: python -m unittest tests.test_writing.SettingsPersistenceTests -v
-      - name: "diag: writing PathTests"
-        if: always()
-        run: python -m unittest tests.test_writing.PathTests -v
-      - name: "diag: writing ToolIntegrationTests"
-        if: always()
-        run: python -m unittest tests.test_writing.ToolIntegrationTests -v
-      - name: "diag: writing MenuWritingTests"
-        if: always()
-        run: python -m unittest tests.test_writing.MenuWritingTests -v
-
-      # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
-      # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est
-      # lisible via l'API GitHub même quand les journaux bruts de l'exécution
-      # ne sont pas téléchargeables, ce qui permet de localiser un échec.
-      - name: "diag: test_config"
-        if: always()
-        run: python -m unittest tests.test_config -q
-      - name: "diag: test_download_models"
-        if: always()
-        run: python -m unittest tests.test_download_models -q
-      - name: "diag: test_first_run"
-        if: always()
-        run: python -m unittest tests.test_first_run -q
-      - name: "diag: test_gemini_live"
-        if: always()
-        run: python -m unittest tests.test_gemini_live -q
-      - name: "diag: test_interruption"
-        if: always()
-        run: python -m unittest tests.test_interruption -q
-      - name: "diag: test_interruption_ui"
-        if: always()
-        run: python -m unittest tests.test_interruption_ui -q
-      - name: "diag: test_launcher_core"
-        if: always()
-        run: python -m unittest tests.test_launcher_core -q
-      - name: "diag: test_launcher_gui"
-        if: always()
-        run: python -m unittest tests.test_launcher_gui -q
-      - name: "diag: test_logging_setup"
-        if: always()
-        run: python -m unittest tests.test_logging_setup -q
-      - name: "diag: test_memory"
-        if: always()
-        run: python -m unittest tests.test_memory -q
-      - name: "diag: test_menu_render_offscreen"
-        if: always()
-        run: python -m unittest tests.test_menu_render_offscreen -q
-      - name: "diag: test_menu_ux"
-        if: always()
-        run: python -m unittest tests.test_menu_ux -q
-      - name: "diag: test_modes"
-        if: always()
-        run: python -m unittest tests.test_modes -q
-      - name: "diag: test_notifications"
-        if: always()
-        run: python -m unittest tests.test_notifications -q
-      - name: "diag: test_packaging"
-        if: always()
-        run: python -m unittest tests.test_packaging -q
-      - name: "diag: test_paths"
-        if: always()
-        run: python -m unittest tests.test_paths -q
-      - name: "diag: test_protocol_ui"
-        if: always()
-        run: python -m unittest tests.test_protocol_ui -q
-      - name: "diag: test_protocols"
-        if: always()
-        run: python -m unittest tests.test_protocols -q
-      - name: "diag: test_routine_presets"
-        if: always()
-        run: python -m unittest tests.test_routine_presets -q
-      - name: "diag: test_routines"
-        if: always()
-        run: python -m unittest tests.test_routines -q
-      - name: "diag: test_routines_ui"
-        if: always()
-        run: python -m unittest tests.test_routines_ui -q
-      - name: "diag: test_scheduler"
-        if: always()
-        run: python -m unittest tests.test_scheduler -q
-      - name: "diag: test_system_actions"
-        if: always()
-        run: python -m unittest tests.test_system_actions -q
-      - name: "diag: test_timeparse"
-        if: always()
-        run: python -m unittest tests.test_timeparse -q
-      - name: "diag: test_tools"
-        if: always()
-        run: python -m unittest tests.test_tools -q
-      - name: "diag: test_updater"
-        if: always()
-        run: python -m unittest tests.test_updater -q
-      - name: "diag: test_version"
-        if: always()
-        run: python -m unittest tests.test_version -q
-      - name: "diag: test_wakeword"
-        if: always()
-        run: python -m unittest tests.test_wakeword -q
-      - name: "diag: test_wakeword_e2e"
-        if: always()
-        run: python -m unittest tests.test_wakeword_e2e -q
-      - name: "diag: test_writing"
-        if: always()
-        run: python -m unittest tests.test_writing -q
+        run: python scripts/run_test_range.py 0 43
       - name: "diag: test_blob_visibility"
         if: always()
         run: python -m unittest tests.test_blob_visibility -v
