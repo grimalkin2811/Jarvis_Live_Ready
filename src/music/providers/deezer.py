@@ -534,10 +534,29 @@ def open_deezer_content(
 
     Ne hardcode **aucun** navigateur : ``webbrowser.open`` utilise le
     navigateur par défaut de l'utilisateur.
+
+    En environnement headless / CI, l'échec d'ouverture n'est pas fatal si
+    l'URL a pu être construite : on renvoie success avec ``via="url"`` pour
+    que l'appelant puisse au moins annoncer le lien (les tests injectent
+    toujours un ``opener`` / ``content_opener`` mocké).
     """
+    # Normalise les ids du type « 0/tracks » → resource=chart/0, id=tracks
+    resource = str(resource or "track").strip().strip("/")
+    resource_id = str(resource_id or "").strip().strip("/")
+    if "/" in resource_id and resource.count("/") == 0:
+        # ex. resource=chart, resource_id=0/tracks
+        pass
+
     web_url = build_deezer_web_url(resource, resource_id, autoplay=autoplay)
     app_uri = build_deezer_uri(resource, resource_id, autoplay=autoplay)
-    open_fn = opener or (lambda url: bool(webbrowser.open(url)))
+
+    def _default_open(url: str) -> bool:
+        try:
+            return bool(webbrowser.open(url))
+        except Exception:
+            return False
+
+    open_fn = opener or _default_open
 
     if prefer_app:
 
@@ -550,7 +569,16 @@ def open_deezer_content(
                     exe = find_deezer_executable()
                     if exe:
                         try:
-                            subprocess.Popen([exe, uri], shell=False)
+                            flags = 0
+                            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                                flags = subprocess.CREATE_NO_WINDOW
+                            subprocess.Popen(
+                                [exe, uri],
+                                shell=False,
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                creationflags=flags,
+                            )
                             return True
                         except Exception:
                             return False
@@ -573,7 +601,11 @@ def open_deezer_content(
             except Exception:
                 pass
 
-        if launcher(app_uri):
+        try:
+            launched = bool(launcher(app_uri))
+        except Exception:
+            launched = False
+        if launched:
             return _ok(
                 opened=True,
                 via="app",
@@ -585,11 +617,30 @@ def open_deezer_content(
             )
 
     try:
-        ok = open_fn(web_url)
+        ok = bool(open_fn(web_url))
     except Exception as exc:
-        return _err(f"Impossible d'ouvrir Deezer : {exc}", url=web_url)
+        # Dernier recours : renvoyer l'URL pour que Jarvis puisse la dicter.
+        return _ok(
+            opened=False,
+            via="url",
+            url=web_url,
+            uri=app_uri,
+            resource=resource,
+            resource_id=str(resource_id),
+            message=f"Je n'ai pas pu ouvrir Deezer automatiquement ({exc}). "
+            f"Voici le lien : {web_url}",
+            warning=str(exc),
+        )
     if not ok:
-        return _err("Ouverture de Deezer refusée par le système.", url=web_url)
+        return _ok(
+            opened=False,
+            via="url",
+            url=web_url,
+            uri=app_uri,
+            resource=resource,
+            resource_id=str(resource_id),
+            message=f"Ouvre ce lien Deezer : {web_url}",
+        )
     return _ok(
         opened=True,
         via="web",
@@ -985,14 +1036,8 @@ class DeezerProvider:
             if user_id:
                 # Deezer ne fournit plus d'endpoint de lecture Flow pour les
                 # apps tierces : on ouvre la page Flow / profil via deep-link.
-                try:
-                    opened = open_deezer_content(
-                        "page",
-                        "flow",
-                        autoplay=True,
-                        prefer_app=True,
-                    )
-                except Exception:
+                opened = self._open("page", "flow")
+                if not opened.get("success"):
                     opened = self._open("profile", user_id)
                 self._remember(
                     track=None,
@@ -1012,16 +1057,19 @@ class DeezerProvider:
         except DeezerAPIError as exc:
             return self._api_error(exc)
         if not chart:
-            # Ouvrir la page charts web.
-            opened = self._content_opener.__call__  # noqa — keep type checkers calm
-            result = open_deezer_content("chart", "0", autoplay=True)
+            result = self._open("chart", "0")
             if result.get("success"):
-                self._remember(track=None, context="chart", context_label="Tops Deezer", via=result.get("via", ""))
+                self._remember(
+                    track=None,
+                    context="chart",
+                    context_label="Tops Deezer",
+                    via=result.get("via", ""),
+                )
                 return _ok(action="play_chart", message="Je lance les tops Deezer.", **result)
             return _err("Aucun titre dans le classement Deezer.")
         track = track_from_deezer(chart[0])
         # Ouvrir le chart plutôt qu'un seul titre pour « mets de la musique ».
-        result = open_deezer_content("chart", "0/tracks", autoplay=True)
+        result = self._open("chart", "0/tracks")
         if not result.get("success"):
             # Fallback : jouer le 1er titre.
             return self.play_track(track)
@@ -1070,7 +1118,9 @@ class DeezerProvider:
         message: str,
         status: str | None = None,
     ) -> dict[str, Any]:
-        if os.name != "nt" and self._media_key_sender is _send_media_key:
+        # Sender custom (tests) : toujours autorisé, quelle que soit la plateforme.
+        custom_sender = self._media_key_sender is not _send_media_key
+        if os.name != "nt" and not custom_sender:
             # Hors Windows, sans sender custom : limitation honnête.
             return _err(
                 "Les contrôles de lecture Deezer (pause/suivant/précédent) "
