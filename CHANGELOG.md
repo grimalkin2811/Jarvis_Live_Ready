@@ -9,6 +9,36 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## 1.4.2 — Writing Mode : le curseur par défaut
+
+Release volontairement ciblée : un seul changement fonctionnel, dans le
+système d'écriture. Le reste de Jarvis est inchangé.
+
+### Changement
+
+- **Le curseur actif devient la sortie par défaut.** « Écris-moi un message
+  pour prévenir mon professeur », « rédige une lettre », « fais-moi une lettre
+  de motivation » : Jarvis génère le texte et l'écrit à l'emplacement du
+  curseur, sans créer de fichier.
+- **Un fichier `.txt` n'est créé que sur demande explicite** : « dans un
+  fichier », « un fichier texte », « un .txt », « un document à générer »,
+  « un fichier à enregistrer / sauvegarder », « un contenu sous forme de
+  fichier », « un fichier téléchargeable ».
+- **Cas ambigu** (aucun format précisé) : le curseur est privilégié, aucune
+  clarification n'est demandée. Un artefact rédactionnel seul (lettre, mail,
+  message, CV, rapport, paragraphe, résumé…) ne déclenche plus de fichier.
+- Filet local : si le modèle appelle `create_text_file` alors que la demande
+  vise clairement le curseur, l'écriture part au curseur — aucun `.txt` n'est
+  créé. Inversement, une sortie explicitement demandée n'est jamais remplacée
+  par l'autre.
+
+### Inchangé
+
+Génération du texte, insertion au curseur (`SendInput`, presse-papiers en
+secours), création des `.txt` dans `user_content/` (noms sûrs, pas
+d'écrasement), interrupteurs Writing → Active field / Text files, refus des
+questions et hypothèses, gestion des erreurs.
+
 ## 1.4.1 — Stabilisation (voix Desktop, persistance, tray)
 
 Release de correction : pas de nouvelle grosse fonctionnalité. Writing Mode

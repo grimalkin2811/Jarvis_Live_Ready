@@ -2,8 +2,10 @@
 
 Deux modes indépendants, déclenchés seulement par une demande explicite :
 
-* insertion au curseur dans le champ actif (simulation de saisie) ;
-* création d'un fichier ``.txt`` dans ``user_content/``.
+* insertion au curseur dans le champ actif (simulation de saisie) — **sortie
+  par défaut** depuis la 1.4.2 : « écris-moi X » écrit X au curseur ;
+* création d'un fichier ``.txt`` dans ``user_content/`` — uniquement si la
+  demande parle explicitement d'un fichier (« fais-moi un .txt avec X »).
 
 Le routage vocal reste celui de Gemini Live (outils). Ce paquet fournit la
 détection d'intention, la préparation du texte, l'insertion, les fichiers et

@@ -9,6 +9,14 @@ l'audio). Ce classifieur est la règle déterministe correspondante :
 * il est testé sans micro ni réseau.
 
 Il ne transforme pas chaque occurrence du verbe « écrire » en action.
+
+Règle par défaut (1.4.2) : **le curseur actif est la sortie par défaut**.
+Demander de rédiger, écrire, composer, formuler, produire ou générer un texte
+— quel que soit l'artefact nommé (message, lettre, mail, paragraphe, CV,
+rapport…) — écrit au curseur. Un fichier ``.txt`` n'est créé que si la demande
+parle explicitement d'un fichier (« un fichier », « un .txt », « un fichier
+texte », « sauvegarde », « enregistre dans un fichier »…). Sans mot de fichier,
+le doute profite toujours au curseur.
 """
 
 from __future__ import annotations
@@ -22,10 +30,28 @@ WRITE_ACTIVE_FIELD = "write_active_field"
 CREATE_TEXT_FILE = "create_text_file"
 BOTH = "both"
 
-_ARTIFACT = (
-    r"(texte|fichier|document|mail|lettre|presentation|discours|cv|rapport|message)"
+#: Sorties qui désignent **explicitement** un fichier. Seules elles créent un
+#: ``.txt`` : « crée-moi un fichier… », « génère un document », « dans un .txt »,
+#: « sauvegarde… ». « texte » y figure pour préserver le cas historique de la
+#: 1.4.0 (« crée-moi un texte de présentation » = un fichier).
+_FILE_NOUN = r"(fichier|fichiers|txt|document|documents|texte|contenu|user_content|user content)"
+
+#: Artefacts rédactionnels : ils désignent un texte à écrire, pas un fichier.
+#: Avec un verbe de création ils partent donc au curseur (défaut 1.4.2).
+_TEXT_ARTIFACT = (
+    r"(texte|textes|mail|mails|courriel|courriels|lettre|lettres|message|messages|"
+    r"paragraphe|paragraphes|note|notes|article|articles|resume|resumes|discours|"
+    r"presentation|presentations|cv|rapport|rapports|poeme|histoire|annonce|"
+    r"reponse|reponses|commentaire|commentaires|post|liste|listes|brouillon)"
 )
 
+#: Verbes de production d'un texte : avec un artefact rédactionnel, ils visent
+#: le curseur (« fais-moi une lettre », « génère-moi un résumé »).
+_PRODUCE_VERB = (
+    r"fais|fait|faites|cree|creer|crees|creez|genere|generer|generes|generez|"
+    r"prepare|preparer|preparez|produis|produire|produisez|formule|formuler|formulez|"
+    r"redige|rediges|redigez|ecris|ecrivez|compose|composez|tape|tapez"
+)
 
 @dataclass(frozen=True)
 class WritingIntent:
@@ -81,17 +107,12 @@ def classify_writing_intent(utterance: str) -> WritingIntent:
     if wants_file and wants_field and _dual_request(text):
         return WritingIntent(BOTH, "double_demande", False)
     if wants_file and wants_field:
-        if re.search(r"\b(champ actif|dans le champ|au curseur)\b", text) and not re.search(
-            r"\bfichier\b", text
-        ):
+        # Les deux sorties sont évoquées : le curseur ne l'emporte que s'il est
+        # nommé explicitement (« au curseur », « dans le champ ») sans mot de
+        # fichier à côté. Sinon, la sortie fichier explicitement demandée gagne.
+        if _explicit_field(text) and not _explicit_file(text):
             return WritingIntent(WRITE_ACTIVE_FIELD, "champ_explicite", False)
-        if re.search(r"\b(fichier|sauvegarde|user_content)\b", text) and not re.search(
-            r"\b(champ actif|dans le champ|au curseur)\b", text
-        ):
-            return WritingIntent(CREATE_TEXT_FILE, "fichier_explicite", False)
-        if re.search(r"\bfichier\b", text):
-            return WritingIntent(CREATE_TEXT_FILE, "fichier_explicite", False)
-        return WritingIntent(WRITE_ACTIVE_FIELD, "ecriture_explicite", False)
+        return WritingIntent(CREATE_TEXT_FILE, "fichier_explicite", False)
     if wants_file:
         return WritingIntent(CREATE_TEXT_FILE, "creation_fichier", False)
     if wants_field:
@@ -124,10 +145,17 @@ def _conditional(text: str) -> bool:
 
 
 def _user_narration(text: str) -> bool:
+    """Récit de l'utilisateur (« j'ai fait une lettre ») : jamais une action.
+
+    Les verbes de production ajoutés en 1.4.2 (« j'ai fait », « j'ai créé »)
+    doivent rester un récit, pas un ordre d'écrire au curseur.
+    """
     return bool(
         re.search(
             r"\b(je t ecris|j ecris|j ai ecrit|je t ai ecrit|j ecrivais|"
-            r"on m a ecrit|je lui ai ecrit)\b",
+            r"on m a ecrit|je lui ai ecrit|"
+            r"j ai fait|j ai cree|j ai redige|j ai genere|j ai tape|"
+            r"tu as fait|tu as ecrit|il a fait|il a ecrit|elle a fait|on a fait)\b",
             text,
         )
     )
@@ -180,7 +208,7 @@ def _dual_request(text: str) -> bool:
 
 
 def _wants_field(text: str) -> bool:
-    if re.search(r"\b(dans le champ|champ actif|au curseur|a l emplacement)\b", text):
+    if _explicit_field(text):
         return True
     if re.search(
         r"\b(ecris|ecrivez|ecrives|redige|rediges|redigez|compose|composes|"
@@ -192,15 +220,18 @@ def _wants_field(text: str) -> bool:
         r"\b(ecrire|rediger|composer|taper|inserer|dicter)\b", text
     ):
         return True
+    # Défaut 1.4.2 : produire un texte (même avec « crée », « génère »,
+    # « fais ») écrit au curseur, tant qu'aucun fichier n'est demandé.
+    if re.search(
+        rf"\b(?:{_PRODUCE_VERB})\b.{{0,40}}\b{_TEXT_ARTIFACT}\b",
+        text,
+    ):
+        return True
     return False
 
 
 def _wants_file(text: str) -> bool:
-    if re.search(r"\b(fichier|fichiers)\b", text) or re.search(r"\btxt\b", text):
-        return True
-    if "user_content" in text or "user content" in text:
-        return True
-    if re.search(r"\b(sauvegarde|sauvegarder|sauvegardez)\b", text):
+    if _explicit_file(text):
         return True
     if re.search(r"\b(enregistre|enregistrer|enregistrez)\b", text) and re.search(
         r"\b(fichier|texte|document|txt|ca|cela|contenu)\b", text
@@ -209,8 +240,26 @@ def _wants_file(text: str) -> bool:
     if re.search(r"\bfais\b.{0,40}\bfichier\b", text):
         return True
     if re.search(
-        rf"\b(cree|creer|crees|creez|genere|generer|generez)\b.{{0,60}}\b{_ARTIFACT}\b",
+        rf"\b(cree|creer|crees|creez|genere|generer|generez)\b.{{0,60}}\b{_FILE_NOUN}\b",
         text,
     ):
+        return True
+    return False
+
+
+def _explicit_field(text: str) -> bool:
+    """Vrai si la demande nomme la sortie « curseur / champ actif »."""
+    return bool(re.search(r"\b(dans le champ|champ actif|au curseur|a l emplacement)\b", text))
+
+
+def _explicit_file(text: str) -> bool:
+    """Vrai si la demande nomme explicitement un fichier (seule sortie ``.txt``)."""
+    if re.search(r"\b(fichier|fichiers)\b", text) or re.search(r"\btxt\b", text):
+        return True
+    if "user_content" in text or "user content" in text:
+        return True
+    if re.search(r"\b(sauvegarde|sauvegarder|sauvegardez)\b", text):
+        return True
+    if re.search(r"\b(telechargeable|telecharger|telecharge)\b", text):
         return True
     return False

@@ -669,9 +669,16 @@ données.
 
 ## Système d'écriture
 
-Jarvis 1.4.0 peut produire du texte utilisable directement, sur ordre explicite
+Jarvis peut produire du texte utilisable directement, sur ordre explicite
 seulement. Une réponse conversationnelle (« explique-moi », « qu'est-ce que tu
 écrirais ») ne déclenche jamais d'écriture.
+
+**Depuis la 1.4.2, la sortie par défaut est le curseur actif** : « écris-moi X »
+écrit X là où se trouve le curseur, sans créer de fichier. Un fichier `.txt`
+n'est créé que si la demande le dit explicitement (« dans un fichier », « un
+fichier texte », « un .txt », « sauvegarde… »). Si aucun format n'est précisé,
+le doute profite au curseur : Jarvis n'écrit pas de `.txt` et ne demande pas de
+précision.
 
 Deux modes indépendants, interrupteurs dans le menu radial **Voice** :
 
@@ -689,9 +696,11 @@ Deux modes indépendants, interrupteurs dans le menu radial **Voice** :
 
 Les réglages sont persistés dans `menu_state.json` et relus au redémarrage.
 
-### Champ actif
+### Champ actif (sortie par défaut)
 
 « Jarvis, écris-moi un mail pour demander un rendez-vous au professeur. »
+« Fais-moi une lettre de motivation. » « Rédige un message à envoyer à Marius. »
+« Génère-moi un paragraphe sur les voyages spatiaux. »
 Jarvis génère le texte et le **tape à l'emplacement du curseur** (navigateur,
 mail, éditeur, Discord, Word, formulaire). Il ne sélectionne pas et ne remplace
 pas le texte déjà présent. Sous Windows, la saisie passe par `SendInput`
@@ -699,10 +708,13 @@ pas le texte déjà présent. Sous Windows, la saisie passe par `SendInput`
 presse-papiers, qui est sauvegardé puis restauré. Confirmation : « C'est écrit. »
 Le contenu n'est pas relu à voix haute.
 
-### Fichiers texte
+### Fichiers texte (sur demande explicite)
 
-« Jarvis, crée-moi un texte de présentation de mon projet. » crée par exemple
-`user_content/presentation_projet.txt`. Le dossier est relatif à l'application
+Un fichier n'est créé que si la demande parle d'un fichier : « Jarvis,
+crée-moi un texte de présentation de mon projet. », « Écris-moi ça dans un
+fichier txt. », « Génère-moi un fichier texte avec ce contenu. », « Fais-moi
+une lettre de motivation dans un fichier. ». Sans ces mots, c'est le curseur.
+La première phrase crée par exemple `user_content/presentation_projet.txt`. Le dossier est relatif à l'application
 (racine du dépôt en développement, données utilisateur une fois installé) et
 créé s'il manque. Un fichier existant n'est pas écrasé :
 `document.txt`, `document_1.txt`, `document_2.txt`. Confirmation : « Le fichier

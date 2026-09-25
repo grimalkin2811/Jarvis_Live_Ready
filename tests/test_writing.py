@@ -131,6 +131,243 @@ class IntentTests(unittest.TestCase):
         self.assertFalse(intent.explicit_non_action)
 
 
+class DefaultCursorTests(unittest.TestCase):
+    """1.4.2 : le curseur est la sortie par défaut, le fichier est explicite."""
+
+    #: Les sept cas de la release 1.4.2 (intentions attendues).
+    SPEC_CASES = {
+        # Cas 1 — texte simple : curseur, pas de .txt.
+        "Écris-moi un paragraphe sur les voyages spatiaux.": "write_active_field",
+        # Cas 2 — message : curseur.
+        "Rédige un message à envoyer à Marius.": "write_active_field",
+        # Cas 3 — demande explicite de TXT : fichier.
+        "Mets ce texte dans un fichier txt.": "create_text_file",
+        # Cas 4 — demande explicite de fichier : fichier.
+        "Génère-moi un fichier texte avec ce contenu.": "create_text_file",
+        # Cas 5 — formulation ambiguë : curseur.
+        "Fais-moi une lettre de motivation.": "write_active_field",
+        # Cas 6 — fichier explicite : fichier.
+        "Fais-moi une lettre de motivation dans un fichier.": "create_text_file",
+    }
+
+    def test_spec_1_4_2(self):
+        for utterance, expected in self.SPEC_CASES.items():
+            with self.subTest(utterance=utterance):
+                intent = classify_writing_intent(utterance)
+                self.assertEqual(intent.action, expected, intent.reason)
+
+    def test_plain_writing_requests_go_to_the_cursor(self):
+        for utterance in (
+            "Écris-moi un message pour prévenir mon professeur que je serai absent demain.",
+            "Écris-moi une lettre de motivation.",
+            "Génère-moi une lettre de motivation.",
+            "Fais-moi un résumé de ce chapitre.",
+            "Formule une réponse polie à ce client.",
+            "Produis un paragraphe sur les voyages spatiaux.",
+            "Rédige un mail pour demander un rendez-vous.",
+        ):
+            with self.subTest(utterance=utterance):
+                self.assertEqual(classify_writing_intent(utterance).action, "write_active_field")
+
+    def test_explicit_file_requests_create_a_file(self):
+        for utterance in (
+            "Écris-moi ça dans un fichier txt.",
+            "Crée un .txt avec ce message.",
+            "Fais-moi un fichier texte téléchargeable.",
+            "Génère une lettre de motivation dans un fichier texte.",
+            "Sauvegarde ce texte.",
+            "Enregistre ça dans un fichier.",
+        ):
+            with self.subTest(utterance=utterance):
+                self.assertEqual(classify_writing_intent(utterance).action, "create_text_file")
+
+    def test_ambiguous_request_does_not_ask_and_keeps_conversation_safe(self):
+        # Une question reste une question : rien n'est écrit, aucune clarification
+        # automatique n'est déclenchée par le classifieur.
+        for utterance in (
+            "Explique-moi ce qu'est un trou noir.",
+            "Qu'est-ce que tu écrirais dans une lettre de motivation ?",
+            "Comment rédiger une lettre de motivation ?",
+        ):
+            with self.subTest(utterance=utterance):
+                intent = classify_writing_intent(utterance)
+                self.assertEqual(intent.action, "conversation")
+                self.assertTrue(intent.explicit_non_action)
+
+    def test_narration_of_a_production_verb_stays_conversation(self):
+        """« J'ai fait une lettre » est un récit, pas un ordre d'écrire."""
+        for utterance in (
+            "J'ai fait une lettre de motivation hier.",
+            "J'ai créé un mail pour le prof ce matin.",
+            "Tu as fait une lettre pour le prof ?",
+        ):
+            with self.subTest(utterance=utterance):
+                intent = classify_writing_intent(utterance)
+                self.assertEqual(intent.action, "conversation")
+                self.assertTrue(intent.explicit_non_action)
+
+    def test_prompt_states_the_cursor_default(self):
+        prompt = system_instruction()
+        self.assertIn("curseur", prompt)
+        self.assertIn("n'appelle pas create_text_file", prompt)
+        self.assertIn("write_to_active_field", prompt)
+        self.assertIn("create_text_file", prompt)
+
+    # ------------------------------------------------------------------
+    # Routage de bout en bout (génération → curseur ou fichier)
+    # ------------------------------------------------------------------
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.directory = Path(self.tmp.name)
+        set_active_field_writer(None)
+
+    def _files(self):
+        return sorted(path.name for path in self.directory.iterdir())
+
+    def test_handle_command_writes_at_cursor_and_creates_no_txt(self):
+        for utterance in (
+            "Écris-moi un paragraphe sur les voyages spatiaux.",
+            "Rédige un message à envoyer à Marius.",
+            "Fais-moi une lettre de motivation.",
+        ):
+            with self.subTest(utterance=utterance):
+                inserter, keyboard = _writer()
+                result = handle_command(
+                    utterance,
+                    "Bonjour, voici le texte.",
+                    writer=inserter,
+                    directory=self.directory,
+                    field_enabled=True,
+                    files_enabled=True,
+                )
+                self.assertTrue(result["handled"])
+                self.assertEqual(result["action"], "write_active_field")
+                self.assertTrue(keyboard.units, "aucune frappe simulée")
+                self.assertEqual(self._files(), [], "un .txt a été créé")
+
+    def test_handle_command_creates_the_file_when_asked(self):
+        for utterance in (
+            "Mets ce texte dans un fichier txt.",
+            "Génère-moi un fichier texte avec ce contenu.",
+            "Fais-moi une lettre de motivation dans un fichier.",
+        ):
+            with self.subTest(utterance=utterance):
+                result = handle_command(
+                    utterance,
+                    "Bonjour, voici le texte.",
+                    writer=_writer()[0],
+                    directory=self.directory,
+                    field_enabled=True,
+                    files_enabled=True,
+                )
+                self.assertTrue(result["handled"])
+                self.assertEqual(result["action"], "create_text_file")
+                self.assertTrue(result["success"])
+                self.assertTrue(self._files(), "aucun .txt créé")
+
+    def test_create_text_file_falls_back_to_the_cursor_without_file_request(self):
+        """Filet 1.4.2 : un .txt n'est jamais créé sur une simple demande d'écriture."""
+        inserter, keyboard = _writer()
+        set_active_field_writer(inserter)
+        result = create_text_file(
+            "Bonjour, voici le texte.",
+            request="Écris-moi un paragraphe sur les voyages spatiaux.",
+            directory=self.directory,
+            enabled=True,
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "write_active_field")
+        self.assertEqual(result["message"], SPOKEN_WRITTEN)
+        self.assertTrue(keyboard.units)
+        self.assertEqual(self._files(), [])
+
+    def test_create_text_file_still_creates_on_an_explicit_request(self):
+        result = create_text_file(
+            "Bonjour, voici le texte.",
+            request="Mets ce texte dans un fichier txt.",
+            directory=self.directory,
+            enabled=True,
+        )
+        self.assertTrue(result["success"])
+        self.assertEqual(result["action"], "create_text_file")
+        self.assertEqual(result["message"], SPOKEN_FILE_CREATED)
+        self.assertEqual(len(self._files()), 1)
+        self.assertTrue(self._files()[0].endswith(".txt"))
+
+    def test_disabled_field_is_announced_and_does_not_create_a_file(self):
+        """Mode désactivé : on ne bascule pas sur l'autre sortie."""
+        inserter, keyboard = _writer()
+        blocked = write_to_active_field(
+            "Bonjour, voici le texte.",
+            request="Écris-moi un paragraphe sur les voyages spatiaux.",
+            writer=inserter,
+            enabled=False,
+        )
+        self.assertFalse(blocked["success"])
+        self.assertEqual(blocked["reason"], "disabled")
+        self.assertEqual(keyboard.units, [])
+        self.assertEqual(self._files(), [])
+
+    # ------------------------------------------------------------------
+    # Régression : le reste du Writing Mode ne bouge pas
+    # ------------------------------------------------------------------
+    def test_other_outputs_and_errors_are_unchanged(self):
+        # Vide, trop long, nom invalide : mêmes refus qu'avant la 1.4.2.
+        inserter, keyboard = _writer()
+        empty = write_to_active_field("   ", writer=inserter, enabled=True)
+        self.assertFalse(empty["success"])
+        self.assertEqual(empty["message"], SPOKEN_WRITE_FAILED)
+        self.assertEqual(keyboard.units, [])
+
+        empty_file = create_text_file("", directory=self.directory, enabled=True)
+        self.assertFalse(empty_file["success"])
+        self.assertEqual(empty_file["message"], SPOKEN_FILE_FAILED)
+
+        invalid = create_text_file("ok", filename="???", directory=self.directory, enabled=True)
+        self.assertFalse(invalid["success"])
+        self.assertEqual(invalid["reason"], "invalid_filename")
+        self.assertEqual(self._files(), [])
+
+        # Le .txt explicite garde sa logique de nommage (pas d'écrasement).
+        first = create_text_file(
+            "Élève à l'école.",
+            request="Mets ce texte dans un fichier txt.",
+            directory=self.directory,
+            enabled=True,
+        )
+        second = create_text_file(
+            "Suite.",
+            request="Mets ce texte dans un fichier txt.",
+            directory=self.directory,
+            enabled=True,
+        )
+        self.assertNotEqual(first["fichier"], second["fichier"])
+        self.assertTrue(first["fichier"].endswith(".txt"))
+        self.assertTrue(second["fichier"].endswith(".txt"))
+        self.assertEqual(
+            (self.directory / first["fichier"]).read_text(encoding="utf-8"),
+            "Élève à l'école.",
+        )
+
+        # Les deux sorties demandées ensemble restent « both ».
+        inserter, keyboard = _writer()
+        both = handle_command(
+            "Écris le mail dans le champ et crée aussi un fichier.",
+            "Bonjour,",
+            writer=inserter,
+            directory=self.directory,
+            field_enabled=True,
+            files_enabled=True,
+        )
+        self.assertEqual(both["action"], "both")
+        self.assertTrue(keyboard.units, "le curseur n'a pas été servi")
+        self.assertTrue(
+            any(name.endswith(".txt") for name in self._files()),
+            "le fichier n'a pas été créé",
+        )
+
+
 class FilenameTests(unittest.TestCase):
     def test_spec_names(self):
         self.assertEqual(derive_filename("écris un texte sur les trous noirs"), "trous_noirs.txt")

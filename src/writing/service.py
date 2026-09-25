@@ -39,11 +39,17 @@ def system_instruction() -> str:
     """Consigne ajoutée au prompt Gemini Live. Ne remplace pas le routage local."""
     return (
         "Système d'écriture, deux modes indépendants, jamais spontanés. "
-        "Appelle write_to_active_field uniquement si l'utilisateur ordonne clairement d'écrire, "
-        "rédiger, composer, taper ou insérer un texte à l'endroit du curseur "
-        "(« écris-moi un mail », « rédige », « compose »). "
-        "Appelle create_text_file uniquement s'il ordonne de créer un fichier, de sauvegarder un texte, "
-        "ou dit « crée-moi un texte ». "
+        "Comportement par défaut : écrire au curseur, dans le champ actif. "
+        "Appelle write_to_active_field dès que l'utilisateur ordonne d'écrire, "
+        "rédiger, composer, formuler, produire, taper ou insérer un texte à l'endroit du curseur, "
+        "quel que soit le type de texte demandé (« écris-moi un mail », « rédige une lettre », "
+        "« compose un message », « fais-moi une lettre de motivation », « génère un paragraphe »). "
+        "Appelle create_text_file uniquement s'il ordonne explicitement un fichier : "
+        "« dans un fichier », « un fichier texte », « un .txt », « un document à générer », "
+        "« un fichier à enregistrer ou à sauvegarder », « un contenu sous forme de fichier », "
+        "« un fichier téléchargeable ». "
+        "Si la demande ne précise aucun format de fichier, le doute profite au curseur : "
+        "n'appelle pas create_text_file et ne crée pas de .txt. "
         "Une question ou une hypothèse (« qu'est-ce que tu écrirais », « comment rédiger », "
         "« explique-moi », « que mettrais-tu ») reste une réponse vocale normale : "
         "n'appelle aucun outil d'écriture. "
@@ -115,11 +121,19 @@ def create_text_file(
     directory=None,
     enabled=None,
 ) -> dict:
-    """Crée un ``.txt`` dans ``user_content`` si le mode est actif."""
+    """Crée un ``.txt`` dans ``user_content`` si le mode est actif.
+
+    Depuis la 1.4.2, le curseur est la sortie par défaut : une demande qui vise
+    clairement le champ actif (verbe d'écriture, aucun mot de fichier) n'est
+    jamais transformée en fichier, même si le modèle appelle cet outil.
+    """
     try:
         veto = _veto(request, CREATE_TEXT_FILE)
         if veto is not None:
             return veto
+        if _plain_field_request(request):
+            print("[writing] aucun fichier demande : ecriture au curseur")
+            return write_to_active_field(text, request=request)
         if enabled is None:
             enabled = writing_settings.text_files_enabled()
         if not enabled:
@@ -225,6 +239,18 @@ def handle_command(
         "field": field,
         "file": created,
     }
+
+
+def _plain_field_request(request: str) -> bool:
+    """Vrai si la demande vise le curseur sans jamais parler de fichier.
+
+    Un appel d'outil reste une action explicite : seul un routage clair vers le
+    champ actif (et aucun mot de fichier) redirige ``create_text_file``. Une
+    demande vide, ambiguë ou déjà « fichier » laisse l'outil suivre son cours.
+    """
+    if not str(request or "").strip():
+        return False
+    return classify_writing_intent(request).action == WRITE_ACTIVE_FIELD
 
 
 def _veto(request: str, expected: str) -> dict | None:
