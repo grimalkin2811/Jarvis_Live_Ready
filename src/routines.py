@@ -48,7 +48,9 @@ from .timeparse import describe_schedule, normalize, parse_schedule
 DEFAULT_DATA_DIR = str(paths.data_dir())
 DEFAULT_ROUTINES_PATH = os.environ.get("JARVIS_ROUTINES_PATH", str(paths.routines_file()))
 
-#: Outils interdits dans une routine : irréversibles, ou sources de récursion.
+#: Outils interdits dans une routine : irréversibles, sources de récursion,
+#: ou injection clavier (une routine planifiée ne doit pas taper dans
+#: n'importe quelle fenêtre au premier plan).
 FORBIDDEN_TOOLS = {
     "shutdown_pc",
     "restart_pc",
@@ -62,6 +64,7 @@ FORBIDDEN_TOOLS = {
     "delete_routine",
     "run_routine",
     "cancel_reminder",
+    "write_to_active_field",
 }
 
 #: Étape interne (pas un outil) : pause entre deux actions.
@@ -507,6 +510,35 @@ class RoutineManager:
             }
             for item in payload["routines"]
         ]
+        return _ok(routines=routines, count=len(routines), fichier=self.path)
+
+    def list_routine_names(self) -> dict:
+        """Noms d'affichage **sans** validation des étapes (usage UI).
+
+        Contrairement à ``list_routines()``, cette lecture n'appelle pas
+        ``_sanitize``/``parse_steps`` et n'importe donc PAS le registre
+        ``src.tools`` (~50 ms + pycaw/psutil/urllib). C'est le chemin utilisé
+        au démarrage de l'orbe pour construire le menu Routines : à cet
+        instant, seule la liste des noms est nécessaire. Toute décision qui
+        dépend des étapes (exécution, dialogue Catalogue, outils vocaux) doit
+        continuer de passer par ``list_routines()`` / ``describe_routine()``.
+        """
+        if not self.enabled:
+            return _err("Routines désactivées.")
+        with self._lock:
+            payload = self._load(sanitize=False)
+        routines = []
+        for item in payload["routines"]:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            routines.append(
+                {
+                    "name": name,
+                    "preset_id": str(item.get("preset_id") or ""),
+                    "enabled": bool(item.get("enabled", True)),
+                }
+            )
         return _ok(routines=routines, count=len(routines), fichier=self.path)
 
     def describe_routine(self, name: str) -> dict:

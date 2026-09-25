@@ -7,6 +7,7 @@ from google.genai import types
 from .memory import MemoryManager
 from .modes import get_default_mode_manager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
+from .writing.service import WRITING_TOOL_NAMES, system_instruction as writing_system_instruction
 
 
 #: Durée pendant laquelle une interruption demandée localement (« stop »)
@@ -200,6 +201,16 @@ class GeminiLive:
             "Douze routines préconfigurées sont déjà disponibles et désactivées par défaut, dont Mode focus et Mode jeu. "
             "Pour activer immédiatement le mode focus ou le mode jeu, utilise activate_focus_mode ou activate_game_mode ; "
             "pour revenir au comportement normal, utilise disable_jarvis_mode seulement si l'utilisateur le demande clairement. "
+            "Chaque mode ferme à son activation les applications que l'UTILISATEUR a choisies (deux listes indépendantes, persistées) : "
+            "ne préjuge jamais de leur contenu. Pour les consulter, list_mode_applications(mode) ; "
+            "pour les modifier, toggle_mode_application / set_mode_applications / reset_mode_applications. "
+            "Exemple : « dans le mode jeu, ne ferme pas Opera GX » → toggle_mode_application(mode='jeu', application='Opera GX', enabled=False) "
+            "puis confirme ce que la liste du mode jeu contient maintenant. Modifier le mode jeu ne modifie jamais le mode focus, et inversement. "
+            "« Affiche le blob », « masque le blob », « affiche le menu », « masque le menu » sont des commandes d'affichage explicites : "
+            "appelle show_blob / hide_blob / show_menu / hide_menu. « Affiche le blob » et « affiche le menu » sont des ACTIONS : "
+            "ils (ré)affichent l'élément demandé dans TOUS les cas, y compris si un mode jeu/focus ou un réglage le masque actuellement. "
+            "Ne te contente jamais de dire que c'est caché ou refusé : exécute l'outil. "
+            "Pour savoir ce qui est réellement affiché, get_ui_state. "
             "Pour « active/désactive la routine hydratation », utilise update_routine avec name et enabled=true/false uniquement : "
             "ne la recrée pas, ne demande aucun horaire ni paramètre supplémentaire. En cas de nom ambigu, liste les routines. "
             "Une routine désactivée ne peut pas être lancée ; son activation ne lance pas immédiatement ses étapes, "
@@ -214,6 +225,7 @@ class GeminiLive:
             "'focus' pour une session de concentration ; 'stand_down' pour la mise en veille. "
             "Le protocole se joue en arrière-plan : annonce-le brièvement (« Séquence d'allumage engagée ») "
             "puis commente sobrement le résultat, sans réciter toutes les étapes. "
+            f"{writing_system_instruction()} "
             "Pour les actions sur le PC, utilise les outils "
             "et ne mens jamais sur leur résultat. "
             "Si l'utilisateur te coupe la parole (« stop », « attends », « ça suffit »), "
@@ -461,6 +473,15 @@ class GeminiLive:
                     for c in tc.function_calls:
 
                         fn = TOOL_FUNCTIONS.get(c.name)
+                        args = dict(c.args or {})
+                        # Filet d'intention : si la transcription de la demande
+                        # est déjà là, le système d'écriture peut refuser une
+                        # hypothèse (« qu'est-ce que tu écrirais ») même si le
+                        # modèle a appelé l'outil par erreur.
+                        if c.name in WRITING_TOOL_NAMES and not str(args.get("request") or "").strip():
+                            transcript = " ".join(self._turn_user_text).strip()
+                            if transcript:
+                                args["request"] = transcript
 
                         if fn is None:
                             result = {
@@ -475,7 +496,7 @@ class GeminiLive:
                                 # peut continuer à parler et interrompre.
                                 result = await asyncio.to_thread(
                                     fn,
-                                    **dict(c.args or {})
+                                    **args
                                 )
                             except Exception as e:
                                 result = {

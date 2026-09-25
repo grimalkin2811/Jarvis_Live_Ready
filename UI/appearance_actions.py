@@ -7,6 +7,23 @@ from dataclasses import dataclass, field
 from PySide6.QtGui import QColor
 
 
+#: Opacité par défaut (0..1) des fonds d'items des menus radiaux, telle que
+#: définie en 1.3.1 (constante ``ITEM_BG_REST``). Depuis la 1.3.2 c'est la
+#: VALEUR PAR DÉFAUT d'un réglage utilisateur (Appearance → « Item BG
+#: Opacity »), pas une constante figée.
+ITEM_BG_REST = 0.55
+
+
+def _clamp01(value: float, default: float = ITEM_BG_REST) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number:  # NaN
+        return default
+    return max(0.0, min(1.0, number))
+
+
 @dataclass
 class AppearanceState:
     theme_name: str = "blue"
@@ -18,6 +35,14 @@ class AppearanceState:
     time_scale: float = 1.25
     minimal_mode: bool = False
     cinematic_mode: bool = False
+    #: Opacité des fonds des items des menus (0 = fond uniquement au survol,
+    #: 1 = fond pleinement opaque). Ne touche ni au texte ni au blob.
+    item_bg_opacity: float = ITEM_BG_REST
+    #: Orbe masqué depuis le menu (Appearance → « Blob Visible »). L'assistant
+    #: vocal continue de tourner : seule la fenêtre de l'orbe est cachée.
+    #: État de SESSION uniquement (1.3.2) : il n'est jamais relu ni réécrit
+    #: dans ``appearance_state.json`` — voir ``state_to_dict``.
+    blob_hidden: bool = False
 
 
 THEME_ORDER = ["white", "yellow", "red", "purple", "pink", "green", "blue"]
@@ -41,6 +66,11 @@ def _apply_theme(state: AppearanceState, theme_name: str) -> None:
 
 
 def state_to_dict(state: AppearanceState) -> dict:
+    # 1.3.2 : ``blob_hidden`` n'est PAS sérialisé. Le masquage est un état
+    # temporaire de la session en cours ; relancer Jarvis doit toujours
+    # démarrer l'orbe visible, quel que soit le chemin de fermeture (Échap,
+    # menu System → Quit, icône de notification…), puisque TOUS les chemins
+    # passent par ``save_state``.
     return {
         "theme_name": state.theme_name,
         "glow_intensity": state.glow_intensity,
@@ -48,6 +78,7 @@ def state_to_dict(state: AppearanceState) -> dict:
         "time_scale": state.time_scale,
         "minimal_mode": state.minimal_mode,
         "cinematic_mode": state.cinematic_mode,
+        "item_bg_opacity": _clamp01(state.item_bg_opacity),
     }
 
 
@@ -61,6 +92,15 @@ def apply_state_dict(state: AppearanceState, payload: dict) -> None:
     state.time_scale = float(payload.get("time_scale", state.time_scale))
     state.minimal_mode = bool(payload.get("minimal_mode", state.minimal_mode))
     state.cinematic_mode = bool(payload.get("cinematic_mode", state.cinematic_mode))
+    # 1.3.2 : l'opacité des fonds d'items est persistée avec les autres
+    # réglages Appearance ; valeur absente (fichier d'avant 1.3.2) → défaut
+    # identique au comportement 1.3.1.
+    state.item_bg_opacity = _clamp01(payload.get("item_bg_opacity", state.item_bg_opacity))
+    # 1.3.2 : l'état « masqué » est volontairement IGNORÉ au chargement,
+    # même s'il figure encore dans un fichier écrit par la 1.2.0–1.3.1 :
+    # masqué → fermeture → relancement doit démarrer VISIBLE. Le réglage
+    # reste bien manipulable pendant la session (set_blob_hidden).
+    state.blob_hidden = False
     if state.minimal_mode:
         state.glow_intensity = min(state.glow_intensity, 0.85)
     if state.cinematic_mode:
@@ -142,6 +182,16 @@ def decrease_blob_size(state: AppearanceState) -> None:
     _print_action(f"blob_scale={state.blob_scale:.2f}")
 
 
+def set_item_bg_opacity(state: AppearanceState, value: float) -> None:
+    """Règle l'opacité des fonds d'items des menus (0.0 à 1.0).
+
+    Ne touche qu'aux fonds : le texte, les pastilles, le liseré et le blob
+    gardent leur propre opacité (pilotée par le survol et le rendu).
+    """
+    state.item_bg_opacity = _clamp01(value)
+    _print_action(f"item_bg_opacity={state.item_bg_opacity:.2f}")
+
+
 def toggle_cinematic_mode(state: AppearanceState) -> None:
     state.cinematic_mode = not state.cinematic_mode
     if state.cinematic_mode:
@@ -150,3 +200,25 @@ def toggle_cinematic_mode(state: AppearanceState) -> None:
     else:
         state.time_scale = 1.25
     _print_action(f"cinematic_mode={state.cinematic_mode}")
+
+
+#: Message affiché quand l'orbe disparaît : sans fenêtre visible, c'est la
+#: seule trace du chemin de retour.
+BLOB_RESTORE_HINT = (
+    "Icône de notification → « Afficher Jarvis » pour réafficher l'orbe."
+)
+
+
+def set_blob_hidden(state: AppearanceState, hidden: bool) -> None:
+    """Masque (``True``) ou réaffiche (``False``) l'orbe.
+
+    Ne touche qu'à l'affichage : l'assistant vocal (wake word, Gemini Live,
+    routines, rappels) tourne dans son propre thread et n'est jamais arrêté.
+    """
+    state.blob_hidden = bool(hidden)
+    _print_action(f"blob_hidden={state.blob_hidden}")
+
+
+def toggle_blob_visibility(state: AppearanceState) -> None:
+    """Bascule l'affichage de l'orbe (menu Appearance → « Blob Visible »)."""
+    set_blob_hidden(state, not state.blob_hidden)

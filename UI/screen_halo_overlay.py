@@ -218,7 +218,6 @@ class ScreenHaloOverlay(QWidget):
             ring_inset = 14.0 + 26.0 * intensity
             outer_radius = min_side * 0.055 + 34.0 + 16.0 * intensity
             inner_radius = max(10.0, outer_radius - ring_inset * 0.85)
-            ring_width = 18.0 + 34.0 * intensity
             pulse = 0.84 + 0.16 * math.sin(self._phase)
             drift_x = math.sin(self._phase * 0.67) * 10.0 * intensity
             drift_y = math.cos(self._phase * 0.53) * 8.0 * intensity
@@ -277,8 +276,6 @@ class ScreenHaloOverlay(QWidget):
             painter.drawPath(inner_path)
 
             corner_radius = min_side * 0.09 + 54.0 * intensity
-            corner_spread_x = 1.0 + 0.10 * intensity
-            corner_spread_y = 1.0 + 0.08 * intensity
             corner_color = QColor(base_color)
             corner_color.setAlpha(int(90 + 80 * intensity * pulse))
             for center_x, center_y, stretch_x, stretch_y in (

@@ -48,6 +48,10 @@ from .routine_actions import (
     notify_user, show_reminder_briefing, check_battery_alert, check_disk_alert,
 )
 from .scheduler import get_default_scheduler
+from .writing.service import (
+    create_text_file as _writing_create_text_file,
+    write_to_active_field as _writing_write_to_active_field,
+)
 
 # ---------------------------------------------------------------------------
 # Dépendances optionnelles
@@ -1740,6 +1744,165 @@ def get_jarvis_mode():
     return get_default_mode_manager().status()
 
 
+def list_mode_applications(mode="game"):
+    """Liste les applications que le mode (jeu ou focus) ferme, et celles
+    disponibles au catalogue, avec l'état de sélection de chacune.
+
+    Utiliser avant de modifier la liste : l'utilisateur dit par exemple
+    « quelles applications le mode jeu ferme-tu ? ».
+    """
+    return get_default_mode_manager().list_mode_apps(mode)
+
+
+def set_mode_applications(mode, applications):
+    """Remplace la liste COMPLÈTE des applications fermées par un mode.
+
+    ``applications`` : noms séparés par des virgules (« Discord, Spotify »)
+    ou liste. Les noms inconnus sont conservés (application sur mesure).
+    """
+    return get_default_mode_manager().set_mode_apps(mode, applications)
+
+
+def toggle_mode_application(mode, application, enabled=None):
+    """Ajoute ou retire UNE application de la liste d'un mode.
+
+    ``enabled=None`` inverse l'état (« dans le mode jeu, ne ferme plus
+    Opera GX ») ; True/False fixe l'état. Ne touche que le mode demandé :
+    la liste de l'autre mode reste intacte.
+    """
+    return get_default_mode_manager().toggle_mode_app(mode, application, enabled)
+
+
+def reset_mode_applications(mode):
+    """Rétablit la liste d'origine (comportement v1.x) d'un mode."""
+    return get_default_mode_manager().reset_mode_apps(mode)
+
+
+# ===========================================================================
+# AFFICHAGE EXPLICITE DU BLOB / DU MENU
+# ===========================================================================
+# « Affiche le blob », « masque le blob », « affiche le menu », « masque le
+# menu » : ce sont des ACTIONS demandées par l'utilisateur. Elles passent
+# par le pont thread-safe UI/visibility_bridge et sont appliquées par
+# l'interface quel que soit le mode actif (jeu/focus) ou l'état courant :
+# une commande explicite doit toujours pouvoir réafficher l'élément.
+
+
+def _ui_attached() -> bool:
+    try:
+        from UI import visibility_bridge
+
+        return bool(visibility_bridge.VISIBILITY.ui_state().get("ui_attached"))
+    except Exception:
+        return False
+
+
+def show_blob():
+    """(Ré)affiche le Blob (l'orbe de Jarvis) — commande explicite.
+
+    Fonctionne dans tous les modes, même si une configuration ou un mode
+    (jeu/focus) le masque actuellement.
+    """
+    if not _ui_attached():
+        return _err(
+            "Le Blob n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.show_blob()
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(action="show_blob", message="Blob affiché.")
+
+
+def hide_blob():
+    """Masque le Blob (et son menu ouvert) — commande explicite."""
+    if not _ui_attached():
+        return _err(
+            "Le Blob n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.hide_blob()
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(action="hide_blob", message="Blob masqué.")
+
+
+def show_menu(menu=None):
+    """(Ré)affiche le menu radial du Blob — commande explicite.
+
+    ``menu`` : optionnel, l'un des 5 menus (Voice, System, Memory,
+    Appearance, Routines) ou son alias (« système », « voix », « mémoire »…).
+    Sans précision : le dernier menu affiché, sinon le premier. Fonctionne
+    dans tous les modes.
+    """
+    if not _ui_attached():
+        return _err(
+            "Le menu n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    requested = str(menu).strip() if menu is not None else ""
+    if requested:
+        resolved = None
+        try:
+            from UI import visibility_bridge
+
+            resolved = visibility_bridge.resolve_menu_name(requested)
+        except Exception:
+            resolved = None
+        if resolved is None:
+            return _err(
+                f"Menu inconnu : {requested}. Menus disponibles : "
+                "Voice, System, Memory, Appearance, Routines.",
+                menus_disponibles=["Voice", "System", "Memory", "Appearance", "Routines"],
+            )
+    else:
+        resolved = None
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.show_menu(resolved or None)
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(
+        action="show_menu",
+        menu=resolved or "dernier/par défaut",
+        message=f"Menu {resolved or 'par défaut'} affiché." if resolved else "Menu affiché.",
+    )
+
+
+def hide_menu():
+    """Ferme le menu radial ouvert — commande explicite."""
+    if not _ui_attached():
+        return _err(
+            "Le menu n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.hide_menu()
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(action="hide_menu", message="Menu fermé.")
+
+
+def get_ui_state():
+    """État d'affichage réel de l'interface (Blob visible, menu ouvert…)."""
+    try:
+        from UI import visibility_bridge
+
+        state = visibility_bridge.VISIBILITY.ui_state()
+    except Exception:
+        state = {"ui_attached": False, "blob_visible": False, "menu_open": False, "menu": None}
+    return _ok(**state)
+
+
 # ===========================================================================
 # RAPPELS PERSISTANTS
 # ===========================================================================
@@ -1819,6 +1982,31 @@ def cancel_protocol():
 
 
 # ===========================================================================
+# ÉCRITURE (champ actif / fichiers .txt)
+# ===========================================================================
+
+
+def write_to_active_field(text, request=""):
+    """Insère un texte au curseur. Ne vocalise pas le contenu."""
+    try:
+        return _writing_write_to_active_field(text, request=request or "")
+    except Exception as exc:
+        return _err(exc, message="Je n'ai pas réussi à écrire le texte.")
+
+
+def create_text_file(text, filename="", request=""):
+    """Crée un fichier .txt dans user_content. N'écrase pas un fichier existant."""
+    try:
+        return _writing_create_text_file(
+            text,
+            filename=filename or None,
+            request=request or "",
+        )
+    except Exception as exc:
+        return _err(exc, message="Je n'ai pas réussi à créer le fichier.")
+
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -1891,6 +2079,17 @@ _RAW_TOOL_FUNCTIONS = {
     "activate_game_mode": activate_game_mode,
     "disable_jarvis_mode": disable_jarvis_mode,
     "get_jarvis_mode": get_jarvis_mode,
+    # Configuration des applications fermées par les modes (persistante)
+    "list_mode_applications": list_mode_applications,
+    "set_mode_applications": set_mode_applications,
+    "toggle_mode_application": toggle_mode_application,
+    "reset_mode_applications": reset_mode_applications,
+    # Affichage explicite du Blob / du menu (commandes « affiche le… »)
+    "show_blob": show_blob,
+    "hide_blob": hide_blob,
+    "show_menu": show_menu,
+    "hide_menu": hide_menu,
+    "get_ui_state": get_ui_state,
     # Notifications et routines préconfigurées
     "notify_user": notify_user,
     "show_reminder_briefing": show_reminder_briefing,
@@ -1926,6 +2125,9 @@ _RAW_TOOL_FUNCTIONS = {
     "run_protocol": run_protocol,
     "list_protocols": list_protocols,
     "cancel_protocol": cancel_protocol,
+    # Écriture
+    "write_to_active_field": write_to_active_field,
+    "create_text_file": create_text_file,
 }
 
 
@@ -2229,7 +2431,103 @@ TOOL_DECLARATIONS = [
     ),
     _decl(
         "get_jarvis_mode",
-        "Indique le mode Jarvis actif : normal, focus ou jeu.",
+        "Indique le mode Jarvis actif : normal, focus ou jeu, avec les listes "
+        "d'applications configurées pour le mode jeu (applications_jeu) et le "
+        "mode focus (applications_focus).",
+    ),
+    # --- Configuration des applications des modes ---------------------------
+    _decl(
+        "list_mode_applications",
+        "Liste les applications que le mode ferme et tout le catalogue disponible, "
+        "avec l'etat de selection de chacune. A utiliser quand l'utilisateur "
+        "demande quelles applications le mode jeu ou focus ferme.",
+        {
+            "mode": {
+                **_STR,
+                "description": "Mode a consulter : 'jeu' (ou 'game') ou 'focus'.",
+            },
+        },
+        ["mode"],
+    ),
+    _decl(
+        "set_mode_applications",
+        "Remplace la liste COMPLETE des applications fermees par un mode. "
+        "Chaque utilisateur definit sa propre liste ; les deux modes sont "
+        "independants. Enregistre de facon persistante.",
+        {
+            "mode": {
+                **_STR,
+                "description": "Mode a modifier : 'jeu' (ou 'game') ou 'focus'.",
+            },
+            "applications": {
+                **_STR,
+                "description": "Noms d'applications separes par des virgules "
+                "(ex. 'Discord, Spotify, Opera GX'). Vide pour ne rien fermer.",
+            },
+        },
+        ["mode", "applications"],
+    ),
+    _decl(
+        "toggle_mode_application",
+        "Ajoute ou retire UNE application de la liste d'un mode. "
+        "ex. 'dans le mode jeu, ne ferme pas Opera GX' -> "
+        "toggle_mode_application(mode='jeu', application='Opera GX', enabled=False). "
+        "Ne modifie pas la liste de l'autre mode.",
+        {
+            "mode": {
+                **_STR,
+                "description": "Mode a modifier : 'jeu' (ou 'game') ou 'focus'.",
+            },
+            "application": {**_STR, "description": "Nom de l'application."},
+            "enabled": {
+                **_BOOL,
+                "description": "True pour fermer cette application, False pour "
+                "ne plus la fermer. Omettre pour inverser l'etat actuel.",
+            },
+        },
+        ["mode", "application"],
+    ),
+    _decl(
+        "reset_mode_applications",
+        "Retablit la liste d'origine (comportement standard) des applications "
+        "fermees par un mode.",
+        {"mode": {**_STR, "description": "Mode : 'jeu' (ou 'game') ou 'focus'."}},
+        ["mode"],
+    ),
+    # --- Affichage explicite du Blob / du menu ------------------------------
+    _decl(
+        "show_blob",
+        "Commande explicite 'affiche le blob' : (re)affiche l'orbe de Jarvis "
+        "quelle que soit la configuration ou le mode actif (jeu, focus...). "
+        "C'est une action, pas un simple etat.",
+    ),
+    _decl(
+        "hide_blob",
+        "Commande explicite 'masque le blob' / 'cache le blob' : masque "
+        "l'orbe de Jarvis (et son menu ouvert) jusqu'a 'affiche le blob'.",
+    ),
+    _decl(
+        "show_menu",
+        "Commande explicite 'affiche le menu' : (re)affiche le menu radial du "
+        "Blob, quel que soit le mode actif. 'affiche le menu systeme' passe "
+        "menu='System'. Menus : Voice, System, Memory, Appearance, Routines.",
+        {
+            "menu": {
+                **_STR,
+                "description": "Optionnel : nom du menu (Voice, System, Memory, "
+                "Appearance, Routines) ou alias ('voix', 'systeme', 'memoire'...).",
+            },
+        },
+    ),
+    _decl(
+        "hide_menu",
+        "Commande explicite 'masque le menu' / 'ferme le menu' : ferme le menu "
+        "radial ouvert du Blob.",
+    ),
+    _decl(
+        "get_ui_state",
+        "Etat d'affichage reel de l'interface : blob_visible, menu_open, menu. "
+        "A utiliser pour confirmer a l'utilisateur ce qui est affiche.",
     ),
     # --- Rappels persistants ---------------------------------------------------------------
     _decl(
@@ -2354,6 +2652,36 @@ TOOL_DECLARATIONS = [
     ),
     _decl("list_protocols", "Liste les protocoles cinematiques disponibles."),
     _decl("cancel_protocol", "Interrompt le protocole cinematique en cours."),
+    # --- Écriture -----------------------------------------------------------------
+    _decl(
+        "write_to_active_field",
+        "Insere un texte a l'emplacement du curseur dans le champ actif "
+        "(navigateur, mail, editeur, Discord, Word, formulaire). "
+        "UNIQUEMENT si l'utilisateur ordonne d'ecrire, rediger, composer, taper ou inserer. "
+        "NE PAS utiliser pour une question ou une hypothese "
+        "('qu'est-ce que tu ecrirais', 'comment rediger', 'explique'). "
+        "Ne selectionne pas et ne remplace pas le texte deja present. "
+        "Apres succes, dis seulement le champ message ('C'est ecrit.') et ne lis pas le texte.",
+        {
+            "text": {**_STR, "description": "Texte final a inserer, tel quel, avec les retours a la ligne."},
+            "request": {**_STR, "description": "Demande originale de l'utilisateur, pour verifier que l'ecriture est explicite."},
+        },
+        ["text"],
+    ),
+    _decl(
+        "create_text_file",
+        "Cree un fichier .txt dans le dossier user_content, sans ecraser un fichier existant. "
+        "UNIQUEMENT si l'utilisateur demande de creer un fichier, de sauvegarder un texte, "
+        "ou dit 'cree-moi un texte'. "
+        "NE PAS utiliser pour une simple question. "
+        "Apres succes, dis seulement le champ message et ne lis pas le contenu.",
+        {
+            "text": {**_STR, "description": "Contenu complet du fichier."},
+            "filename": {**_STR, "description": "Nom court optionnel, sans chemin. L'extension .txt est ajoutee si besoin."},
+            "request": {**_STR, "description": "Demande originale, utilisee pour le nom de fichier et pour verifier l'intention."},
+        },
+        ["text"],
+    ),
 ]
 
 

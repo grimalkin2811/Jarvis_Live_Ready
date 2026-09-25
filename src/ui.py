@@ -13,7 +13,6 @@ via des signaux Qt, ce qui est thread-safe.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import threading
 import traceback
@@ -22,15 +21,16 @@ from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from .audio import AudioIO
+# Imports CHEAP restant au niveau module (le chemin de démarrage UI) :
+# config, paths, protocols et les ponts UI sont déjà nécessaires avant
+# l'affichage. Les imports lourds (asyncio, audio, gemini_live, memory,
+# scheduler, screen_halo_overlay) sont déportés dans le code qui les
+# utilise vraiment — voir _run_voice_loop et le branch desktop — pour
+# réduire le temps avant « Interface démarrée » (1.3.2).
 from .config import load_config
-from .gemini_live import AuthError, GeminiLive
-from .memory import MemoryManager, set_default_memory_manager
 from . import paths, protocols
-from .scheduler import start_default_scheduler
 from UI import appearance_actions
 from UI import menu_state
-from UI.screen_halo_overlay import ScreenHaloOverlay
 from UI.notification_bridge import NotificationBridge
 
 
@@ -48,7 +48,7 @@ class PresenceRouter(QObject):
     pour qu'il ne reste pas affiché indéfiniment.
     """
 
-    def __init__(self, overlay: ScreenHaloOverlay) -> None:
+    def __init__(self, overlay) -> None:
         super().__init__()
         self._overlay = overlay
         self._listen_hide_timer = QTimer(self)
@@ -74,7 +74,14 @@ class PresenceRouter(QObject):
             self._overlay.show_listening()
             # Suivre la fenêtre de conversation AudioIO (8 s) + une courte
             # marge : le cadre disparaît même si l'écoute continue reste active.
-            delay_ms = int(AudioIO.FOLLOW_UP_SECONDS * 1000) + 400
+            # AudioIO n'est pas importé au niveau module (démarrage 1.3.2).
+            delay_ms = 8400
+            try:
+                from .audio import AudioIO
+
+                delay_ms = int(AudioIO.FOLLOW_UP_SECONDS * 1000) + 400
+            except Exception:
+                pass
             self._listen_hide_timer.start(delay_ms)
         elif state == "thinking":
             self._listen_hide_timer.stop()
@@ -97,7 +104,7 @@ class VoiceEnergyRouter(QObject):
         jarvis_menu.set_voice_energy(level)
 
 
-def _on_speaking(audio: AudioIO, presence_hook) -> None:
+def _on_speaking(audio, presence_hook) -> None:
     """Jarvis commence à parler : on le marque comme 'speaking' dans AudioIO
     (pour suspendre le timeout) et on informe l'UI le cas échéant."""
     audio.begin_speaking()
@@ -120,7 +127,23 @@ def _run_voice_loop(
     """Boucle vocale, identique à src.main.main() mais exécutée dans un thread.
 
     Elle possède sa propre boucle asyncio, comme l'exige Gemini aio.live.
+
+    Les imports du backend vocal sont faits ICI (et non au niveau module) :
+    ils pèsent ~450 ms (sounddevice, google genai, sqlite…) et ne sont
+    nécessaires qu'une fois l'UI affichée. En cas d'échec, l'UI reste
+    utilisable et le message indique que la voix est indisponible.
     """
+    import asyncio
+
+    try:
+        from .audio import AudioIO
+        from .gemini_live import AuthError, GeminiLive
+        from .memory import MemoryManager, set_default_memory_manager
+        from .scheduler import start_default_scheduler
+    except Exception as exc:
+        print(f"[Jarvis] Backend vocal indisponible : {exc}")
+        return
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -172,6 +195,7 @@ def _run_voice_loop(
             volume_provider=menu_state.LIVE.get_tts_volume,
             listen_mode_provider=menu_state.LIVE.get_listen_mode,
             barge_in_provider=menu_state.LIVE.get_barge_in,
+            post_response_provider=menu_state.LIVE.get_post_response_listen,
             on_barge_in=on_barge_in,
         )
         # Le menu radial (thread Qt) peut désormais couper la réponse en
@@ -443,18 +467,19 @@ def run_ui(mode: str = "desktop") -> int:
         presence_hook = jarvis_menu.set_presence_state
 
         def _activate() -> None:
+            # Clic de la zone de notification = commande explicite
+            # d'affichage : même chemin central que « affiche le blob »
+            # (fonctionne donc dans tous les modes, y compris le mode jeu).
             try:
-                from .modes import get_default_mode_manager
-
-                if get_default_mode_manager().should_suppress_visuals():
-                    window.hide()
-                    visibility.hide()
-                    return
+                window.show_blob()
             except Exception:
-                pass
-            window.showFullScreen()
-            window.raise_()
-            window.activateWindow()
+                window.showFullScreen()
+                window.raise_()
+                window.activateWindow()
+            # L'orbe peut avoir été masqué depuis le menu (Appearance →
+            # « Blob Visible ») : l'icône de notification est le chemin de
+            # retour prévu, elle lève donc aussi ce réglage.
+            window.set_blob_visible(True)
             visibility.show()
 
         def _hide() -> None:
@@ -477,6 +502,10 @@ def run_ui(mode: str = "desktop") -> int:
 
         app.aboutToQuit.connect(_persist_orb_state)
     else:
+        # Overlay halo (mode desktop seul) : import paresseux — le mode
+        # orbe (le plus courant) n'a pas besoin de ce module (~20 ms).
+        from UI.screen_halo_overlay import ScreenHaloOverlay
+
         overlay = ScreenHaloOverlay(appearance_state)
         bridge = PresenceBridge()
         router = PresenceRouter(overlay)

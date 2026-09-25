@@ -4,6 +4,7 @@ Utilise des flux factices : aucun périphérique réel n'est ouvert. Vérifie :
 * le volume TTS appliqué en direct sur les samples (gain perceptuel) ;
 * le plafond d'avance audio (latence qui ne croît pas indéfiniment) ;
 * le mode écoute continue (Jarvis ne retourne pas en veille) ;
+* l'écoute post-réponse (fenêtre de suivi accordée ou non après la réponse) ;
 * la robustesse de clear_output sur les compteurs internes.
 """
 
@@ -102,6 +103,112 @@ class QueueCapTests(unittest.TestCase):
         self.audio.clear_output()
         self.assertEqual(self.audio._queued_bytes, 0)
         self.assertTrue(self.audio.q.empty())
+
+
+class PostResponseListenTests(unittest.TestCase):
+    """Écoute post-réponse (menu Voice → « Listen After Reply »).
+
+    Activée (défaut historique) : la fenêtre de ``FOLLOW_UP_SECONDS`` est
+    accordée après la réponse, l'utilisateur peut enchaîner sans « Hey Jarvis ».
+    Désactivée : Jarvis retourne en veille dès la fin de sa réponse et le wake
+    word redevient le seul moyen de réveil.
+    """
+
+    def setUp(self) -> None:
+        self.presence: list[str] = []
+        self.audio = AudioIO(lambda pcm: None, presence_hook=self.presence.append)
+        self.audio.running = True
+        self.audio.awake = True
+        self.audio.follow_up_until = time.monotonic() - 1.0  # fenêtre expirée
+
+    def test_default_behaviour_extends_the_window(self) -> None:
+        # Aucun provider branché (mode console minimal) : comportement inchangé.
+        self.assertTrue(self.audio._post_response_enabled())
+        self.audio.extend_listening()
+        self.assertTrue(self.audio.awake)
+        self.assertGreater(
+            self.audio.follow_up_until,
+            time.monotonic() + AudioIO.FOLLOW_UP_SECONDS - 1.0,
+        )
+
+    def test_enabled_extends_the_window(self) -> None:
+        self.audio.post_response_provider = lambda: True
+        self.audio.extend_listening()
+        self.assertTrue(self.audio.awake)
+        self.assertGreater(self.audio.follow_up_until, time.monotonic())
+        self.assertEqual(self.presence[-1], "listening")
+
+    def test_disabled_returns_to_sleep_immediately(self) -> None:
+        self.audio.post_response_provider = lambda: False
+        self.audio.extend_listening()
+        self.assertFalse(self.audio.awake)
+        # Aucune fenêtre de suivi n'est accordée.
+        self.assertLess(self.audio.follow_up_until, time.monotonic())
+        self.assertEqual(self.presence[-1], "hidden")
+
+    def test_disabled_requires_the_wake_word_again(self) -> None:
+        self.audio.post_response_provider = lambda: False
+        self.audio.extend_listening()
+        self.assertFalse(self.audio.awake)
+        # En veille, un bloc micro ordinaire ne réveille pas Jarvis : seul le
+        # wake word le peut (aucun modèle chargé ici => aucune détection).
+        self.audio._handle_idle_block(b"\x00" * AudioIO.INPUT_BLOCKSIZE)
+        self.assertFalse(self.audio.awake)
+
+    def test_enabled_lets_the_user_keep_talking(self) -> None:
+        self.audio.post_response_provider = lambda: True
+        self.audio.extend_listening()
+        self.assertTrue(self.audio.awake)
+        # Toujours éveillé : le bloc micro part vers Gemini, pas vers le wake word.
+        self.audio._handle_idle_block(b"\x00" * AudioIO.INPUT_BLOCKSIZE)
+        self.assertTrue(self.audio.awake)
+
+    def test_always_listening_still_wins(self) -> None:
+        # « Always Listening » prime : l'écoute post-réponse désactivée ne doit
+        # pas casser le mode d'écoute continue existant.
+        self.audio.post_response_provider = lambda: False
+        self.audio.listen_mode_provider = lambda: True
+        self.audio.extend_listening()
+        self.assertFalse(self.audio.awake)
+        self.audio._handle_idle_block(b"\x00" * AudioIO.INPUT_BLOCKSIZE)
+        self.assertTrue(self.audio.awake)
+
+    def test_toggle_back_to_enabled_restores_the_window(self) -> None:
+        state = {"on": False}
+        self.audio.post_response_provider = lambda: state["on"]
+        self.audio.extend_listening()
+        self.assertFalse(self.audio.awake)
+        # L'utilisateur réactive le réglage puis redit « Hey Jarvis ».
+        state["on"] = True
+        self.audio._wake()
+        self.audio.follow_up_until = time.monotonic() - 1.0
+        self.audio.extend_listening()
+        self.assertTrue(self.audio.awake)
+        self.assertGreater(self.audio.follow_up_until, time.monotonic())
+
+    def test_provider_error_falls_back_to_enabled(self) -> None:
+        def _boom() -> bool:
+            raise RuntimeError("pont indisponible")
+
+        self.audio.post_response_provider = _boom
+        self.assertTrue(self.audio._post_response_enabled())
+        self.audio.extend_listening()
+        self.assertTrue(self.audio.awake)
+
+    def test_disabled_does_not_resurrect_a_sleeping_jarvis(self) -> None:
+        self.audio.post_response_provider = lambda: False
+        self.audio.awake = False
+        self.presence.clear()
+        self.audio.extend_listening()
+        self.assertFalse(self.audio.awake)
+        self.assertEqual(self.presence, [])
+
+    def test_idle_timeout_is_unchanged(self) -> None:
+        # Le timeout de conversation reste indépendant du nouveau réglage.
+        self.audio.post_response_provider = lambda: False
+        self.audio.follow_up_until = time.monotonic() - 1.0
+        self.audio._check_timeout()
+        self.assertFalse(self.audio.awake)
 
 
 class ListenModeTests(unittest.TestCase):

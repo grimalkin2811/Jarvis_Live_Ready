@@ -16,7 +16,6 @@ Exemples :
 """
 
 import argparse
-import asyncio
 import sys
 
 # Les imports lourds (audio, Gemini) sont faits dans run_headless : ainsi
@@ -176,6 +175,8 @@ def _run_smoke_test() -> int:
 
 
 async def run_headless():
+    import asyncio
+
     from .audio import AudioIO
     from .config import load_config
     from .gemini_live import AuthError, GeminiLive
@@ -236,6 +237,9 @@ async def run_headless():
             mic_enabled=MENU_LIVE.get_mic_enabled if MENU_LIVE else None,
             wake_threshold=MENU_LIVE.get_wake_threshold if MENU_LIVE else None,
             barge_in_provider=MENU_LIVE.get_barge_in if MENU_LIVE else None,
+            post_response_provider=(
+                MENU_LIVE.get_post_response_listen if MENU_LIVE else None
+            ),
             on_barge_in=on_barge_in,
         )
         voice_kwargs = {}
@@ -402,6 +406,10 @@ def main(argv=None) -> int:
                 print("[Jarvis] Configuration annulée.")
                 return 1
         return run_ui(mode)
+
+    # Import local : asyncio n'est utile que pour le mode console, pas
+    # pour --ui/--desktop (gain sur le chemin de démarrage de l'UI).
+    import asyncio
 
     try:
         asyncio.run(run_headless())

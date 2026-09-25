@@ -21,6 +21,9 @@ jobs:
     name: Tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - uses: actions/checkout@v4
 
@@ -34,7 +37,64 @@ jobs:
           pip install -r requirements.txt
 
       - name: Lancer les tests
+        shell: bash
         run: python -m unittest discover tests -v
+
+      - name: Code module en echec
+        if: failure()
+        shell: bash
+        run: python scripts/emit_test_annotations.py
+      - name: Code assertion
+        if: failure()
+        shell: bash
+        run: python -c "import os,sys; sys.exit(int(os.environ.get('FAIL_ASSERT_CODE','3')))"
+
+      # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
+      # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est
+      # lisible via l'API GitHub même quand les journaux bruts de l'exécution
+      # ne sont pas téléchargeables, ce qui permet de localiser un échec.
+      - name: "diag: test_blob_visibility"
+        if: always()
+        run: python -m unittest tests.test_blob_visibility -v
+      - name: "diag: hover HoverColorTests"
+        if: always()
+        run: python -m unittest tests.test_menu_hover.HoverColorTests -v
+      - name: "diag: hover HoverPaintingTests"
+        if: always()
+        run: python -m unittest tests.test_menu_hover.HoverPaintingTests -v
+      - name: "diag: hover HoverIntegrationTests"
+        if: always()
+        run: python -m unittest tests.test_menu_hover.HoverIntegrationTests -v
+      - name: "diag: test_menu_integration"
+        if: always()
+        run: python -m unittest tests.test_menu_integration -v
+      - name: "diag: test_audio_controls + test_menu_state_bridge"
+        if: always()
+        run: python -m unittest tests.test_audio_controls tests.test_menu_state_bridge -v
+      - name: "diag: test_menu_backgrounds"
+        if: always()
+        run: python -m unittest tests.test_menu_backgrounds -v
+      - name: "diag: test_menu_layout"
+        if: always()
+        run: python -m unittest tests.test_menu_layout -v
+      - name: "diag: test_item_bg_opacity"
+        if: always()
+        run: python -m unittest tests.test_item_bg_opacity -v
+      - name: "diag: test_orb_visibility"
+        if: always()
+        run: python -m unittest tests.test_orb_visibility -v
+      - name: "diag: test_visibility_bridge"
+        if: always()
+        run: python -m unittest tests.test_visibility_bridge -v
+      - name: "diag: test_mode_apps"
+        if: always()
+        run: python -m unittest tests.test_mode_apps -v
+      - name: "diag: test_mode_apps_dialog"
+        if: always()
+        run: python -m unittest tests.test_mode_apps_dialog -v
+      - name: "diag: test_tool_declarations"
+        if: always()
+        run: python -m unittest tests.test_tool_declarations -v
 
   lint:
     name: Lint
