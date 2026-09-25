@@ -21,9 +21,6 @@ jobs:
     name: Tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
-    permissions:
-      contents: write
-      checks: write
     steps:
       - uses: actions/checkout@v4
 
@@ -38,79 +35,17 @@ jobs:
 
       - name: Lancer les tests
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set +o pipefail
-          python -m unittest discover tests -v > unittest.log 2>&1
-          code=$?
-          # Les journaux bruts du runner ne sont pas toujours téléchargeables.
-          # Les échecs sont donc aussi publiés en annotations, lisibles via l'API.
-          if [ "$code" -ne 0 ]; then
-            python scripts/report_unittest_log.py unittest.log
-          fi
-          exit "$code"
+        run: python -m unittest discover tests -v
 
-      - name: "suite 0-1 audio"
-        if: always()
-        run: python scripts/run_test_range.py 0 1
-      - name: "suite 0-2 audio+blob"
-        if: always()
-        run: python scripts/run_test_range.py 0 2
-      - name: "suite 0-3 +config"
-        if: always()
-        run: python scripts/run_test_range.py 0 3
-      - name: "suite 0-4 +download"
-        if: always()
-        run: python scripts/run_test_range.py 0 4
-      - name: "suite 0-5 +first_run"
-        if: always()
-        run: python scripts/run_test_range.py 0 5
-      - name: "suite 0-6 +gemini"
-        if: always()
-        run: python scripts/run_test_range.py 0 6
-      - name: "suite 0-12"
-        if: always()
-        run: python scripts/run_test_range.py 0 12
-      - name: "suite 0-13 memory"
-        if: always()
-        run: python scripts/run_test_range.py 0 13
-      - name: "bg cycle"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_every_menu_backgrounds_full_cycle
-      - name: "bg reopen"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_reopen_restores_all_backgrounds
-      - name: "bg switch"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_menu_switch_cleans_previous_backgrounds
-      - name: "bg hidden"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_blob_hidden_by_mode_cleans_open_menu
-      - name: "bg repeated"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_blob_hidden_by_mode_repeated_cycles
-      - name: "bg voice"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_voice_show_menu_restores_backgrounds
-      - name: "bg hover"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_hover_does_not_make_background_required
-      - name: "bg pixels"
-        if: always()
-        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_fond_reellement_dessine_sans_survol_dans_les_5_menus
-      - name: "suite 0-15 hover"
-        if: always()
-        run: python scripts/run_test_range.py 0 15
-      - name: "suite 0-16 integration"
-        if: always()
-        run: python scripts/run_test_range.py 0 16
-      - name: "suite 0-17 layout"
-        if: always()
-        run: python scripts/run_test_range.py 0 17
-      - name: "suite 0-18 render"
-        if: always()
-        run: python scripts/run_test_range.py 0 18
+      - name: Annoter le premier échec
+        if: failure()
+        shell: bash
+        run: python scripts/emit_test_annotations.py
+
+      # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
+      # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est
+      # lisible via l'API GitHub même quand les journaux bruts de l'exécution
+      # ne sont pas téléchargeables, ce qui permet de localiser un échec.
       - name: "diag: test_blob_visibility"
         if: always()
         run: python -m unittest tests.test_blob_visibility -v

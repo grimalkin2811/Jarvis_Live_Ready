@@ -3292,7 +3292,12 @@ class MorphingOrbWidget(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
 
+            # SourceOver + transparent est un no-op : l'image précédente
+            # (fonds d'un autre menu) resterait dans le tampon. Source
+            # remplace vraiment le tampon, y compris par du transparent.
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
             painter.fillRect(self.rect(), Qt.transparent)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
             path = self._blob_path()
 
