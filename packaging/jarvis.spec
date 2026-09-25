@@ -27,7 +27,21 @@ hiddenimports += collect_submodules("google.genai")
 hiddenimports += collect_submodules("google.genai.live")
 
 # Validation de packaging (utilisé par --smoke-test et updater)
-hiddenimports += ["src.packaging_validation", "src.updater", "src.version", "src.paths", "src.wakeword"]
+hiddenimports += [
+    "src.packaging_validation",
+    "src.updater",
+    "src.version",
+    "src.paths",
+    "src.wakeword",
+    # Musique Deezer (v1.5.0) — sous-modules chargés à la demande par tools.py
+    "src.music",
+    "src.music.manager",
+    "src.music.models",
+    "src.music.intents",
+    "src.music.providers",
+    "src.music.providers.base",
+    "src.music.providers.deezer",
+]
 
 # openwakeword télécharge parfois ses modèles dans resources/models ;
 # on les récupère s'ils existent déjà (CI les télécharge avant le build).

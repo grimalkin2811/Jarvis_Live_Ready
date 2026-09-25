@@ -2,7 +2,8 @@
 
 Assistant vocal **Windows** avec Gemini Live (audio entrée/sortie, wake word
 « Hey Jarvis », barge-in, mémoire persistante, routines, rappels, notifications,
-modes focus/jeu, protocoles cinématiques et interface PySide6).
+modes focus/jeu, protocoles cinématiques, **musique Deezer** et interface
+PySide6).
 
 Cette version est conçue pour être **distribuée** : un installateur
 `JarvisSetup.exe` installe l'application **sans Python ni `.venv`**, et un
@@ -150,9 +151,15 @@ GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
 JARVIS_MEMORY_ENABLED=1
 JARVIS_ROUTINES_ENABLED=1
 JARVIS_REMINDERS_ENABLED=1
+# Deezer (optionnel — playlists personnelles uniquement)
+#DEEZER_ACCESS_TOKEN=
 ```
 
 Au premier lancement, Jarvis migre ce `.env` vers `config.json`.
+
+> **Deezer (v1.5.0)** : le catalogue public (recherche + lecture via app/web)
+> fonctionne **sans token**. Les playlists personnelles nécessitent
+> `DEEZER_ACCESS_TOKEN` (voir section Musique Deezer).
 
 ### Lancer les tests
 
@@ -203,6 +210,7 @@ parties (Jarvis, launcher, updater, build, CI) la lisent.
 ├── routines.json
 ├── schedule.db
 ├── mode.json
+├── deezer_auth.json          # jeton Deezer optionnel (v1.5.0, jamais commité)
 ├── ui\                       # préférences de l'interface
 ├── logs\jarvis.log           # logs (rotation)
 └── models\openwakeword\      # modèles wake word
@@ -602,14 +610,16 @@ données.
 
 ## Fonctions
 
-Jarvis dispose de **86 outils** déclarés dans `src/tools.py` (voir
-`TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
+Jarvis dispose de **101 outils** déclarés dans `src/tools.py` (voir
+`TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **15 outils musique Deezer**
+ajoutés en v1.5.0.
 
 | Catégorie | Outils |
 |---|---|
 | **Applications** | `open_application`, `close_application`, `is_application_running`, `list_applications`, `list_running_applications` |
 | **Audio** | `set_volume`, `volume_up`, `volume_down`, `get_volume`, `mute_audio`, `unmute_audio`, `toggle_mute` |
 | **Multimédia** | `media_play_pause`, `media_next`, `media_previous`, `media_stop` |
+| **Musique Deezer** | `music_play`, `music_play_track`, `music_play_artist`, `music_play_album`, `music_play_playlist`, `music_search`, `music_pause`, `music_resume`, `music_next`, `music_previous`, `music_stop`, `music_current`, `music_list_playlists`, `music_status`, `music_disconnect` |
 | **Système** | `get_system_info`, `get_battery_status`, `get_disk_usage`, `take_screenshot`, `lock_workstation`, `show_desktop`, `shutdown_pc`, `restart_pc`, `cancel_shutdown`, `set_brightness` |
 | **Presse-papiers** | `get_clipboard`, `set_clipboard` |
 | **Date / heure** | `get_local_time`, `get_local_date`, `get_datetime`, `days_until` |
@@ -630,7 +640,100 @@ minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 3 ? », « note que je dois appeler Paul », « capture l'écran », « verrouille le
 PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
 mode travail », « active le mode focus », « active le mode jeu », « désactive le
-mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h ».
+mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h »,
+« joue Daft Punk », « mets ma playlist Chill », « pause », « morceau suivant ».
+
+## Musique Deezer (v1.5.0)
+
+Première intégration musicale native de Jarvis. La voix pilote Deezer via une
+architecture dédiée :
+
+```text
+commande vocale
+      ↓
+Gemini Live (intent) + parseur local (src/music/intents.py)
+      ↓
+MusicManager (src/music/manager.py)
+      ↓
+DeezerProvider (src/music/providers/deezer.py)
+      ↓
+API catalogue Deezer  +  app desktop / navigateur par défaut  +  touches média
+```
+
+### Ce qui fonctionne
+
+| Action | Comment |
+|---|---|
+| Recherche artistes / morceaux / albums / playlists | API publique `api.deezer.com` (sans auth) |
+| « Joue Daft Punk » / « Around the World de Daft Punk » | Recherche + deep-link `deezer://` ou URL web |
+| « Joue l'album Discovery » | Idem, ressource album |
+| « Mets de la musique » | Tops / chart Deezer (Flow si token présent) |
+| Pause / reprise / suivant / précédent | Touches multimédia Windows (`VK_MEDIA_*`) |
+| « Quel morceau joue ? » | État **local** de la dernière lecture lancée par Jarvis |
+| Playlists personnelles | API `/user/me/playlists` **si** `DEEZER_ACCESS_TOKEN` valide |
+
+### Commandes vocales (exemples)
+
+Ces formulations sont comprises naturellement (pas une liste figée) :
+
+- « Mets de la musique. »
+- « Cherche Daft Punk. »
+- « Lance Daft Punk. » / « Joue Daft Punk. »
+- « Joue Around the World de Daft Punk. »
+- « Joue l'album Discovery de Daft Punk. »
+- « Joue ma playlist Chill. » / « Lance ma playlist Cyberpunk. »
+- « Liste mes playlists. »
+- « Passe au morceau suivant. » / « Reviens au morceau précédent. »
+- « Mets en pause. » / « Reprends. »
+- « Quel morceau est en train de jouer ? »
+
+En cas d'ambiguïté (« Joue Halo » avec plusieurs résultats), Jarvis **demande**
+laquelle choisir au lieu de trancher arbitrairement.
+
+### Authentification
+
+- **Sans token** : catalogue public + ouverture de contenus + contrôles média.
+- **Avec token** (`DEEZER_ACCESS_TOKEN` ou `JARVIS_DEEZER_TOKEN` dans `.env`,
+  ou fichier `%LOCALAPPDATA%\Jarvis\deezer_auth.json`) : playlists personnelles
+  et profil.
+
+> **Limitation Deezer (2025+)** : Deezer a restreint la création de nouvelles
+> applications API pour les particuliers. Jarvis n'essaie **pas** de contourner
+> cette restriction. Si vous disposez d'un token existant encore valide, il est
+> supporté ; sinon les fonctions perso annoncent honnêtement qu'elles ne sont
+> pas disponibles.
+
+Ne placez **jamais** un mot de passe Deezer dans le code. Le token n'est pas
+affiché dans les logs et `deezer_auth.json` est gitignoré.
+
+### Ouverture de Deezer
+
+1. Protocole `deezer://www.deezer.com/{track|artist|album|playlist}/{id}?autoplay=true`
+   si l'application desktop est installée / enregistrée.
+2. Sinon URL `https://www.deezer.com/...` dans le **navigateur par défaut**
+   (aucun navigateur n'est hardcodé — pas d'Opera GX imposé).
+
+### Limitations connues (honnêtes)
+
+| Fonction | État |
+|---|---|
+| Streaming audio direct via l'API tierce | **Indisponible** (Deezer ne le fournit plus aux apps individuelles) |
+| Now-playing temps réel Deezer | **Indisponible** via API ; Jarvis garde un état local |
+| Contrôle volume *spécifique* Deezer | Non — utilisez le volume système Jarvis |
+| Playlists personnelles sans token | **Indisponible** — message clair à l'utilisateur |
+| Nouvelle app OAuth Deezer grand public | Restreinte côté Deezer depuis 2025 |
+
+Jarvis ne simule jamais une lecture : si l'action est impossible, il le dit.
+
+### Tests
+
+```bash
+python -m unittest tests.test_music_intents tests.test_music_deezer -v
+```
+
+Les tests mockent entièrement l'HTTP Deezer : **aucun compte réel** n'est requis.
+
+---
 
 ## Les Protocoles — « Jarvis, wake up »
 

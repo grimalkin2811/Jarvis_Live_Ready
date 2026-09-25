@@ -167,6 +167,11 @@ def notes_file() -> Path:
     return data_dir() / "notes.json"
 
 
+def deezer_auth_file() -> Path:
+    """Jeton OAuth Deezer local (jamais commité ; permissions utilisateur)."""
+    return data_dir() / "deezer_auth.json"
+
+
 def menu_state_file() -> Path:
     """Fichier d'état du menu radial (préférences vocales / UI)."""
     return ui_state_dir() / "menu_state.json"
