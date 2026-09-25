@@ -45,6 +45,7 @@ class GeminiLive:
         on_turn_complete=None,
         on_interrupted=None,
         on_speaking=None,
+        on_thinking=None,
         response_mode_provider=None,
         voice_provider=None,
         voice_version_provider=None,
@@ -59,6 +60,7 @@ class GeminiLive:
         self.on_turn_complete = on_turn_complete
         self.on_interrupted = on_interrupted
         self.on_speaking = on_speaking
+        self.on_thinking = on_thinking
         # Fournit le mode de réponse courant (menu radial) pour le prompt système.
         self.response_mode_provider = response_mode_provider
         # Fournit la voix prébuilt Gemini (menu radial). La voix ne peut pas
@@ -444,6 +446,11 @@ class GeminiLive:
             )
 
             if tc and tc.function_calls:
+                if self.on_thinking is not None:
+                    try:
+                        self.on_thinking()
+                    except Exception:
+                        pass
                 self.tool_active = True
                 responses = []
 

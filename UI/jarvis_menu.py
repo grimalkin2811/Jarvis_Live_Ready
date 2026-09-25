@@ -343,6 +343,15 @@ class MorphingOrbWidget(QWidget):
         # État interactif persistant du menu.
         self._menu_state_path = str(paths.menu_state_file())
         self.menu_state = menu_state.load_state(self._menu_state_path)
+        try:
+            menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
+        except Exception:
+            pass
+        # Appliquer les réglages fenêtre persistés SANS show() : run_ui
+        # gère le plein écran. Un show() ici ferait sortir du fullscreen.
+        if self.menu_state.always_on_top:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self._apply_transparency(self.menu_state.transparency)
         self._menu_open_projection = self.base_radius * 0.42
         self._menu_close_projection = self.base_radius * 3.00
         self._menu_open_lateral = self.base_radius * 1.15
@@ -441,7 +450,10 @@ class MorphingOrbWidget(QWidget):
         except Exception:
             mic_on = True
         presence_target = presence_targets.get(presence_state, 0.0)
-        if not mic_on:
+        # Micro coupé : l'orbe se calme, sauf si Jarvis est encore en train
+        # de parler / réfléchir — sinon l'état visuel resterait « coincé »
+        # en idle pendant une réponse.
+        if not mic_on and presence_state not in {"speaking", "thinking"}:
             presence_target = 0.0
         self._presence_energy = lerp(self._presence_energy, presence_target, 0.06)
         self._mic_mute_factor = lerp(self._mic_mute_factor, 1.0 if mic_on else 0.55, 0.08)
@@ -1159,8 +1171,13 @@ class MorphingOrbWidget(QWidget):
         self._menu_sector = -1
         self._menu_candidate = -1
         self._menu_focus_index = -1
+        self._menu_hot_node = -1
         self._menu_drag_index = -1
         self._menu_keyboard_open = False
+        for node in self._menu_nodes:
+            node.hover_amount = 0.0
+            node.click_amount = 0.0
+        self._set_pointer_cursor(False)
         self.update()
 
     def _open_radial_menu(self, sector: int) -> None:
@@ -1617,8 +1634,12 @@ class MorphingOrbWidget(QWidget):
     # ------------------------------------------------------------------
     def _apply_always_on_top(self, value: bool) -> None:
         try:
+            was_full = self.isFullScreen()
             self.setWindowFlag(Qt.WindowStaysOnTopHint, bool(value))
-            self.show()
+            if was_full:
+                self.showFullScreen()
+            else:
+                self.show()
         except Exception:
             pass
 
@@ -1917,7 +1938,12 @@ class MorphingOrbWidget(QWidget):
         spacing = 20.0 + 2.0 * spec.branch_bias
         if self._menu_layout_mode == "line":
             spacing += 16.0
+            # Voice (9 items) : un peu plus d'air pour éviter les chevauchements.
+            if count >= 8:
+                spacing += 6.0
         curve_strength = 7.0 + 5.0 * reveal
+        col_gap = 176.0 if count >= 8 else 126.0
+        row_gap = 54.0 if count >= 8 else 46.0
 
         for index, node in enumerate(self._menu_nodes):
             if self._menu_layout_mode == "grid":
@@ -1925,8 +1951,8 @@ class MorphingOrbWidget(QWidget):
                 rows = max(1, math.ceil(count / columns))
                 col = index % columns
                 row = index // columns
-                col_offset = (col - 0.5) * 126.0
-                row_offset = (row - (rows - 1) * 0.5) * 46.0
+                col_offset = (col - 0.5) * col_gap
+                row_offset = (row - (rows - 1) * 0.5) * row_gap
                 target = QPointF(
                     anchor.x() + perp_x * col_offset + sx * (34.0 + row * 5.0 + curve_strength),
                     anchor.y() + perp_y * col_offset + sy * (34.0 + row * 5.0 + curve_strength) + row_offset,
@@ -2216,7 +2242,10 @@ class MorphingOrbWidget(QWidget):
             mic_on = True
 
         state = self.appearance_state
-        if not mic_on:
+        if presence_state == "speaking":
+            label = "RÉPONSE EN COURS"
+            dot_color = QColor(state.glow_color).lighter(130)
+        elif not mic_on:
             label = "MICRO COUPÉ"
             dot_color = QColor(255, 140, 130)
         elif presence_state == "loading":
@@ -2228,9 +2257,6 @@ class MorphingOrbWidget(QWidget):
         elif presence_state == "thinking":
             label = "RÉFLEXION…"
             dot_color = QColor(state.glow_color)
-        elif presence_state == "speaking":
-            label = "RÉPONSE EN COURS"
-            dot_color = QColor(state.glow_color).lighter(130)
         else:
             return
 

@@ -166,6 +166,39 @@ class LaunchTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertIn("--desktop", popen.call_args.args[0])
 
+    def test_launcher_ui_mode(self):
+        with mock.patch("launcher.core.updater.is_app_running", return_value=False):
+            with mock.patch("launcher.core.subprocess.Popen") as popen:
+                result = core.launch_jarvis("ui")
+        self.assertTrue(result.ok)
+        self.assertIn("--ui", popen.call_args.args[0])
+
+    def test_launcher_desktop_mode(self):
+        with mock.patch("launcher.core.updater.is_app_running", return_value=False):
+            with mock.patch("launcher.core.subprocess.Popen") as popen:
+                result = core.launch_jarvis("desktop")
+        self.assertTrue(result.ok)
+        cmd = popen.call_args.args[0]
+        self.assertIn("--desktop", cmd)
+        self.assertNotIn("--ui", cmd)
+
+    def test_launcher_console_mode(self):
+        with mock.patch("launcher.core.updater.is_app_running", return_value=False):
+            with mock.patch("launcher.core.subprocess.Popen") as popen:
+                result = core.launch_jarvis("console")
+        self.assertTrue(result.ok)
+        cmd = popen.call_args.args[0]
+        self.assertNotIn("--ui", cmd)
+        self.assertNotIn("--desktop", cmd)
+
+    def test_refuses_double_instance(self):
+        with mock.patch("launcher.core.updater.is_app_running", return_value=True):
+            with mock.patch("launcher.core.subprocess.Popen") as popen:
+                result = core.launch_jarvis("ui")
+        self.assertFalse(result.ok)
+        self.assertIn("déjà", result.message.lower())
+        popen.assert_not_called()
+
     def test_creationflags_posix_are_zero(self):
         # Hors Windows, aucun flag de création (pas de console à masquer).
         # ``os.name`` est simulé pour rester déterministe sur les runners

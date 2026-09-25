@@ -316,3 +316,73 @@ def _sync_live(state: MenuState) -> None:
     LIVE.set_listen_mode(state.listen_mode)
     LIVE.set_barge_in(state.barge_in)
     LIVE.set_voice_name(VOICE_OPTIONS[state.voice_select % len(VOICE_OPTIONS)])
+
+
+def voice_backend_kwargs() -> dict:
+    """Fournisseurs TTS/Gemini partagés par tous les modes (Blob, Desktop, Console).
+
+    Source unique : le pont ``LIVE``. Ne pas dupliquer une config vocale
+    spécifique au Desktop — Blob et overlay doivent lire exactement ceci.
+    """
+    return {
+        "response_mode_provider": response_mode_label_from_live,
+        "voice_provider": LIVE.get_voice_name,
+        "voice_version_provider": LIVE.get_voice_version,
+        "speech_pace_provider": LIVE.get_speech_pace,
+    }
+
+
+def tts_runtime_config() -> dict:
+    """Instantané de la configuration vocale effectivement consommée au runtime."""
+    return {
+        "voice_name": LIVE.get_voice_name(),
+        "voice_version": LIVE.get_voice_version(),
+        "tts_volume": LIVE.get_tts_volume(),
+        "speech_speed": LIVE.get_speech_speed(),
+        "speech_pace": LIVE.get_speech_pace(),
+        "mic_enabled": LIVE.get_mic_enabled(),
+        "wake_threshold": LIVE.get_wake_threshold(),
+        "listen_mode": LIVE.get_listen_mode(),
+        "barge_in": LIVE.get_barge_in(),
+        "response_mode": response_mode_label_from_live(),
+    }
+
+
+def load_runtime_preferences(
+    menu_path: str | None = None,
+    system_path: str | None = None,
+) -> MenuState:
+    """Charge les préférences persistantes dans ``LIVE`` (tous les modes).
+
+    * ``menu_state.json`` : voix, volume, débit, micro, hotword, etc.
+    * ``system_state.json`` : mode de réponse (Concis / Équilibré / Détaillé).
+
+    Sans cet appel, le Desktop et la console resteraient sur les valeurs
+    par défaut du pont (voix Charon, volume 70, …) même si l'utilisateur
+    avait choisi une autre voix dans l'orbe.
+    """
+    if not menu_path:
+        try:
+            from src import paths
+
+            menu_path = str(paths.menu_state_file())
+        except Exception:
+            menu_path = ""
+    state = load_state(menu_path)
+
+    if not system_path:
+        try:
+            from src import paths
+
+            system_path = str(paths.system_state_file())
+        except Exception:
+            system_path = ""
+    if system_path and os.path.exists(system_path):
+        try:
+            with open(system_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict) and "response_mode_index" in payload:
+                LIVE.set_response_mode_index(int(payload["response_mode_index"]))
+        except Exception:
+            pass
+    return state

@@ -151,6 +151,99 @@ class ToolExecutionTests(unittest.TestCase):
             gl.TOOL_FUNCTIONS.clear()
             gl.TOOL_FUNCTIONS.update(original)
 
+    def test_tool_call_emits_thinking(self) -> None:
+        from src import gemini_live as gl
+
+        thinking = []
+        original = dict(gl.TOOL_FUNCTIONS)
+        gl.TOOL_FUNCTIONS["fake_ok"] = lambda **kwargs: {"success": True}
+        try:
+            gemini = _make_gemini(on_thinking=lambda: thinking.append(1))
+
+            class _Call:
+                def __init__(self):
+                    self.name = "fake_ok"
+                    self.id = "1"
+                    self.args = {}
+
+            class _ToolCall:
+                function_calls = [_Call()]
+
+            class _Msg:
+                tool_call = _ToolCall()
+                server_content = None
+                session_resumption_update = None
+
+            class _FakeSession:
+                def __init__(self):
+                    self.sent = []
+
+                async def send_tool_response(self, function_responses):
+                    self.sent.append(function_responses)
+
+                def receive(self):
+                    async def gen():
+                        yield _Msg()
+
+                    return gen()
+
+            async def run():
+                gemini.session = _FakeSession()
+                await gemini.receive_loop()
+
+            asyncio.run(run())
+            self.assertEqual(thinking, [1])
+        finally:
+            gl.TOOL_FUNCTIONS.clear()
+            gl.TOOL_FUNCTIONS.update(original)
+
+
+class SelectedVoiceTests(unittest.TestCase):
+    def test_connect_uses_voice_provider(self) -> None:
+        captured = {}
+
+        class _FakeCtx:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _FakeLive:
+            def connect(self, model, config):
+                captured["config"] = config
+                return _FakeCtx()
+
+        gemini = _make_gemini(voice_provider=lambda: "Kore")
+        gemini.client = _FakeClient(_FakeLive())
+        asyncio.run(gemini.connect())
+        config = captured["config"]
+        speech = getattr(config, "speech_config", None)
+        self.assertIsNotNone(speech)
+        voice_cfg = getattr(speech, "voice_config", None)
+        prebuilt = getattr(voice_cfg, "prebuilt_voice_config", None)
+        self.assertEqual(getattr(prebuilt, "voice_name", None), "Kore")
+
+    def test_connect_without_provider_has_no_forced_voice(self) -> None:
+        captured = {}
+
+        class _FakeCtx:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, *args):
+                return False
+
+        class _FakeLive:
+            def connect(self, model, config):
+                captured["config"] = config
+                return _FakeCtx()
+
+        gemini = _make_gemini()
+        gemini.client = _FakeClient(_FakeLive())
+        asyncio.run(gemini.connect())
+        self.assertIsNone(getattr(captured["config"], "speech_config", "missing"))
+
 
 class VoiceReconnectTests(unittest.TestCase):
     def test_voice_change_triggers_soft_reconnect(self) -> None:
