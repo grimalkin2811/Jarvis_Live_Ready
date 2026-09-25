@@ -112,6 +112,11 @@ class BlobVisibilityBehaviourTests(unittest.TestCase):
         cls.widget.deleteLater()
         os.environ.pop("JARVIS_DATA_DIR", None)
         cls._tmp.cleanup()
+        # Ces globaux pilotent le halo. Les laisser à « listening » / 0.7
+        # fait échouer les tests de pixels des menus suivants (alpha du
+        # halo pris pour une fuite de fond).
+        jm.set_voice_energy(0.0)
+        jm.set_presence_state("hidden")
 
     def setUp(self) -> None:
         # Chaque test repart d'un orbe visible et d'un menu fermé.

@@ -140,7 +140,13 @@ class MenuBackgroundTests(unittest.TestCase):
 
     def setUp(self) -> None:
         visibility_bridge.VISIBILITY.reset()
+        # Un test précédent (visibilité du blob) laisse voice_energy à 0.7.
+        # Le halo élargi dépasse alors BG_GONE sur d'anciennes positions.
+        jm.set_voice_energy(0.0)
+        jm.set_presence_state("hidden")
         widget = self.widget
+        widget._halo_energy = 0.0
+        widget._presence_energy = 0.0
         widget._close_radial_menu()
         widget._reset_menu_visuals()
         widget._blob_hidden_by_command = False
