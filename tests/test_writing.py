@@ -591,8 +591,9 @@ class PathTests(unittest.TestCase):
             with patch.object(paths, "is_frozen", return_value=False):
                 resolved = paths.user_content_dir()
                 self.assertEqual(resolved, paths.app_dir() / "user_content")
-                # Jamais un chemin d'installation figé, quel que soit le lecteur.
-                self.assertNotIn("Jarvis_Live_Ready\\user_content", str(resolved).replace("/", "\\")[3:])
+                # Pas un chemin d'installation codé en dur (C:\Jarvis\...).
+                folded = str(resolved).replace("/", "\\").lower()
+                self.assertFalse(folded.startswith("c:\\jarvis\\"))
 
     def test_frozen_path_stays_in_user_data(self):
         with tempfile.TemporaryDirectory() as tmp:

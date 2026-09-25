@@ -64,9 +64,39 @@ jobs:
           fi
           exit "$code"
 
-      - name: "diag: test_writing"
+      - name: "diag: writing IntentTests"
         if: always()
-        run: python -m unittest tests.test_writing -v
+        run: python -m unittest tests.test_writing.IntentTests -v
+      - name: "diag: writing TextFinalizeTests"
+        if: always()
+        run: python -m unittest tests.test_writing.TextFinalizeTests -v
+      - name: "diag: writing FilenameTests"
+        if: always()
+        run: python -m unittest tests.test_writing.FilenameTests -v
+      - name: "diag: writing ActiveFieldPlanTests"
+        if: always()
+        run: python -m unittest tests.test_writing.ActiveFieldPlanTests -v
+      - name: "diag: writing ClipboardTests"
+        if: always()
+        run: python -m unittest tests.test_writing.ClipboardTests -v
+      - name: "diag: writing InserterTests"
+        if: always()
+        run: python -m unittest tests.test_writing.InserterTests -v
+      - name: "diag: writing ServiceTests"
+        if: always()
+        run: python -m unittest tests.test_writing.ServiceTests -v
+      - name: "diag: writing SettingsPersistenceTests"
+        if: always()
+        run: python -m unittest tests.test_writing.SettingsPersistenceTests -v
+      - name: "diag: writing PathTests"
+        if: always()
+        run: python -m unittest tests.test_writing.PathTests -v
+      - name: "diag: writing ToolIntegrationTests"
+        if: always()
+        run: python -m unittest tests.test_writing.ToolIntegrationTests -v
+      - name: "diag: writing MenuWritingTests"
+        if: always()
+        run: python -m unittest tests.test_writing.MenuWritingTests -v
 
       # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
       # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est
