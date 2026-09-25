@@ -51,27 +51,24 @@ jobs:
           fi
           exit "$code"
 
-      - name: "suite through test_gemini_live"
+      - name: "suite 0-1 audio"
+        if: always()
+        run: python scripts/run_test_range.py 0 1
+      - name: "suite 0-2 audio+blob"
+        if: always()
+        run: python scripts/run_test_range.py 0 2
+      - name: "suite 0-3 +config"
+        if: always()
+        run: python scripts/run_test_range.py 0 3
+      - name: "suite 0-4 +download"
+        if: always()
+        run: python scripts/run_test_range.py 0 4
+      - name: "suite 0-5 +first_run"
+        if: always()
+        run: python scripts/run_test_range.py 0 5
+      - name: "suite 0-6 +gemini"
         if: always()
         run: python scripts/run_test_range.py 0 6
-      - name: "suite through test_logging_setup"
-        if: always()
-        run: python scripts/run_test_range.py 0 12
-      - name: "suite through test_menu_render_offscreen"
-        if: always()
-        run: python scripts/run_test_range.py 0 18
-      - name: "suite through test_notifications"
-        if: always()
-        run: python scripts/run_test_range.py 0 24
-      - name: "suite through test_routine_presets"
-        if: always()
-        run: python scripts/run_test_range.py 0 30
-      - name: "suite through test_tool_declarations"
-        if: always()
-        run: python scripts/run_test_range.py 0 36
-      - name: "suite through test_writing"
-        if: always()
-        run: python scripts/run_test_range.py 0 43
       - name: "diag: test_blob_visibility"
         if: always()
         run: python -m unittest tests.test_blob_visibility -v
