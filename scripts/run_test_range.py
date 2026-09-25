@@ -6,9 +6,14 @@ ensemble (état partagé), pas lorsqu'ils sont lancés isolément.
 
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+os.chdir(ROOT)
+sys.path.insert(0, str(ROOT))
 
 
 def main() -> int:
