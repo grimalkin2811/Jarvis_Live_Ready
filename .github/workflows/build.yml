@@ -35,7 +35,38 @@ jobs:
 
       - name: Lancer les tests
         shell: bash
-        run: python -m unittest discover tests -v
+        run: |
+          set +o pipefail
+          python -m unittest discover tests -v > unittest.log 2>&1
+          code=$?
+          # Les journaux bruts du runner ne sont pas toujours téléchargeables.
+          # Les échecs sont donc aussi publiés en annotations, lisibles via l'API.
+          if [ "$code" -ne 0 ]; then
+            python - << 'PY'
+          import pathlib
+          text = pathlib.Path("unittest.log").read_text(encoding="utf-8", errors="replace")
+          lines = text.splitlines()
+          keep = []
+          capture = False
+          for line in lines:
+              if line.startswith(("FAIL:", "ERROR:")) or line.startswith("=" * 10):
+                  capture = True
+              if capture:
+                  keep.append(line)
+              if line.startswith("Ran ") or line.startswith("FAILED"):
+                  keep.append(line)
+                  capture = False
+          blob = "\n".join(keep[-60:] or lines[-40:])
+          for line in blob.splitlines()[:40]:
+              safe = line.replace("%", "%25").replace("\r", "")
+              print(f"::error::{safe}")
+          PY
+          fi
+          exit "$code"
+
+      - name: "diag: test_writing"
+        if: always()
+        run: python -m unittest tests.test_writing -v
 
       # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
       # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est
