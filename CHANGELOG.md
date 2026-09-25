@@ -9,6 +9,27 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## 1.4.0 — Writing System
+
+Deux modes d'écriture, indépendants, uniquement sur ordre explicite. Une réponse
+conversationnelle ne déclenche jamais d'écriture, et le texte produit n'est pas
+relu à voix haute.
+
+### Ajouts
+
+- **Insertion dans le champ actif** : le texte généré est tapé au curseur de la
+  fenêtre au premier plan (navigateur, mail, éditeur, Discord, Word,
+  formulaire), sans sélectionner ni remplacer le texte déjà présent. Accents,
+  paragraphes et textes longs sont conservés. Sous Windows, la saisie passe par
+  `SendInput` ; le presse-papiers n'est utilisé qu'en secours, puis restauré.
+- **Fichiers `.txt`** : création dans `user_content/` (dossier créé s'il manque,
+  relatif à l'application — jamais un chemin absolu figé). Noms courts et sûrs
+  (`trous_noirs.txt`, sinon `document.txt`). Jamais d'écrasement silencieux :
+  `document_1.txt`, `document_2.txt`.
+- **Réglages indépendants** dans le menu Voix, persistés, activés par défaut :
+  Writing → Active field, Writing → Create text files.
+- Assainissement des noms de fichiers, collisions, erreurs non fatales et tests.
+
 ## 1.3.2 — Layout sans chevauchement, opacité des fonds, démarrage plus rapide
 
 ### Ajouts

@@ -48,6 +48,10 @@ from .routine_actions import (
     notify_user, show_reminder_briefing, check_battery_alert, check_disk_alert,
 )
 from .scheduler import get_default_scheduler
+from .writing.service import (
+    create_text_file as _writing_create_text_file,
+    write_to_active_field as _writing_write_to_active_field,
+)
 
 # ---------------------------------------------------------------------------
 # Dépendances optionnelles
@@ -1978,6 +1982,31 @@ def cancel_protocol():
 
 
 # ===========================================================================
+# ÉCRITURE (champ actif / fichiers .txt)
+# ===========================================================================
+
+
+def write_to_active_field(text, request=""):
+    """Insère un texte au curseur. Ne vocalise pas le contenu."""
+    try:
+        return _writing_write_to_active_field(text, request=request or "")
+    except Exception as exc:
+        return _err(exc, message="Je n'ai pas réussi à écrire le texte.")
+
+
+def create_text_file(text, filename="", request=""):
+    """Crée un fichier .txt dans user_content. N'écrase pas un fichier existant."""
+    try:
+        return _writing_create_text_file(
+            text,
+            filename=filename or None,
+            request=request or "",
+        )
+    except Exception as exc:
+        return _err(exc, message="Je n'ai pas réussi à créer le fichier.")
+
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -2096,6 +2125,9 @@ _RAW_TOOL_FUNCTIONS = {
     "run_protocol": run_protocol,
     "list_protocols": list_protocols,
     "cancel_protocol": cancel_protocol,
+    # Écriture
+    "write_to_active_field": write_to_active_field,
+    "create_text_file": create_text_file,
 }
 
 
@@ -2620,6 +2652,36 @@ TOOL_DECLARATIONS = [
     ),
     _decl("list_protocols", "Liste les protocoles cinematiques disponibles."),
     _decl("cancel_protocol", "Interrompt le protocole cinematique en cours."),
+    # --- Écriture -----------------------------------------------------------------
+    _decl(
+        "write_to_active_field",
+        "Insere un texte a l'emplacement du curseur dans le champ actif "
+        "(navigateur, mail, editeur, Discord, Word, formulaire). "
+        "UNIQUEMENT si l'utilisateur ordonne d'ecrire, rediger, composer, taper ou inserer. "
+        "NE PAS utiliser pour une question ou une hypothese "
+        "('qu'est-ce que tu ecrirais', 'comment rediger', 'explique'). "
+        "Ne selectionne pas et ne remplace pas le texte deja present. "
+        "Apres succes, dis seulement le champ message ('C'est ecrit.') et ne lis pas le texte.",
+        {
+            "text": {**_STR, "description": "Texte final a inserer, tel quel, avec les retours a la ligne."},
+            "request": {**_STR, "description": "Demande originale de l'utilisateur, pour verifier que l'ecriture est explicite."},
+        },
+        ["text"],
+    ),
+    _decl(
+        "create_text_file",
+        "Cree un fichier .txt dans le dossier user_content, sans ecraser un fichier existant. "
+        "UNIQUEMENT si l'utilisateur demande de creer un fichier, de sauvegarder un texte, "
+        "ou dit 'cree-moi un texte'. "
+        "NE PAS utiliser pour une simple question. "
+        "Apres succes, dis seulement le champ message et ne lis pas le contenu.",
+        {
+            "text": {**_STR, "description": "Contenu complet du fichier."},
+            "filename": {**_STR, "description": "Nom court optionnel, sans chemin. L'extension .txt est ajoutee si besoin."},
+            "request": {**_STR, "description": "Demande originale, utilisee pour le nom de fichier et pour verifier l'intention."},
+        },
+        ["text"],
+    ),
 ]
 
 

@@ -35,6 +35,12 @@ from . import menu_state
 from . import system_actions
 from . import visibility_bridge
 from src import paths
+from src.writing.settings import (
+    ACTIVE_FIELD_DESCRIPTION,
+    ACTIVE_FIELD_TITLE,
+    TEXT_FILES_DESCRIPTION,
+    TEXT_FILES_TITLE,
+)
 
 
 voice_energy = 0.0
@@ -61,14 +67,20 @@ def set_presence_state(state: str) -> None:
     value = str(state or "hidden").strip().lower()
     allowed = {"loading", "listening", "thinking", "speaking", "hidden"}
     presence_state = value if value in allowed else "hidden"
-
-
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def _writing_flash(title: str, enabled: bool, description: str) -> str:
+    """Pastille ON/OFF des réglages Writing, description comprise quand c'est On."""
+    state = "On" if enabled else "Off"
+    if enabled and description:
+        return f"{title}: {state}. {description}"
+    return f"{title}: {state}."
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +165,7 @@ class MenuItemSpec:
     label: str
     kind: str
     routine_name: str = ""
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -199,6 +212,16 @@ MENU_SPECS = [
             MenuItemSpec("Always Listening", "toggle"),
             MenuItemSpec("Listen After Reply", "toggle"),
             MenuItemSpec("Interrupt Word", "toggle"),
+            MenuItemSpec(
+                "Active Field",
+                "toggle",
+                description=ACTIVE_FIELD_DESCRIPTION,
+            ),
+            MenuItemSpec(
+                "Text Files",
+                "toggle",
+                description=TEXT_FILES_DESCRIPTION,
+            ),
             MenuItemSpec("Stop Speaking", "pulse"),
             MenuItemSpec("Audio Test", "pulse"),
         ],
@@ -1280,7 +1303,8 @@ class MorphingOrbWidget(QWidget):
         C'est le seul canal de confirmation visuelle des clics menu : sans
         lui, l'utilisateur ne sait pas si son action a été prise en compte.
         """
-        self._menu_action_flash = str(message)[:80]
+        # 140 : les descriptions Writing (1.4.0) doivent tenir dans le flash.
+        self._menu_action_flash = str(message)[:140]
         self._menu_action_flash_time = self.time
 
     # ------------------------------------------------------------------
@@ -1680,6 +1704,10 @@ class MorphingOrbWidget(QWidget):
             return "On" if st.post_response_listen else "Off"
         if label == "Interrupt Word":
             return "On" if st.barge_in else "Off"
+        if label == "Active Field":
+            return "On" if st.writing_active_field else "Off"
+        if label == "Text Files":
+            return "On" if st.writing_text_files else "Off"
         if label == "Stop Speaking":
             return "Stop"
         return ""
@@ -1848,6 +1876,10 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.post_response_listen
         if name == "Voice" and label == "Interrupt Word":
             return self.menu_state.barge_in
+        if name == "Voice" and label == "Active Field":
+            return self.menu_state.writing_active_field
+        if name == "Voice" and label == "Text Files":
+            return self.menu_state.writing_text_files
         if name == "System" and label == "Startup":
             # État réel (fichier de démarrage présent ou non), mis en cache :
             # cette valeur est lue à chaque image pour le rendu.
@@ -1912,6 +1944,14 @@ class MorphingOrbWidget(QWidget):
                 if value
                 else "Interruption vocale : désactivée"
             )
+        elif name == "Voice" and label == "Active Field":
+            self.menu_state.writing_active_field = value
+            menu_state.LIVE.set_writing_active_field(value)
+            self._flash(_writing_flash(ACTIVE_FIELD_TITLE, value, item.description))
+        elif name == "Voice" and label == "Text Files":
+            self.menu_state.writing_text_files = value
+            menu_state.LIVE.set_writing_text_files(value)
+            self._flash(_writing_flash(TEXT_FILES_TITLE, value, item.description))
         elif name == "System" and label == "Startup":
             result = system_actions.set_startup(value)
             self.menu_state.startup = bool(result.get("success") and value)
@@ -2162,6 +2202,8 @@ class MorphingOrbWidget(QWidget):
                     "Interrupt Word",
                     "Startup",
                     "Long-term Memory",
+                    "Active Field",
+                    "Text Files",
                 }:
                     pass
                 else:

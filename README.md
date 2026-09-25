@@ -2,12 +2,26 @@
 
 Assistant vocal **Windows** avec Gemini Live (audio entrée/sortie, wake word
 « Hey Jarvis », barge-in, mémoire persistante, routines, rappels, notifications,
-modes focus/jeu, protocoles cinématiques et interface PySide6).
+modes focus/jeu, protocoles cinématiques, système d'écriture et interface PySide6).
 
 Cette version est conçue pour être **distribuée** : un installateur
 `JarvisSetup.exe` installe l'application **sans Python ni `.venv`**, et un
 launcher (`JarvisLauncher.exe`) reçoit automatiquement les nouvelles versions via
 les **GitHub Releases**, **sans jamais toucher à vos données**.
+
+---
+
+## 1.4.0 — Writing System
+
+* Added active-field text insertion
+* Added `.txt` file generation
+* Added `user_content` directory
+* Added independent Writing settings
+* Added filename sanitization and collision handling
+* Added error handling and tests
+
+Le détail est dans [CHANGELOG.md](CHANGELOG.md) et dans la section
+[Système d'écriture](#système-décriture).
 
 ---
 
@@ -79,6 +93,7 @@ Vos données **survivent** aux mises à jour :
 | Préférences UI | `%LOCALAPPDATA%\Jarvis\ui\` | ✅ |
 | Logs | `%LOCALAPPDATA%\Jarvis\logs\` | ✅ |
 | Modèles OpenWakeWord | `%LOCALAPPDATA%\Jarvis\models\` | ✅ |
+| Textes générés | `%LOCALAPPDATA%\Jarvis\user_content\` | ✅ |
 
 ### Désinstallation
 
@@ -205,7 +220,8 @@ parties (Jarvis, launcher, updater, build, CI) la lisent.
 ├── mode.json
 ├── ui\                       # préférences de l'interface
 ├── logs\jarvis.log           # logs (rotation)
-└── models\openwakeword\      # modèles wake word
+├── models\openwakeword\      # modèles wake word
+└── user_content\             # textes .txt générés (préservés)
 ```
 
 Le principe est simple :
@@ -306,6 +322,8 @@ Chaque contrôle du menu agit vraiment :
 | **Always Listening** | Écoute continue : Jarvis reste actif sans dire « Hey Jarvis » (désactivé par défaut). |
 | **Listen After Reply** | Écoute post-réponse : après sa réponse, Jarvis reste à l'écoute pendant la fenêtre de suivi (8 s) et l'on peut enchaîner sans « Hey Jarvis » (activé par défaut). Désactivé, le wake word redevient obligatoire à chaque interaction. |
 | **Interrupt Word** | Interruption vocale : parler par-dessus Jarvis (« stop ») coupe sa réponse (activé par défaut). |
+| **Active Field** | Writing → Active field. Autorise l'insertion du texte généré dans le champ actif (activé par défaut). |
+| **Text Files** | Writing → Create text files. Autorise la création de `.txt` dans `user_content` (activé par défaut). |
 | **Blob Visible** (Appearance) | Masque ou réaffiche l'orbe. Masqué, la fenêtre disparaît mais l'assistant continue de tourner ; l'icône de notification (« Afficher Jarvis ») le ramène. |
 | **Startup** | Crée/supprime réellement le lanceur dans le dossier de démarrage Windows. |
 | **Long-term Memory** | Active/désactive la mémoire persistante en direct. |
@@ -649,9 +667,50 @@ JARVIS_MODES_PATH=C:\\Users\\Moi\\.jarvis\\mode.json              # optionnel
 Mettre l'une des variables à `0` désactive la fonctionnalité sans supprimer les
 données.
 
+## Système d'écriture
+
+Jarvis 1.4.0 peut produire du texte utilisable directement, sur ordre explicite
+seulement. Une réponse conversationnelle (« explique-moi », « qu'est-ce que tu
+écrirais ») ne déclenche jamais d'écriture.
+
+Deux modes indépendants, interrupteurs dans le menu radial **Voice** :
+
+| Réglage | Description |
+|---|---|
+| **Writing → Active field** | Allows Jarvis to insert generated text into the currently active text field. |
+| **Writing → Create text files** | Allows Jarvis to create generated .txt files in the user_content folder. |
+
+| Active field | Text files | Comportement |
+|---|---|---|
+| On | On | Les deux actions sont disponibles |
+| On | Off | Insertion dans le champ actif uniquement |
+| Off | On | Création de fichiers uniquement |
+| Off | Off | Écriture désactivée |
+
+Les réglages sont persistés dans `menu_state.json` et relus au redémarrage.
+
+### Champ actif
+
+« Jarvis, écris-moi un mail pour demander un rendez-vous au professeur. »
+Jarvis génère le texte et le **tape à l'emplacement du curseur** (navigateur,
+mail, éditeur, Discord, Word, formulaire). Il ne sélectionne pas et ne remplace
+pas le texte déjà présent. Sous Windows, la saisie passe par `SendInput`
+(caractères Unicode, donc accents) ; un texte très long utilise le
+presse-papiers, qui est sauvegardé puis restauré. Confirmation : « C'est écrit. »
+Le contenu n'est pas relu à voix haute.
+
+### Fichiers texte
+
+« Jarvis, crée-moi un texte de présentation de mon projet. » crée par exemple
+`user_content/presentation_projet.txt`. Le dossier est relatif à l'application
+(racine du dépôt en développement, données utilisateur une fois installé) et
+créé s'il manque. Un fichier existant n'est pas écrasé :
+`document.txt`, `document_1.txt`, `document_2.txt`. Confirmation : « Le fichier
+a été créé dans user_content. »
+
 ## Fonctions
 
-Jarvis dispose de **95 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **97 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`).
 
 | Catégorie | Outils |
@@ -675,6 +734,7 @@ Jarvis dispose de **95 outils** déclarés dans `src/tools.py` (voir
 | **Fichiers** | `open_folder`, `list_folder`, `search_files` |
 | **Calcul & divers** | `calculate`, `random_number`, `flip_coin`, `roll_dice`, `pick_random` |
 | **Protocoles** | `run_protocol`, `list_protocols`, `cancel_protocol` |
+| **Écriture** | `write_to_active_field`, `create_text_file` |
 
 Exemples de phrases : « ouvre YouTube », « quelle météo à Lyon ? », « mets un
 minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
@@ -684,7 +744,8 @@ mode travail », « active le mode focus », « active le mode jeu », « désac
 mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h », « affiche le
 blob », « cache le blob », « affiche le menu système », « dans le mode jeu, ne
 ferme pas Opera GX », « ajoute Spotify à la liste du mode focus »,
-« réinitialise les applications du mode jeu ».
+« réinitialise les applications du mode jeu », « écris-moi un mail au
+professeur », « crée-moi un fichier texte de présentation ».
 
 ## Les Protocoles — « Jarvis, wake up »
 

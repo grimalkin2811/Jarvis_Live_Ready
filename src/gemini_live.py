@@ -7,6 +7,7 @@ from google.genai import types
 from .memory import MemoryManager
 from .modes import get_default_mode_manager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
+from .writing.service import WRITING_TOOL_NAMES, system_instruction as writing_system_instruction
 
 
 #: Durée pendant laquelle une interruption demandée localement (« stop »)
@@ -222,6 +223,7 @@ class GeminiLive:
             "'focus' pour une session de concentration ; 'stand_down' pour la mise en veille. "
             "Le protocole se joue en arrière-plan : annonce-le brièvement (« Séquence d'allumage engagée ») "
             "puis commente sobrement le résultat, sans réciter toutes les étapes. "
+            f"{writing_system_instruction()} "
             "Pour les actions sur le PC, utilise les outils "
             "et ne mens jamais sur leur résultat. "
             "Si l'utilisateur te coupe la parole (« stop », « attends », « ça suffit »), "
@@ -464,6 +466,15 @@ class GeminiLive:
                     for c in tc.function_calls:
 
                         fn = TOOL_FUNCTIONS.get(c.name)
+                        args = dict(c.args or {})
+                        # Filet d'intention : si la transcription de la demande
+                        # est déjà là, le système d'écriture peut refuser une
+                        # hypothèse (« qu'est-ce que tu écrirais ») même si le
+                        # modèle a appelé l'outil par erreur.
+                        if c.name in WRITING_TOOL_NAMES and not str(args.get("request") or "").strip():
+                            transcript = " ".join(self._turn_user_text).strip()
+                            if transcript:
+                                args["request"] = transcript
 
                         if fn is None:
                             result = {
@@ -478,7 +489,7 @@ class GeminiLive:
                                 # peut continuer à parler et interrompre.
                                 result = await asyncio.to_thread(
                                     fn,
-                                    **dict(c.args or {})
+                                    **args
                                 )
                             except Exception as e:
                                 result = {

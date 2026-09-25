@@ -48,7 +48,9 @@ from .timeparse import describe_schedule, normalize, parse_schedule
 DEFAULT_DATA_DIR = str(paths.data_dir())
 DEFAULT_ROUTINES_PATH = os.environ.get("JARVIS_ROUTINES_PATH", str(paths.routines_file()))
 
-#: Outils interdits dans une routine : irréversibles, ou sources de récursion.
+#: Outils interdits dans une routine : irréversibles, sources de récursion,
+#: ou injection clavier (une routine planifiée ne doit pas taper dans
+#: n'importe quelle fenêtre au premier plan).
 FORBIDDEN_TOOLS = {
     "shutdown_pc",
     "restart_pc",
@@ -62,6 +64,7 @@ FORBIDDEN_TOOLS = {
     "delete_routine",
     "run_routine",
     "cancel_reminder",
+    "write_to_active_field",
 }
 
 #: Étape interne (pas un outil) : pause entre deux actions.
