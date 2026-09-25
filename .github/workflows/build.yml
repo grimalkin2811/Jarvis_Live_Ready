@@ -40,58 +40,14 @@ jobs:
         shell: bash
         run: python -m unittest discover tests -v
 
-      - name: Annoter le premier échec
+      - name: Code module en echec
         if: failure()
         shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_SHA: ${{ github.sha }}
         run: python scripts/emit_test_annotations.py
-      - name: "signe switch"
+      - name: Code assertion
         if: failure()
         shell: bash
-        run: grep -q "test_menu_switch" failure.txt
-      - name: "signe backgrounds"
-        if: failure()
-        shell: bash
-        run: grep -q "test_menu_backgrounds" failure.txt
-      - name: "signe layout"
-        if: failure()
-        shell: bash
-        run: grep -q "test_menu_layout" failure.txt
-      - name: "signe hover"
-        if: failure()
-        shell: bash
-        run: grep -q "test_menu_hover" failure.txt
-      - name: "signe render"
-        if: failure()
-        shell: bash
-        run: grep -q "test_menu_render" failure.txt
-      - name: "signe writing"
-        if: failure()
-        shell: bash
-        run: grep -q "test_writing" failure.txt
-      - name: "signe fuite"
-        if: failure()
-        shell: bash
-        run: grep -q "fuite" failure.txt
-      - name: "signe fond absent"
-        if: failure()
-        shell: bash
-        run: grep -q "fond" failure.txt
-      - name: "signe position"
-        if: failure()
-        shell: bash
-        run: grep -q "position" failure.txt
-      - name: "signe AssertionError"
-        if: failure()
-        shell: bash
-        run: grep -q "AssertionError" failure.txt
-      - name: "signe ImportError"
-        if: failure()
-        shell: bash
-        run: grep -q "ImportError" failure.txt
+        run: python -c "import os,sys; sys.exit(int(os.environ.get('FAIL_ASSERT_CODE','3')))"
 
       # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
       # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est
