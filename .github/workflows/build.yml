@@ -22,7 +22,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write
       checks: write
     steps:
       - uses: actions/checkout@v4
@@ -47,39 +47,7 @@ jobs:
           # Les journaux bruts du runner ne sont pas toujours téléchargeables.
           # Les échecs sont donc aussi publiés en annotations, lisibles via l'API.
           if [ "$code" -ne 0 ]; then
-            python - << 'PY'
-          import json, os, pathlib, urllib.request
-          text = pathlib.Path("unittest.log").read_text(encoding="utf-8", errors="replace")
-          lines = text.splitlines()
-          keep = [ln for ln in lines if ln.startswith(("FAIL:", "ERROR:", "AssertionError", "Traceback", "Ran ", "FAILED", "    ", "  File "))]
-          summary = "\n".join(keep[-80:] or lines[-40:])[:60000]
-          payload = {
-              "name": "unittest-failures",
-              "head_sha": os.environ["GITHUB_SHA"],
-              "status": "completed",
-              "conclusion": "failure",
-              "output": {
-                  "title": "Échecs unittest",
-                  "summary": summary or "aucun extrait",
-              },
-          }
-          req = urllib.request.Request(
-              f"https://api.github.com/repos/{os.environ['GITHUB_REPOSITORY']}/check-runs",
-              data=json.dumps(payload).encode("utf-8"),
-              headers={
-                  "Authorization": f"Bearer {os.environ['GITHUB_TOKEN']}",
-                  "Accept": "application/vnd.github+json",
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-          try:
-              with urllib.request.urlopen(req) as response:
-                  print("check-run", response.status)
-          except Exception as exc:
-              print("check-run failed", exc)
-              print(summary)
-          PY
+            python scripts/report_unittest_log.py unittest.log
           fi
           exit "$code"
 
