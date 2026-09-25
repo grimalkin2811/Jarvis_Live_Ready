@@ -75,9 +75,30 @@ jobs:
       - name: "suite 0-13 memory"
         if: always()
         run: python scripts/run_test_range.py 0 13
-      - name: "suite 0-14 backgrounds"
+      - name: "bg cycle"
         if: always()
-        run: python scripts/run_test_range.py 0 14
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_every_menu_backgrounds_full_cycle
+      - name: "bg reopen"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_reopen_restores_all_backgrounds
+      - name: "bg switch"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_menu_switch_cleans_previous_backgrounds
+      - name: "bg hidden"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_blob_hidden_by_mode_cleans_open_menu
+      - name: "bg repeated"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_blob_hidden_by_mode_repeated_cycles
+      - name: "bg voice"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_voice_show_menu_restores_backgrounds
+      - name: "bg hover"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_hover_does_not_make_background_required
+      - name: "bg pixels"
+        if: always()
+        run: python scripts/run_test_range.py 0 13 tests.test_menu_backgrounds.MenuBackgroundTests.test_fond_reellement_dessine_sans_survol_dans_les_5_menus
       - name: "suite 0-15 hover"
         if: always()
         run: python scripts/run_test_range.py 0 15
