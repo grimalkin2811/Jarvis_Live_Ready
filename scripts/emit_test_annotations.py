@@ -71,6 +71,11 @@ class AnnotatingResult(unittest.TextTestResult):
         super().addError(test, err)
         self._note(test, err)
 
+    def addSubTest(self, test, subtest, err):
+        super().addSubTest(test, subtest, err)
+        if err is not None:
+            self._note(subtest, err)
+
     def _note(self, test, err) -> None:
         if self.exit_code:
             return
@@ -81,7 +86,12 @@ class AnnotatingResult(unittest.TextTestResult):
         self.exit_code = code
         _export("FAIL_ASSERT_CODE", str(assert_code))
         _export("FAIL_MODULE_CODE", str(code))
-        print(f"::error::{test.id()} assert={assert_code} module={code}", flush=True)
+        last = ""
+        for raw in text.splitlines():
+            if raw.strip():
+                last = raw.strip()
+        last = last.replace(":", "-").replace("%", "pct")[:180]
+        print(f"::error title=unittest::{last}", flush=True)
         Path("failure.txt").write_text(safe[-1500:], encoding="utf-8")
 
 
