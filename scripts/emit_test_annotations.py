@@ -91,8 +91,10 @@ class AnnotatingResult(unittest.TextTestResult):
             if raw.strip():
                 last = raw.strip()
         last = last.replace(":", "-").replace("%", "pct")[:180]
-        print(f"::error title=unittest::{last}", flush=True)
-        Path("failure.txt").write_text(safe[-1500:], encoding="utf-8")
+        test_id = test.id().replace(":", "-")[:120]
+        print(f"::error title={test_id}::{last}", flush=True)
+        print(f"FAILING TEST: {test.id()}", flush=True)
+        Path("failure.txt").write_text(f"{test.id()}\n{safe[-1500:]}", encoding="utf-8")
 
 
 def main() -> int:

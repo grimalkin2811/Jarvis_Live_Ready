@@ -7,6 +7,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -177,6 +178,21 @@ class UpdaterTests(unittest.TestCase):
 
     def test_is_app_running_on_non_windows(self):
         self.assertFalse(updater.is_app_running(self.root))
+
+    def test_is_app_running_matches_image_name_only(self):
+        csv = (
+            '"python.exe","1","Console","1","10 K"\n'
+            '"notepad.exe","2","Console","1","10 K"\n'
+        )
+        with mock.patch("src.updater.os.name", "nt"):
+            with mock.patch("subprocess.run") as run:
+                run.return_value = mock.Mock(stdout=csv)
+                self.assertFalse(updater.is_app_running(self.root))
+        csv_running = '"Jarvis.exe","42","Console","1","80,000 K"\n'
+        with mock.patch("src.updater.os.name", "nt"):
+            with mock.patch("subprocess.run") as run:
+                run.return_value = mock.Mock(stdout=csv_running)
+                self.assertTrue(updater.is_app_running(self.root))
 
     def test_apply_update_rejects_invalid_zip(self):
         """Une archive invalide (flattened) doit être rejetée."""
