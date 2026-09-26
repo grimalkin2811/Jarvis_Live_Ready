@@ -1,6 +1,6 @@
 ; Inno Setup script — Jarvis (installation par utilisateur, sans admin).
 ;
-; Compile avec :  iscc packaging/installer.iss /DVERSION=1.4.0 /DSourceDir=..\\dist
+; Compile avec :  iscc packaging/installer.iss /DVERSION=1.5.1 /DSourceDir=..\\dist
 ; Le programme est installé dans %LOCALAPPDATA%\\Jarvis (per-user) afin que le
 ; launcher puisse remplacer l'application à chaque mise à jour sans demander de
 ; droits administrateur. Les DONNÉES UTILISATEUR (config, mémoire, logs,
@@ -23,8 +23,12 @@
 ;   Pour préserver _internal/, on utilise recursesubdirs + createallsubdirs.
 ;   NE PAS utiliser de wildcard qui pourrait aplatir la structure.
 
+; Repli utilisé UNIQUEMENT pour une compilation locale sans /DVERSION. La CI
+; (job « Build & Release ») injecte toujours /DVERSION depuis src/version.py,
+; qui reste la source unique de vérité. Le laisser périmé produisait un
+; JarvisSetup-<ancienne version>.exe trompeur en compilation manuelle.
 #ifndef VERSION
-  #define VERSION "1.4.0"
+  #define VERSION "1.5.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\\dist"
