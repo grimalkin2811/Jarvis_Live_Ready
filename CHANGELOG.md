@@ -9,10 +9,21 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
-## [Non publié]
+## [1.5.1] — 2026-09-26
+
+**Release de correction de provenance.** `v1.5.1` est la première release
+construite depuis le `main` reconstruit et validé. Elle ne modifie ni ne
+remplace `v1.5.0`, qui reste publiée telle quelle : `v1.5.0` demeure une
+release historique, inchangée, avec ses propres tag, SHA et artefacts.
 
 ### Corrigé
 
+- **Provenance de la release.** Les binaires de `v1.5.1` sont construits
+  depuis le `main` courant, qui contient la chaîne historique complète
+  1.1.2 → 1.2.0 → 1.3.0 → 1.3.1 → 1.3.2 → 1.4.x → code 1.5.0 → 1.5.1. Les
+  artefacts embarquent donc réellement les fonds d'items des menus radiaux,
+  la correction des chevauchements (dont le menu Voice), les corrections
+  Blob/menu, le Writing Mode et l'intégration Deezer.
 - **Régression UI de la release v1.5.0 — fonds d'items et menus superposés.**
   Le tag `v1.5.0` a été posé sur `68392d4`, tête de la branche Deezer
   (PR #27), branche coupée depuis `v1.1.2`. Ce commit ne contient donc
@@ -39,6 +50,14 @@ et résumées ci-dessous.
   highlight permanent, survol distinct et localisé, disparition des fonds à
   la fermeture, et zéro chevauchement — dont le menu Voice à 12 items.
   Les 15 tests échouent sur l'arbre publié en v1.5.0.
+
+### Inchangé
+
+- **Deezer** (`src/music/**`, outils Gemini, `docs/DEEZER.md`), **Writing
+  Mode** (`src/writing/**`) et l'ensemble des fonctionnalités 1.4.x sont
+  repris tels quels depuis `main` : aucune modification fonctionnelle dans
+  cette version. `v1.5.1` ne contient que le correctif de provenance, les
+  garde-fous et les tests.
 
 ## [1.5.0] — 2026-09-25
 
