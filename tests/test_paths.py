@@ -39,6 +39,7 @@ class PathTests(unittest.TestCase):
                 self.assertEqual(str(paths.routines_file()), str(root / "routines.json"))
                 self.assertEqual(str(paths.modes_file()), str(root / "mode.json"))
                 self.assertEqual(str(paths.notes_file()), str(root / "notes.json"))
+                self.assertEqual(str(paths.deezer_auth_file()), str(root / "deezer_auth.json"))
 
     def test_ui_state_dir(self):
         with tempfile.TemporaryDirectory() as tmp:

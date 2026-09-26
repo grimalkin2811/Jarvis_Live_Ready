@@ -325,6 +325,37 @@ class MenuUXTests(unittest.TestCase):
             jm.menu_state.LIVE.get_voice_version(), version_before + 1
         )
 
+    def test_close_menu_clears_hover_highlight(self) -> None:
+        _open_menu(self.widget, _voice_sector(self.widget))
+        self.assertTrue(self.widget._menu_nodes)
+        self.widget._menu_nodes[0].hover_amount = 1.0
+        self.widget._menu_hot_node = 0
+        self.widget._close_radial_menu()
+        self.assertLess(self.widget._menu_sector, 0)
+        self.assertEqual(self.widget._menu_hot_node, -1)
+        for node in self.widget._menu_nodes:
+            self.assertEqual(node.hover_amount, 0.0)
+
+    def test_voice_menu_nodes_do_not_overlap(self) -> None:
+        sector = _voice_sector(self.widget)
+        _open_menu(self.widget, sector)
+        nodes = self.widget._menu_nodes
+        self.assertGreaterEqual(len(nodes), 8)
+        for i, a in enumerate(nodes):
+            for j, b in enumerate(nodes):
+                if i >= j:
+                    continue
+                dist = math.hypot(
+                    a.position.x() - b.position.x(),
+                    a.position.y() - b.position.y(),
+                )
+                min_gap = a.radius + b.radius + 4.0
+                self.assertGreaterEqual(
+                    dist,
+                    min_gap,
+                    f"chevauchement {a.label!r} / {b.label!r} ({dist:.1f} < {min_gap:.1f})",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

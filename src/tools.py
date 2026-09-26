@@ -48,6 +48,10 @@ from .routine_actions import (
     notify_user, show_reminder_briefing, check_battery_alert, check_disk_alert,
 )
 from .scheduler import get_default_scheduler
+from .writing.service import (
+    create_text_file as _writing_create_text_file,
+    write_to_active_field as _writing_write_to_active_field,
+)
 
 # ---------------------------------------------------------------------------
 # Dépendances optionnelles
@@ -142,6 +146,7 @@ APPS = {
     "pycharm": "pycharm64.exe",
     # --- Multimédia & communication ---------------------------------------
     "spotify": "spotify.exe",
+    "deezer": "Deezer.exe",
     "vlc": "vlc.exe",
     "lecteur windows media": "wmplayer.exe",
     "discord": "discord.exe",
@@ -676,6 +681,163 @@ def media_stop():
     if not IS_WINDOWS:
         return _windows_only()
     return _ok(action="stop") if _send_key(VK_MEDIA_STOP) else _err("Touche média refusée.")
+
+
+# ===========================================================================
+# MUSIQUE (Deezer via MusicManager)
+# ===========================================================================
+
+
+def _music_manager():
+    """Retourne le MusicManager par défaut (import tardif, testable)."""
+    from .music import get_default_music_manager
+
+    return get_default_music_manager()
+
+
+def music_search(query, limit=8):
+    """Recherche Deezer (artistes, morceaux, albums, playlists)."""
+    try:
+        lim = max(1, min(int(limit or 8), 20))
+    except (TypeError, ValueError):
+        lim = 8
+    return _music_manager().search(str(query or ""), limit=lim)
+
+
+def music_play(
+    query="",
+    track="",
+    artist="",
+    album="",
+    playlist="",
+    kind="",
+    personal=False,
+):
+    """Lance une lecture Deezer (morceau, artiste, album, playlist ou musique libre).
+
+    Gemini peut fournir soit ``kind`` + le slot correspondant, soit une
+    ``query`` libre (« Around the World de Daft Punk »).
+    """
+    manager = _music_manager()
+    kind_norm = _normalize_name(kind or "")
+    personal = bool(personal)
+
+    if kind_norm in {"track", "morceau", "chanson", "titre"} and (track or query):
+        return manager.play_track(track or query, artist=artist or None)
+    if kind_norm in {"artist", "artiste"} and (artist or query):
+        return manager.play_artist(artist or query)
+    if kind_norm in {"album"} and (album or query):
+        return manager.play_album(album or query, artist=artist or None)
+    if kind_norm in {"playlist"} and (playlist or query):
+        return manager.play_playlist(playlist or query, personal=personal)
+    if kind_norm in {"music", "musique", "flow", "chart", "radio"}:
+        return manager.play_music()
+
+    if playlist:
+        return manager.play_playlist(playlist, personal=personal)
+    if album:
+        return manager.play_album(album, artist=artist or None)
+    if track:
+        return manager.play_track(track, artist=artist or None)
+    if artist and not track and not album:
+        return manager.play_artist(artist)
+
+    text = str(query or track or artist or album or playlist or "").strip()
+    if not text:
+        return manager.play_music()
+
+    # Intention libre : laisse le parseur local + le manager trancher.
+    from .music.intents import parse_music_intent
+
+    intent = parse_music_intent(text if _looks_like_command(text) else f"joue {text}")
+    # Si la query est juste un nom (pas une phrase de commande), forcer PLAY.
+    if intent.intent in {"UNKNOWN", "SEARCH"} and text:
+        # Heuristique : « ma playlist X » déjà géré par le parseur ; sinon artiste/track.
+        if personal or _normalize_name(text).startswith("playlist"):
+            name = re.sub(r"(?i)^\s*(ma|mes|my)?\s*playlist\s*", "", text).strip() or text
+            return manager.play_playlist(name, personal=True)
+        if artist and track:
+            return manager.play_track(track, artist=artist)
+        return manager.handle_intent(intent if intent.intent != "UNKNOWN" else f"joue {text}")
+    return manager.handle_intent(intent)
+
+
+def _looks_like_command(text: str) -> bool:
+    norm = _normalize_name(text)
+    starters = (
+        "joue", "lance", "mets", "met", "play", "cherche", "recherche",
+        "pause", "reprend", "suivant", "precedent", "arrete", "stop",
+    )
+    return any(norm == s or norm.startswith(s + " ") for s in starters)
+
+
+def music_play_track(track, artist=""):
+    """Joue un morceau Deezer (raccourci explicite)."""
+    return _music_manager().play_track(str(track or ""), artist=artist or None)
+
+
+def music_play_artist(artist):
+    """Joue un artiste Deezer."""
+    return _music_manager().play_artist(str(artist or ""))
+
+
+def music_play_album(album, artist=""):
+    """Joue un album Deezer."""
+    return _music_manager().play_album(str(album or ""), artist=artist or None)
+
+
+def music_play_playlist(playlist, personal=False):
+    """Joue une playlist Deezer (personnelle si personal=true)."""
+    return _music_manager().play_playlist(str(playlist or ""), personal=bool(personal))
+
+
+def music_pause():
+    """Met en pause la lecture Deezer / média en cours."""
+    return _music_manager().pause()
+
+
+def music_resume():
+    """Reprend la lecture Deezer / média en cours."""
+    return _music_manager().resume()
+
+
+def music_next():
+    """Passe au morceau Deezer suivant."""
+    return _music_manager().next()
+
+
+def music_previous():
+    """Revient au morceau Deezer précédent."""
+    return _music_manager().previous()
+
+
+def music_stop():
+    """Arrête la lecture musicale."""
+    return _music_manager().stop()
+
+
+def music_current():
+    """Indique le morceau en cours si connu."""
+    return _music_manager().get_current_track()
+
+
+def music_list_playlists(limit=30):
+    """Liste les playlists personnelles Deezer (auth requise)."""
+    try:
+        lim = max(1, min(int(limit or 30), 50))
+    except (TypeError, ValueError):
+        lim = 30
+    return _music_manager().get_playlists(personal=True, limit=lim)
+
+
+def music_status():
+    """État de l'intégration Deezer (auth, app, provider)."""
+    return _music_manager().status()
+
+
+def music_disconnect():
+    """Oublie le token Deezer local."""
+    return _music_manager().disconnect()
 
 
 # ===========================================================================
@@ -1740,6 +1902,165 @@ def get_jarvis_mode():
     return get_default_mode_manager().status()
 
 
+def list_mode_applications(mode="game"):
+    """Liste les applications que le mode (jeu ou focus) ferme, et celles
+    disponibles au catalogue, avec l'état de sélection de chacune.
+
+    Utiliser avant de modifier la liste : l'utilisateur dit par exemple
+    « quelles applications le mode jeu ferme-tu ? ».
+    """
+    return get_default_mode_manager().list_mode_apps(mode)
+
+
+def set_mode_applications(mode, applications):
+    """Remplace la liste COMPLÈTE des applications fermées par un mode.
+
+    ``applications`` : noms séparés par des virgules (« Discord, Spotify »)
+    ou liste. Les noms inconnus sont conservés (application sur mesure).
+    """
+    return get_default_mode_manager().set_mode_apps(mode, applications)
+
+
+def toggle_mode_application(mode, application, enabled=None):
+    """Ajoute ou retire UNE application de la liste d'un mode.
+
+    ``enabled=None`` inverse l'état (« dans le mode jeu, ne ferme plus
+    Opera GX ») ; True/False fixe l'état. Ne touche que le mode demandé :
+    la liste de l'autre mode reste intacte.
+    """
+    return get_default_mode_manager().toggle_mode_app(mode, application, enabled)
+
+
+def reset_mode_applications(mode):
+    """Rétablit la liste d'origine (comportement v1.x) d'un mode."""
+    return get_default_mode_manager().reset_mode_apps(mode)
+
+
+# ===========================================================================
+# AFFICHAGE EXPLICITE DU BLOB / DU MENU
+# ===========================================================================
+# « Affiche le blob », « masque le blob », « affiche le menu », « masque le
+# menu » : ce sont des ACTIONS demandées par l'utilisateur. Elles passent
+# par le pont thread-safe UI/visibility_bridge et sont appliquées par
+# l'interface quel que soit le mode actif (jeu/focus) ou l'état courant :
+# une commande explicite doit toujours pouvoir réafficher l'élément.
+
+
+def _ui_attached() -> bool:
+    try:
+        from UI import visibility_bridge
+
+        return bool(visibility_bridge.VISIBILITY.ui_state().get("ui_attached"))
+    except Exception:
+        return False
+
+
+def show_blob():
+    """(Ré)affiche le Blob (l'orbe de Jarvis) — commande explicite.
+
+    Fonctionne dans tous les modes, même si une configuration ou un mode
+    (jeu/focus) le masque actuellement.
+    """
+    if not _ui_attached():
+        return _err(
+            "Le Blob n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.show_blob()
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(action="show_blob", message="Blob affiché.")
+
+
+def hide_blob():
+    """Masque le Blob (et son menu ouvert) — commande explicite."""
+    if not _ui_attached():
+        return _err(
+            "Le Blob n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.hide_blob()
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(action="hide_blob", message="Blob masqué.")
+
+
+def show_menu(menu=None):
+    """(Ré)affiche le menu radial du Blob — commande explicite.
+
+    ``menu`` : optionnel, l'un des 5 menus (Voice, System, Memory,
+    Appearance, Routines) ou son alias (« système », « voix », « mémoire »…).
+    Sans précision : le dernier menu affiché, sinon le premier. Fonctionne
+    dans tous les modes.
+    """
+    if not _ui_attached():
+        return _err(
+            "Le menu n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    requested = str(menu).strip() if menu is not None else ""
+    if requested:
+        resolved = None
+        try:
+            from UI import visibility_bridge
+
+            resolved = visibility_bridge.resolve_menu_name(requested)
+        except Exception:
+            resolved = None
+        if resolved is None:
+            return _err(
+                f"Menu inconnu : {requested}. Menus disponibles : "
+                "Voice, System, Memory, Appearance, Routines.",
+                menus_disponibles=["Voice", "System", "Memory", "Appearance", "Routines"],
+            )
+    else:
+        resolved = None
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.show_menu(resolved or None)
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(
+        action="show_menu",
+        menu=resolved or "dernier/par défaut",
+        message=f"Menu {resolved or 'par défaut'} affiché." if resolved else "Menu affiché.",
+    )
+
+
+def hide_menu():
+    """Ferme le menu radial ouvert — commande explicite."""
+    if not _ui_attached():
+        return _err(
+            "Le menu n'est pas disponible dans le mode actuel "
+            "(il existe avec l'interface orbe, pas en console/overlay)."
+        )
+    try:
+        from UI import visibility_bridge
+
+        visibility_bridge.VISIBILITY.hide_menu()
+    except Exception as exc:
+        return _err(f"Commande non transmise à l'interface : {exc}")
+    return _ok(action="hide_menu", message="Menu fermé.")
+
+
+def get_ui_state():
+    """État d'affichage réel de l'interface (Blob visible, menu ouvert…)."""
+    try:
+        from UI import visibility_bridge
+
+        state = visibility_bridge.VISIBILITY.ui_state()
+    except Exception:
+        state = {"ui_attached": False, "blob_visible": False, "menu_open": False, "menu": None}
+    return _ok(**state)
+
+
 # ===========================================================================
 # RAPPELS PERSISTANTS
 # ===========================================================================
@@ -1819,6 +2140,31 @@ def cancel_protocol():
 
 
 # ===========================================================================
+# ÉCRITURE (champ actif / fichiers .txt)
+# ===========================================================================
+
+
+def write_to_active_field(text, request=""):
+    """Insère un texte au curseur. Ne vocalise pas le contenu."""
+    try:
+        return _writing_write_to_active_field(text, request=request or "")
+    except Exception as exc:
+        return _err(exc, message="Je n'ai pas réussi à écrire le texte.")
+
+
+def create_text_file(text, filename="", request=""):
+    """Crée un fichier .txt dans user_content. N'écrase pas un fichier existant."""
+    try:
+        return _writing_create_text_file(
+            text,
+            filename=filename or None,
+            request=request or "",
+        )
+    except Exception as exc:
+        return _err(exc, message="Je n'ai pas réussi à créer le fichier.")
+
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -1842,6 +2188,22 @@ _RAW_TOOL_FUNCTIONS = {
     "media_next": media_next,
     "media_previous": media_previous,
     "media_stop": media_stop,
+    # Musique Deezer
+    "music_search": music_search,
+    "music_play": music_play,
+    "music_play_track": music_play_track,
+    "music_play_artist": music_play_artist,
+    "music_play_album": music_play_album,
+    "music_play_playlist": music_play_playlist,
+    "music_pause": music_pause,
+    "music_resume": music_resume,
+    "music_next": music_next,
+    "music_previous": music_previous,
+    "music_stop": music_stop,
+    "music_current": music_current,
+    "music_list_playlists": music_list_playlists,
+    "music_status": music_status,
+    "music_disconnect": music_disconnect,
     # Système
     "get_system_info": get_system_info,
     "get_battery_status": get_battery_status,
@@ -1891,6 +2253,17 @@ _RAW_TOOL_FUNCTIONS = {
     "activate_game_mode": activate_game_mode,
     "disable_jarvis_mode": disable_jarvis_mode,
     "get_jarvis_mode": get_jarvis_mode,
+    # Configuration des applications fermées par les modes (persistante)
+    "list_mode_applications": list_mode_applications,
+    "set_mode_applications": set_mode_applications,
+    "toggle_mode_application": toggle_mode_application,
+    "reset_mode_applications": reset_mode_applications,
+    # Affichage explicite du Blob / du menu (commandes « affiche le… »)
+    "show_blob": show_blob,
+    "hide_blob": hide_blob,
+    "show_menu": show_menu,
+    "hide_menu": hide_menu,
+    "get_ui_state": get_ui_state,
     # Notifications et routines préconfigurées
     "notify_user": notify_user,
     "show_reminder_briefing": show_reminder_briefing,
@@ -1926,6 +2299,9 @@ _RAW_TOOL_FUNCTIONS = {
     "run_protocol": run_protocol,
     "list_protocols": list_protocols,
     "cancel_protocol": cancel_protocol,
+    # Écriture
+    "write_to_active_field": write_to_active_field,
+    "create_text_file": create_text_file,
 }
 
 
@@ -2020,6 +2396,97 @@ TOOL_DECLARATIONS = [
     _decl("media_next", "Passe a la piste suivante."),
     _decl("media_previous", "Revient a la piste precedente."),
     _decl("media_stop", "Arrete la lecture multimedia."),
+    # --- Musique Deezer (v1.5.0) ---------------------------------------------
+    _decl(
+        "music_search",
+        "Recherche sur Deezer : artistes, morceaux, albums et playlists. "
+        "A utiliser quand l'utilisateur veut chercher sans forcément lancer la lecture.",
+        {
+            "query": {**_STR, "description": "Texte a rechercher (artiste, titre, album, playlist)."},
+            "limit": {**_INT, "description": "Nombre max de resultats par type (defaut 8)."},
+        },
+        ["query"],
+    ),
+    _decl(
+        "music_play",
+        "Lance de la musique sur Deezer. Comprend une requete libre "
+        "('Around the World de Daft Punk', 'Daft Punk', 'ma playlist Chill') "
+        "ou des champs structures (track/artist/album/playlist/kind). "
+        "Pour 'mets de la musique' sans precision, appelle sans parametre ou kind=music. "
+        "Si plusieurs resultats correspondent, le succes est false avec candidates : "
+        "demande alors a l'utilisateur de preciser.",
+        {
+            "query": {**_STR, "description": "Requete libre (titre, artiste, 'titre de artiste', playlist…)."},
+            "track": {**_STR, "description": "Titre du morceau."},
+            "artist": {**_STR, "description": "Nom de l'artiste."},
+            "album": {**_STR, "description": "Titre de l'album."},
+            "playlist": {**_STR, "description": "Nom de la playlist."},
+            "kind": {
+                **_STR,
+                "description": "Type force : track, artist, album, playlist, music.",
+            },
+            "personal": {
+                **_BOOL,
+                "description": "True si l'utilisateur parle de SA playlist (ma playlist X).",
+            },
+        },
+    ),
+    _decl(
+        "music_play_track",
+        "Joue un morceau precis sur Deezer.",
+        {
+            "track": {**_STR, "description": "Titre du morceau."},
+            "artist": {**_STR, "description": "Artiste optionnel pour lever l'ambiguite."},
+        },
+        ["track"],
+    ),
+    _decl(
+        "music_play_artist",
+        "Joue un artiste sur Deezer (top / page artiste).",
+        {"artist": {**_STR, "description": "Nom de l'artiste."}},
+        ["artist"],
+    ),
+    _decl(
+        "music_play_album",
+        "Joue un album sur Deezer.",
+        {
+            "album": {**_STR, "description": "Titre de l'album."},
+            "artist": {**_STR, "description": "Artiste optionnel."},
+        },
+        ["album"],
+    ),
+    _decl(
+        "music_play_playlist",
+        "Joue une playlist Deezer. Mets personal=true pour 'ma playlist …'.",
+        {
+            "playlist": {**_STR, "description": "Nom de la playlist."},
+            "personal": {**_BOOL, "description": "Playlist personnelle de l'utilisateur."},
+        },
+        ["playlist"],
+    ),
+    _decl("music_pause", "Met en pause la lecture Deezer / media en cours."),
+    _decl("music_resume", "Reprend la lecture Deezer / media en cours."),
+    _decl("music_next", "Passe au morceau Deezer suivant."),
+    _decl("music_previous", "Revient au morceau Deezer precedent."),
+    _decl("music_stop", "Arrete la lecture musicale."),
+    _decl(
+        "music_current",
+        "Indique le morceau en cours s'il est connu (derniere lecture lancee par Jarvis). "
+        "Deezer ne fournit pas d'API now-playing tierce : ne jamais inventer le titre.",
+    ),
+    _decl(
+        "music_list_playlists",
+        "Liste les playlists personnelles Deezer. Necessite DEEZER_ACCESS_TOKEN.",
+        {"limit": {**_INT, "description": "Nombre max de playlists."}},
+    ),
+    _decl(
+        "music_status",
+        "Donne l'etat de l'integration Deezer (connexion, authentification, provider).",
+    ),
+    _decl(
+        "music_disconnect",
+        "Oublie le jeton Deezer local (deconnexion). Ne demande le token qu'avec confirmation.",
+    ),
     # --- Système -------------------------------------------------------------
     _decl("get_system_info", "Donne les informations systeme (OS, CPU, RAM, disque)."),
     _decl("get_battery_status", "Donne le niveau de batterie et l'etat de charge."),
@@ -2229,7 +2696,103 @@ TOOL_DECLARATIONS = [
     ),
     _decl(
         "get_jarvis_mode",
-        "Indique le mode Jarvis actif : normal, focus ou jeu.",
+        "Indique le mode Jarvis actif : normal, focus ou jeu, avec les listes "
+        "d'applications configurées pour le mode jeu (applications_jeu) et le "
+        "mode focus (applications_focus).",
+    ),
+    # --- Configuration des applications des modes ---------------------------
+    _decl(
+        "list_mode_applications",
+        "Liste les applications que le mode ferme et tout le catalogue disponible, "
+        "avec l'etat de selection de chacune. A utiliser quand l'utilisateur "
+        "demande quelles applications le mode jeu ou focus ferme.",
+        {
+            "mode": {
+                **_STR,
+                "description": "Mode a consulter : 'jeu' (ou 'game') ou 'focus'.",
+            },
+        },
+        ["mode"],
+    ),
+    _decl(
+        "set_mode_applications",
+        "Remplace la liste COMPLETE des applications fermees par un mode. "
+        "Chaque utilisateur definit sa propre liste ; les deux modes sont "
+        "independants. Enregistre de facon persistante.",
+        {
+            "mode": {
+                **_STR,
+                "description": "Mode a modifier : 'jeu' (ou 'game') ou 'focus'.",
+            },
+            "applications": {
+                **_STR,
+                "description": "Noms d'applications separes par des virgules "
+                "(ex. 'Discord, Spotify, Opera GX'). Vide pour ne rien fermer.",
+            },
+        },
+        ["mode", "applications"],
+    ),
+    _decl(
+        "toggle_mode_application",
+        "Ajoute ou retire UNE application de la liste d'un mode. "
+        "ex. 'dans le mode jeu, ne ferme pas Opera GX' -> "
+        "toggle_mode_application(mode='jeu', application='Opera GX', enabled=False). "
+        "Ne modifie pas la liste de l'autre mode.",
+        {
+            "mode": {
+                **_STR,
+                "description": "Mode a modifier : 'jeu' (ou 'game') ou 'focus'.",
+            },
+            "application": {**_STR, "description": "Nom de l'application."},
+            "enabled": {
+                **_BOOL,
+                "description": "True pour fermer cette application, False pour "
+                "ne plus la fermer. Omettre pour inverser l'etat actuel.",
+            },
+        },
+        ["mode", "application"],
+    ),
+    _decl(
+        "reset_mode_applications",
+        "Retablit la liste d'origine (comportement standard) des applications "
+        "fermees par un mode.",
+        {"mode": {**_STR, "description": "Mode : 'jeu' (ou 'game') ou 'focus'."}},
+        ["mode"],
+    ),
+    # --- Affichage explicite du Blob / du menu ------------------------------
+    _decl(
+        "show_blob",
+        "Commande explicite 'affiche le blob' : (re)affiche l'orbe de Jarvis "
+        "quelle que soit la configuration ou le mode actif (jeu, focus...). "
+        "C'est une action, pas un simple etat.",
+    ),
+    _decl(
+        "hide_blob",
+        "Commande explicite 'masque le blob' / 'cache le blob' : masque "
+        "l'orbe de Jarvis (et son menu ouvert) jusqu'a 'affiche le blob'.",
+    ),
+    _decl(
+        "show_menu",
+        "Commande explicite 'affiche le menu' : (re)affiche le menu radial du "
+        "Blob, quel que soit le mode actif. 'affiche le menu systeme' passe "
+        "menu='System'. Menus : Voice, System, Memory, Appearance, Routines.",
+        {
+            "menu": {
+                **_STR,
+                "description": "Optionnel : nom du menu (Voice, System, Memory, "
+                "Appearance, Routines) ou alias ('voix', 'systeme', 'memoire'...).",
+            },
+        },
+    ),
+    _decl(
+        "hide_menu",
+        "Commande explicite 'masque le menu' / 'ferme le menu' : ferme le menu "
+        "radial ouvert du Blob.",
+    ),
+    _decl(
+        "get_ui_state",
+        "Etat d'affichage reel de l'interface : blob_visible, menu_open, menu. "
+        "A utiliser pour confirmer a l'utilisateur ce qui est affiche.",
     ),
     # --- Rappels persistants ---------------------------------------------------------------
     _decl(
@@ -2354,6 +2917,36 @@ TOOL_DECLARATIONS = [
     ),
     _decl("list_protocols", "Liste les protocoles cinematiques disponibles."),
     _decl("cancel_protocol", "Interrompt le protocole cinematique en cours."),
+    # --- Écriture -----------------------------------------------------------------
+    _decl(
+        "write_to_active_field",
+        "Insere un texte a l'emplacement du curseur dans le champ actif "
+        "(navigateur, mail, editeur, Discord, Word, formulaire). "
+        "UNIQUEMENT si l'utilisateur ordonne d'ecrire, rediger, composer, taper ou inserer. "
+        "NE PAS utiliser pour une question ou une hypothese "
+        "('qu'est-ce que tu ecrirais', 'comment rediger', 'explique'). "
+        "Ne selectionne pas et ne remplace pas le texte deja present. "
+        "Apres succes, dis seulement le champ message ('C'est ecrit.') et ne lis pas le texte.",
+        {
+            "text": {**_STR, "description": "Texte final a inserer, tel quel, avec les retours a la ligne."},
+            "request": {**_STR, "description": "Demande originale de l'utilisateur, pour verifier que l'ecriture est explicite."},
+        },
+        ["text"],
+    ),
+    _decl(
+        "create_text_file",
+        "Cree un fichier .txt dans le dossier user_content, sans ecraser un fichier existant. "
+        "UNIQUEMENT si l'utilisateur demande de creer un fichier, de sauvegarder un texte, "
+        "ou dit 'cree-moi un texte'. "
+        "NE PAS utiliser pour une simple question. "
+        "Apres succes, dis seulement le champ message et ne lis pas le contenu.",
+        {
+            "text": {**_STR, "description": "Contenu complet du fichier."},
+            "filename": {**_STR, "description": "Nom court optionnel, sans chemin. L'extension .txt est ajoutee si besoin."},
+            "request": {**_STR, "description": "Demande originale, utilisee pour le nom de fichier et pour verifier l'intention."},
+        },
+        ["text"],
+    ),
 ]
 
 

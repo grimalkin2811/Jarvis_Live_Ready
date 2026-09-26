@@ -22,6 +22,7 @@ from PySide6.QtCore import QPointF, QTimer, Qt, QRectF
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QFontMetricsF,
     QPainter,
     QPainterPath,
     QPen,
@@ -32,7 +33,14 @@ from PySide6.QtWidgets import QApplication, QWidget
 from . import appearance_actions
 from . import menu_state
 from . import system_actions
+from . import visibility_bridge
 from src import paths
+from src.writing.settings import (
+    ACTIVE_FIELD_DESCRIPTION,
+    ACTIVE_FIELD_TITLE,
+    TEXT_FILES_DESCRIPTION,
+    TEXT_FILES_TITLE,
+)
 
 
 voice_energy = 0.0
@@ -59,14 +67,90 @@ def set_presence_state(state: str) -> None:
     value = str(state or "hidden").strip().lower()
     allowed = {"loading", "listening", "thinking", "speaking", "hidden"}
     presence_state = value if value in allowed else "hidden"
-
-
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def _writing_flash(title: str, enabled: bool, description: str) -> str:
+    """Pastille ON/OFF des réglages Writing, description comprise quand c'est On."""
+    state = "On" if enabled else "Off"
+    if enabled and description:
+        return f"{title}: {state}. {description}"
+    return f"{title}: {state}."
+
+
+# ---------------------------------------------------------------------------
+# SURVOL DU MENU (fond sombre derrière l'item ciblé)
+# ---------------------------------------------------------------------------
+
+#: Marge autour du libellé : le rectangle épouse le texte, il ne le déplace
+#: jamais (aucun décalage de mise en page au survol).
+HOVER_PAD_X = 7.0
+HOVER_PAD_Y = 3.5
+#: Coins arrondis, dans l'esprit des pastilles déjà utilisées par le menu.
+HOVER_RADIUS = 6.0
+#: Luminosité du fond : volontairement très basse pour trancher sur n'importe
+#: quel bureau, avec un léger éclaircissement à mesure que le survol s'installe.
+HOVER_LIGHTNESS = 0.075
+HOVER_LIGHTNESS_LIFT = 0.045
+#: Opacité maximale du fond (le fondu est piloté par ``hover_amount``).
+HOVER_MAX_ALPHA = 220
+#: Liseré discret, couleur du thème, qui détoure le rectangle.
+HOVER_BORDER_ALPHA = 105
+#: Part du fond d'item dessinée en PERMANENCE quand le menu est ouvert.
+#: ``0.0`` = fond uniquement au survol (comportement d'origine, où les items
+#: non survolés n'avaient aucun fond), ``1.0`` = fond identique au survol.
+#: Depuis la 1.3.2 c'est la **valeur par défaut** du réglage utilisateur
+#: « Item BG Opacity » (menu Appearance) — la valeur courante se lit dans
+#: ``appearance_state.item_bg_opacity`` ; cette alias reste pour compatibilité.
+ITEM_BG_REST = appearance_actions.ITEM_BG_REST
+
+
+def _theme_hsl(glow_color: QColor) -> tuple[float, float]:
+    """Teinte et saturation du thème courant, tolérantes aux couleurs invalides.
+
+    ``QColor.getHslF()`` renvoie une teinte de ``-1.0`` pour une couleur
+    achromatique/invalide : on retombe alors sur un gris neutre plutôt que de
+    construire une couleur invalide.
+    """
+    try:
+        hue, saturation, _light, _alpha = glow_color.getHslF()
+    except Exception:
+        return 0.0, 0.0
+    if hue is None or hue < 0.0:
+        return 0.0, 0.0
+    return float(hue), float(saturation)
+
+
+def hover_background_color(glow_color: QColor, amount: float) -> QColor:
+    """Fond du survol : variante sombre de la couleur actuelle du Blob.
+
+    La teinte du thème est conservée (bleu, rouge, vert, blanc…) mais la
+    luminosité est fortement abaissée : le rectangle reste lisible et suit
+    automatiquement un changement de couleur de l'orbe. Aucune couleur n'est
+    codée en dur — tout dérive de ``glow_color``.
+    """
+    amount = clamp(amount, 0.0, 1.0)
+    hue, saturation = _theme_hsl(glow_color)
+    color = QColor.fromHslF(
+        hue,
+        clamp(saturation * 0.9, 0.0, 1.0),
+        clamp(HOVER_LIGHTNESS + HOVER_LIGHTNESS_LIFT * amount, 0.0, 1.0),
+    )
+    color.setAlphaF(amount * (HOVER_MAX_ALPHA / 255.0))
+    return color
+
+
+def hover_border_color(glow_color: QColor, amount: float) -> QColor:
+    """Liseré du rectangle de survol, dans la couleur du Blob."""
+    amount = clamp(amount, 0.0, 1.0)
+    color = QColor(glow_color)
+    color.setAlpha(int(HOVER_BORDER_ALPHA * amount))
+    return color
 
 
 @dataclass
@@ -81,6 +165,7 @@ class MenuItemSpec:
     label: str
     kind: str
     routine_name: str = ""
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,7 +210,18 @@ MENU_SPECS = [
             MenuItemSpec("Mic Toggle", "toggle"),
             MenuItemSpec("Hotword Sens.", "slider"),
             MenuItemSpec("Always Listening", "toggle"),
+            MenuItemSpec("Listen After Reply", "toggle"),
             MenuItemSpec("Interrupt Word", "toggle"),
+            MenuItemSpec(
+                "Active Field",
+                "toggle",
+                description=ACTIVE_FIELD_DESCRIPTION,
+            ),
+            MenuItemSpec(
+                "Text Files",
+                "toggle",
+                description=TEXT_FILES_DESCRIPTION,
+            ),
             MenuItemSpec("Stop Speaking", "pulse"),
             MenuItemSpec("Audio Test", "pulse"),
         ],
@@ -145,6 +241,7 @@ MENU_SPECS = [
             MenuItemSpec("Always on Top", "toggle"),
             MenuItemSpec("Transparency", "slider"),
             MenuItemSpec("Response Mode", "meter"),
+            MenuItemSpec("Mode Apps", "action"),
             MenuItemSpec("Reset Settings", "pulse"),
             MenuItemSpec("Quit", "pulse"),
         ],
@@ -183,6 +280,12 @@ MENU_SPECS = [
             MenuItemSpec("Blob Size -", "action"),
             MenuItemSpec("Minimal Mode", "toggle"),
             MenuItemSpec("Cinematic Mode", "toggle"),
+            # Slider d'opacité des FONDS d'items (1.3.2) : réglage fin 0-100 %
+            # persisté avec les autres paramètres Appearance, appliqué aux
+            # rectangles derrière les libellés des 5 menus. « Blob Visible »
+            # reste le dernier item du menu (contrat de position).
+            MenuItemSpec("Item BG Opacity", "slider"),
+            MenuItemSpec("Blob Visible", "toggle"),
         ],
         reveal_scale=0.98,
         branch_bias=1.12,
@@ -208,11 +311,16 @@ ROUTINE_STATIC_ITEMS = [
 
 
 def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
-    """Noms des routines enregistrées, sans jamais faire échouer l'UI."""
+    """Noms des routines enregistrées, sans jamais faire échouer l'UI.
+
+    Utilise ``list_routine_names()`` (lecture légère, sans sanitization) :
+    ce chemin tourne au démorrage de l'UI (construction de ``MENU_SPECS``)
+    et ne doit PAS importer le registre ``src.tools`` (~50 ms + pycaw).
+    """
     try:
         from src.routines import get_default_routine_manager
 
-        result = get_default_routine_manager().list_routines()
+        result = get_default_routine_manager().list_routine_names()
         if not result.get("success"):
             return []
         # Les presets ont leur panneau défilant : ne pas les tronquer
@@ -334,15 +442,59 @@ class MorphingOrbWidget(QWidget):
         # d'un slider, on n'écrit pas le JSON à chaque image.
         self._menu_state_dirty = False
         self._menu_state_last_save = -10.0
+        # Même debounce pour les réglages Appearance modifiés par glisser
+        # (slider « Item BG Opacity ») : une écriture au maximum / 0,5 s,
+        # et une écriture forcée à la fin du glissement ou à la fermeture.
+        self._appearance_state_dirty = False
+        self._appearance_state_last_save = -10.0
+        # Espacements de layout résolus (warm-start du solveur) :
+        # (nom du menu, colonne, pas de rang, espacement ligne).
+        self._layout_solved = None
+        self._layout_metrics_cache = {}
         # Curseur pointeur au survol d'une cible cliquable.
         self._pointer_cursor_active = False
-        # En mode jeu, l'orbe se masque totalement pour ne rien afficher par-dessus le jeu.
-        self._hidden_by_game_mode = False
+        # L'orbe se masque totalement (a) en mode jeu, pour ne rien afficher
+        # par-dessus le jeu, et (b) quand l'utilisateur le masque depuis le
+        # menu Appearance. Dans les deux cas l'assistant vocal continue de
+        # tourner : seule la fenêtre disparaît.
+        self._window_hidden = False
         self._mode_checked_at = -10.0
         self._visuals_suppressed_by_mode = False
+        # ------------------------------------------------------------
+        # Visibilité explicite (commandes « affiche/masque le blob » et
+        # « affiche/masque le menu ») : les intentions arrivent via le pont
+        # thread-safe UI/visibility_bridge (backend vocal) et sont appliquées
+        # ici, dans le thread Qt. C'est la SEULE source de vérité de
+        # l'affichage/blocage des commandes explicites.
+        #   _blob_hidden_by_command : la commande « masque le blob » a
+        #   demandé le masquage (le réglage Appearance → « Blob Visible »
+        #   est lu par la méthode _blob_hidden_by_user() — les deux sont
+        #   levés par « affiche le blob »).
+        #   _blob_show_override  : l'utilisateur a demandé l'affichage alors
+        #                          que la politique de mode masque l'orbe ;
+        #                          l'affichage explicite passe devant le mode,
+        #                          mais une TRANSITION de mode rétablit la
+        #                          politique (pas d'état « impossible »).
+        # ------------------------------------------------------------
+        self._blob_hidden_by_command = False
+        self._blob_show_override = False
+        self._mode_was_suppressed = False
+        self._last_reported_state = None
+        # Dernier menu affiché par la voix : « affiche le menu » (sans
+        # précision) rouvre le même menu — plus prévisible qu'un arbitraire.
+        self._last_voice_menu_sector = 0
         # État interactif persistant du menu.
         self._menu_state_path = str(paths.menu_state_file())
         self.menu_state = menu_state.load_state(self._menu_state_path)
+        try:
+            menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
+        except Exception:
+            pass
+        # Appliquer les réglages fenêtre persistés SANS show() : run_ui
+        # gère le plein écran. Un show() ici ferait sortir du fullscreen.
+        if self.menu_state.always_on_top:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self._apply_transparency(self.menu_state.transparency)
         self._menu_open_projection = self.base_radius * 0.42
         self._menu_close_projection = self.base_radius * 3.00
         self._menu_open_lateral = self.base_radius * 1.15
@@ -409,18 +561,50 @@ class MorphingOrbWidget(QWidget):
             and (self.time - self._menu_state_last_save) > 0.5
         ):
             self._save_menu_state(force=True)
+        if (
+            self._appearance_state_dirty
+            and (self.time - self._appearance_state_last_save) > 0.5
+        ):
+            self._save_appearance_state(force=True)
 
-        # Mode jeu : aucune surimpression ni menu au-dessus du jeu.
-        if self._mode_suppresses_visuals():
+        # Commandes explicites d'affichage/masquage (« affiche le blob »,
+        # « masque le menu »…) : appliquées avant toute politique de mode —
+        # une commande explicite est une action, pas un filtre.
+        self._consume_visibility_requests()
+
+        # Masquage effectif : politique unique, une seule source de vérité.
+        #   - réglage (Appearance → « Blob Visible ») OU commande « masque
+        #     le blob » → l'orbe est caché, son menu ouvert est nettoyé en
+        #     bloc, l'assistant vocal continue de tourner normalement ;
+        #   - mode jeu/focus → caché, SAUF commande explicite « affiche le
+        #     blob » (surcote de session, réinitialisée à la transition de
+        #     mode : jamais d'état « blob affiché en plein jeu par oubli »).
+        user_hidden = self._blob_hidden_by_user() or self._blob_hidden_by_command
+        suppressed = self._mode_suppresses_visuals()
+        if suppressed != self._mode_was_suppressed:
+            # Transition de mode (jeu/focus activé/désactivé) : la surcote
+            # d'affichage est réinitialisée pour que le mode rétablisse sa
+            # politique. Le masquage utilisateur (réglage ou commande), lui,
+            # survit : « masque le blob » reste valable tant que
+            # « affiche le blob ».
+            self._blob_show_override = False
+        self._mode_was_suppressed = suppressed
+        if user_hidden or (suppressed and not self._blob_show_override):
             if self.isVisible():
-                self._close_radial_menu()
+                # Nettoyage en bloc du menu ouvert : aucun fond de nœud ne
+                # survit au masquage (ni ne « fuite » au retour).
+                self._reset_menu_visuals()
                 self.hide()
-            self._hidden_by_game_mode = True
+            self._window_hidden = True
+            self._report_visibility_state()
             return
-        if self._hidden_by_game_mode:
-            self._hidden_by_game_mode = False
+        if self._window_hidden:
+            self._window_hidden = False
             if not self.isVisible():
                 self.showFullScreen()
+                self.raise_()
+                self.activateWindow()
+            self._report_visibility_state()
 
         # Nettoyage du flash d'action (indépendant de l'état du menu : le
         # flash doit aussi disparaître quand aucun menu n'est ouvert).
@@ -441,7 +625,10 @@ class MorphingOrbWidget(QWidget):
         except Exception:
             mic_on = True
         presence_target = presence_targets.get(presence_state, 0.0)
-        if not mic_on:
+        # Micro coupé : l'orbe se calme, sauf si Jarvis est encore en train
+        # de parler / réfléchir — sinon l'état visuel resterait « coincé »
+        # en idle pendant une réponse.
+        if not mic_on and presence_state not in {"speaking", "thinking"}:
             presence_target = 0.0
         self._presence_energy = lerp(self._presence_energy, presence_target, 0.06)
         self._mic_mute_factor = lerp(self._mic_mute_factor, 1.0 if mic_on else 0.55, 0.08)
@@ -510,7 +697,6 @@ class MorphingOrbWidget(QWidget):
         global_fade = global_fade ** 1.3
 
         border_dist = dist - visual_radius
-        border_zone = math.exp(-(border_dist * border_dist) / (2 * 85.0 * 85.0))
 
         border_lock = 1.0 - clamp(abs(border_dist) / 160.0, 0.0, 1.0)
         border_lock = border_lock ** 1.5
@@ -580,12 +766,10 @@ class MorphingOrbWidget(QWidget):
         core_dist = math.hypot(core_dx, core_dy)
         sector_dx = core_dx
         sector_dy = core_dy
-        sector_dist = core_dist
         sector, sector_alignment, sector_margin = self._sector_from_cursor(sector_dx, sector_dy)
 
         direction_stability = clamp((sector_margin - 0.06) / 0.42, 0.0, 1.0)
         open_distance = self.base_radius * 0.92
-        close_distance = self.base_radius * 2.50
         hard_close_distance = self.base_radius * 3
         sector_ok = sector_alignment >= 0.72 and direction_stability >= 0.28
         menu_gate = clamp((core_dist - open_distance) / (self.base_radius * 0.80), 0.0, 1.0)
@@ -612,8 +796,12 @@ class MorphingOrbWidget(QWidget):
             active_projection = sector_dx * active_sx + sector_dy * active_sy
             active_lateral = abs(sector_dx * (-active_sy) + sector_dy * active_sx)
             near_center = core_dist < self.base_radius * 0.55
-            far_away = core_dist >= hard_close_distance
             in_sector = sector >= 0 and sector_ok and direction_stability >= 0.22
+            # « Trop loin » ne ferme que hors du secteur actif : les items
+            # extérieurs (ex. dernier item d'Appearance en grille 5 rangs)
+            # se situent au-delà de 3×base_radius — les traiter comme une
+            # fuite fermait le menu en survolant le dernier réglage.
+            far_away = core_dist >= hard_close_distance and not in_sector
             keep_open = (
                 not near_center
                 and not far_away
@@ -829,6 +1017,8 @@ class MorphingOrbWidget(QWidget):
                 point.target_radius = target
                 point.radius = lerp(point.radius, point.target_radius, radius_lerp)
 
+        # État réel publié pour get_ui_state (écriture seulement au changement).
+        self._report_visibility_state()
         self.update()
 
     # =========================================================
@@ -874,6 +1064,8 @@ class MorphingOrbWidget(QWidget):
             self._menu_drag_index = -1
             self._menu_drag_axis = ""
             self._save_menu_state(force=True)
+            if self._appearance_state_dirty:
+                self._save_appearance_state(force=True)
         self.update()
         super().mouseReleaseEvent(event)
 
@@ -1002,7 +1194,7 @@ class MorphingOrbWidget(QWidget):
             if self._menu_sector >= 0 or self._menu_alpha > 0.05:
                 self._close_radial_menu()
                 return
-            appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
+            self._save_appearance_state(force=True)
             system_actions.save_state(self.system_state, self._system_state_path)
             self._save_menu_state(force=True)
             self.close()
@@ -1093,9 +1285,25 @@ class MorphingOrbWidget(QWidget):
         super().keyPressEvent(event)
 
     def closeEvent(self, event):
-        appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
+        # Sauvegarde via les wrappers (le flag « dirty » du slider
+        # d'opacité est also consigné) : quels que soient le chemin de
+        # fermeture (Échap, System → Quit, icône de notification,
+        # aboutToQuit → close()), l'état complet est écrit ici — et
+        # ``state_to_dict`` n'y figure jamais ``blob_hidden`` (1.3.2).
+        self._save_appearance_state(force=True)
         system_actions.save_state(self.system_state, self._system_state_path)
         self._save_menu_state(force=True)
+        # L'interface ne consomme plus les commandes vocales : le pont le
+        # signale pour que get_ui_state reste honnête.
+        try:
+            visibility_bridge.VISIBILITY.report_state(
+                ui_attached=False,
+                blob_visible=False,
+                menu_open=False,
+                menu=None,
+            )
+        except Exception:
+            pass
         super().closeEvent(event)
 
     # ------------------------------------------------------------------
@@ -1107,7 +1315,8 @@ class MorphingOrbWidget(QWidget):
         C'est le seul canal de confirmation visuelle des clics menu : sans
         lui, l'utilisateur ne sait pas si son action a été prise en compte.
         """
-        self._menu_action_flash = str(message)[:80]
+        # 140 : les descriptions Writing (1.4.0) doivent tenir dans le flash.
+        self._menu_action_flash = str(message)[:140]
         self._menu_action_flash_time = self.time
 
     # ------------------------------------------------------------------
@@ -1155,16 +1364,48 @@ class MorphingOrbWidget(QWidget):
             return False
 
     def _close_radial_menu(self) -> None:
-        """Ferme le menu radial ouvert (Échap ou clic droit)."""
+        """Ferme le menu radial ouvert (Échap, clic droit, commande vocale)."""
+        self._menu_sector = -1
+        self._menu_candidate = -1
+        self._menu_focus_index = -1
+        self._menu_hot_node = -1
+        self._menu_drag_index = -1
+        self._menu_keyboard_open = False
+        for node in self._menu_nodes:
+            node.hover_amount = 0.0
+            node.click_amount = 0.0
+        self._set_pointer_cursor(False)
+        self.update()
+
+    def _reset_menu_visuals(self) -> None:
+        """Nettoyage COMPLET de l'état visuel du menu.
+
+        Utilisé quand l'orbe doit disparaître d'un bloc (masquage par un
+        mode, « masque le blob ») : sector, révélation, alpha et nœuds sont
+        remis à zéro pour qu'aucun fond/libellé ne survive ni ne « fuite »
+        d'un état à l'autre. Les nœuds existants poursuivent leur fondu de
+        sortie normalement ; la reconstruction se fait au prochain
+        ``_update_menu_nodes`` (secteur fermé → nœuds vides).
+        """
         self._menu_sector = -1
         self._menu_candidate = -1
         self._menu_focus_index = -1
         self._menu_drag_index = -1
         self._menu_keyboard_open = False
+        self._menu_reveal = 0.0
+        self._menu_alpha = 0.0
+        self._menu_branch_strength = 0.0
+        for node in self._menu_nodes:
+            node.visible_amount = 0.0
+            node.hover_amount = 0.0
+            node.click_amount = 0.0
+        self._menu_nodes.clear()
+        self._menu_hot_node = -1
+        self._set_pointer_cursor(False)
         self.update()
 
     def _open_radial_menu(self, sector: int) -> None:
-        """Ouvre le menu radial demandé (raccourcis clavier 1..N)."""
+        """Ouvre le menu radial demandé (raccourcis clavier 1..N, voix)."""
         if not (0 <= sector < len(MENU_SPECS)):
             return
         self._menu_sector = sector
@@ -1175,6 +1416,125 @@ class MorphingOrbWidget(QWidget):
         self._menu_keyboard_open = True
         self._sync_menu_nodes(MENU_SPECS[sector])
         self.update()
+
+    # ------------------------------------------------------------------
+    # Visibilité CENTRALE du Blob et du menu (source unique de vérité)
+    # ------------------------------------------------------------------
+    # Toutes les entrées (commande vocale via le pont, clic de la zone de
+    # notification, modes) passent par ces quatre méthodes. Aucune autre
+    # partie du code ne « cache » l'orbe en manipulant directement ses
+    # propriétés de fenêtre, sauf la politique de mode dans tick() qui
+    # respecte ces drapeaux.
+    def is_blob_visible(self) -> bool:
+        """Vrai si le Blob est réellement affiché à l'écran."""
+        return self.isVisible()
+
+    def is_menu_open(self) -> bool:
+        return self._menu_sector >= 0 and self._menu_alpha > 0.05
+
+    def current_menu_name(self) -> str | None:
+        if not (0 <= self._menu_sector < len(MENU_SPECS)):
+            return None
+        return MENU_SPECS[self._menu_sector].name
+
+    def show_blob(self) -> None:
+        """(Ré)affiche le Blob quelle que soit la configuration courante.
+
+        Une commande explicite est une action : elle lève le masquage
+        utilisateur ET met l'orbe devant la politique de mode (jeu/focus)
+        — la transition de mode suivante rétablira la politique normale.
+        """
+        self._blob_hidden_by_command = False
+        self._blob_show_override = True
+        # La commande lève aussi le réglage persistant (Appearance →
+        # « Blob Visible ») : l'affichage explicite doit tenir dans tous
+        # les états, y compris « blob configuré caché ».
+        if getattr(self.appearance_state, "blob_hidden", False):
+            self.appearance_state.blob_hidden = False
+            appearance_actions.save_state(
+                self.appearance_state, self._appearance_state_path
+            )
+        if not self.isVisible():
+            self.showFullScreen()
+            self.raise_()
+            self.activateWindow()
+        self.update()
+
+    def hide_blob(self) -> None:
+        """Masque le Blob (et son menu ouvert) jusqu'à « affiche le blob »."""
+        self._blob_hidden_by_command = True
+        self._blob_show_override = False
+        self._reset_menu_visuals()
+        if self.isVisible():
+            self.hide()
+        self.update()
+
+    def show_menu(self, name: str | None = None) -> int | None:
+        """(Ré)affiche le menu radial demandé (ou le dernier/par défaut).
+
+        Le menu fait partie du Blob : afficher un menu réaffiche
+        d'abord l'orbe. Retourne le secteur ouvert (None si invalide).
+        """
+        self.show_blob()
+        sector = self._menu_sector_for_name(name)
+        if sector is None:
+            return None
+        self._last_voice_menu_sector = sector
+        self._open_radial_menu(sector)
+        return sector
+
+    def hide_menu(self) -> None:
+        """Ferme le menu radial (les fonds s'estompent avec le fondu)."""
+        self._close_radial_menu()
+
+    def _menu_sector_for_name(self, name: str | None) -> int | None:
+        if name is None or not str(name).strip():
+            # Pas de précision : le dernier menu affiché par la voix,
+            # sinon le premier menu.
+            return self._last_voice_menu_sector
+        resolved = visibility_bridge.resolve_menu_name(name)
+        if resolved is None:
+            return None
+        for index, spec in enumerate(MENU_SPECS):
+            if spec.name == resolved:
+                return index
+        return None
+
+    def _consume_visibility_requests(self) -> None:
+        """Applique les intentions du pont thread-safe (appelé par tick()).
+
+        L'ordre suit les actions : le blob d'abord (un menu ouvert impose
+        un blob visible), les menus ensuite — une seule passe par frame.
+        """
+        requests = visibility_bridge.VISIBILITY.consume_requests()
+        for request in requests:
+            action = request.get("action")
+            try:
+                if action == "show_blob":
+                    self.show_blob()
+                elif action == "hide_blob":
+                    self.hide_blob()
+                elif action == "show_menu":
+                    self.show_menu(request.get("menu"))
+                elif action == "hide_menu":
+                    self.hide_menu()
+            except Exception as exc:  # pragma: no cover - ne jamais tuer l'orbe
+                print(f"[Visibilité] Requête {action} ignorée : {exc}")
+
+    def _report_visibility_state(self) -> None:
+        """Publie l'état réel dans le pont (seulement quand il change)."""
+        state = {
+            "ui_attached": True,
+            "blob_visible": self.isVisible(),
+            "menu_open": self.is_menu_open(),
+            "menu": self.current_menu_name(),
+        }
+        if state != self._last_reported_state:
+            self._last_reported_state = state
+            try:
+                visibility_bridge.VISIBILITY.report_state(**state)
+            except Exception:
+                pass
 
     def _cached_status(self, key: str, producer, ttl: float = 1.0) -> str:
         """Valeur statique coûteuse (SQLite, disque) mise en cache.
@@ -1194,6 +1554,14 @@ class MorphingOrbWidget(QWidget):
 
     def _invalidate_status_cache(self) -> None:
         self._status_cache.clear()
+
+    def _blob_hidden_by_user(self) -> bool:
+        """L'orbe a-t-il été masqué depuis le menu (Appearance → Blob Visible) ?
+
+        Lecture directe de l'état d'apparence en mémoire : le changement est
+        donc pris en compte dès l'image suivante, sans redémarrage.
+        """
+        return bool(getattr(self.appearance_state, "blob_hidden", False))
 
     def _mode_suppresses_visuals(self) -> bool:
         """Lecture légère du mode jeu : l'orbe ne doit rien afficher en jeu."""
@@ -1325,6 +1693,10 @@ class MorphingOrbWidget(QWidget):
             return "On" if self.appearance_state.minimal_mode else "Off"
         if label == "Cinematic Mode":
             return "On" if self.appearance_state.cinematic_mode else "Off"
+        if label == "Blob Visible":
+            return "Off" if self.appearance_state.blob_hidden else "On"
+        if label == "Item BG Opacity":
+            return f"{round(clamp(self.appearance_state.item_bg_opacity, 0.0, 1.0) * 100):d}%"
         if label.startswith("Glow"):
             return f"{self.appearance_state.glow_intensity:.2f}"
         if label.startswith("Blob Size"):
@@ -1345,8 +1717,14 @@ class MorphingOrbWidget(QWidget):
             return f"{st.hotword_sensitivity}%"
         if label == "Always Listening":
             return "On" if st.listen_mode else "Off"
+        if label == "Listen After Reply":
+            return "On" if st.post_response_listen else "Off"
         if label == "Interrupt Word":
             return "On" if st.barge_in else "Off"
+        if label == "Active Field":
+            return "On" if st.writing_active_field else "Off"
+        if label == "Text Files":
+            return "On" if st.writing_text_files else "Off"
         if label == "Stop Speaking":
             return "Stop"
         return ""
@@ -1497,6 +1875,7 @@ class MorphingOrbWidget(QWidget):
             ("Voice", "Speech Speed"),
             ("Voice", "Hotword Sens."),
             ("System", "Transparency"),
+            ("Appearance", "Item BG Opacity"),
         }
 
     def _menu_is_option(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
@@ -1510,8 +1889,14 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.mic_enabled
         if name == "Voice" and label == "Always Listening":
             return self.menu_state.listen_mode
+        if name == "Voice" and label == "Listen After Reply":
+            return self.menu_state.post_response_listen
         if name == "Voice" and label == "Interrupt Word":
             return self.menu_state.barge_in
+        if name == "Voice" and label == "Active Field":
+            return self.menu_state.writing_active_field
+        if name == "Voice" and label == "Text Files":
+            return self.menu_state.writing_text_files
         if name == "System" and label == "Startup":
             # État réel (fichier de démarrage présent ou non), mis en cache :
             # cette valeur est lue à chaque image pour le rendu.
@@ -1524,6 +1909,14 @@ class MorphingOrbWidget(QWidget):
                 manager = get_default_memory_manager()
                 return bool(manager.enabled and manager.available)
             return self._cached_status("memory_enabled", _enabled) == "True"
+        if name == "Appearance" and label == "Minimal Mode":
+            return self.appearance_state.minimal_mode
+        if name == "Appearance" and label == "Cinematic Mode":
+            return self.appearance_state.cinematic_mode
+        if name == "Appearance" and label == "Blob Visible":
+            # Toggle « visible » : l'indicateur est actif tant que l'orbe est
+            # affiché, et s'éteint dès qu'il est masqué.
+            return not self.appearance_state.blob_hidden
         return False
 
     def _menu_set_toggle(self, spec: MenuSpec, item: MenuItemSpec, value: bool) -> None:
@@ -1540,6 +1933,26 @@ class MorphingOrbWidget(QWidget):
                 if value
                 else "Écoute continue : désactivée (« Hey Jarvis » à nouveau requis)"
             )
+        elif name == "Voice" and label == "Listen After Reply":
+            self.menu_state.post_response_listen = value
+            # Appliqué immédiatement : le backend vocal lit le pont à chaque
+            # fin de tour, aucun redémarrage n'est nécessaire.
+            menu_state.LIVE.set_post_response_listen(value)
+            if value:
+                self._flash(
+                    "Écoute post-réponse : activée "
+                    "(Jarvis reste à l'écoute après sa réponse)"
+                )
+            elif self.menu_state.listen_mode:
+                self._flash(
+                    "Écoute post-réponse : désactivée — mais « Always Listening » "
+                    "reste actif et prime"
+                )
+            else:
+                self._flash(
+                    "Écoute post-réponse : désactivée "
+                    "(« Hey Jarvis » requis à chaque fois)"
+                )
         elif name == "Voice" and label == "Interrupt Word":
             self.menu_state.barge_in = value
             menu_state.LIVE.set_barge_in(value)
@@ -1548,6 +1961,14 @@ class MorphingOrbWidget(QWidget):
                 if value
                 else "Interruption vocale : désactivée"
             )
+        elif name == "Voice" and label == "Active Field":
+            self.menu_state.writing_active_field = value
+            menu_state.LIVE.set_writing_active_field(value)
+            self._flash(_writing_flash(ACTIVE_FIELD_TITLE, value, item.description))
+        elif name == "Voice" and label == "Text Files":
+            self.menu_state.writing_text_files = value
+            menu_state.LIVE.set_writing_text_files(value)
+            self._flash(_writing_flash(TEXT_FILES_TITLE, value, item.description))
         elif name == "System" and label == "Startup":
             result = system_actions.set_startup(value)
             self.menu_state.startup = bool(result.get("success") and value)
@@ -1580,11 +2001,21 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.hotword_sensitivity
         if name == "System" and label == "Transparency":
             return self.menu_state.transparency
+        if name == "Appearance" and label == "Item BG Opacity":
+            return round(clamp(self.appearance_state.item_bg_opacity, 0.0, 1.0) * 100)
         return 0
 
     def _menu_set_slider(self, spec: MenuSpec, item: MenuItemSpec, value: int) -> None:
         name, label = spec.name, item.label
         value = max(0, min(100, int(value)))
+        if name == "Appearance" and label == "Item BG Opacity":
+            # Opacité des fonds d'items : appliquée à l'image suivante (le
+            # rendu lit appearance_state à chaque frame) et persistée avec
+            # les autres réglages Appearance — debounce identique aux
+            # sliders du menu (glisser = une écriture au maximum / 0,5 s).
+            appearance_actions.set_item_bg_opacity(self.appearance_state, value / 100.0)
+            self._save_appearance_state()
+            return
         if name == "Voice" and label == "TTS Volume":
             self.menu_state.tts_volume = value
             # Appliqué immédiatement sur la sortie audio.
@@ -1617,8 +2048,12 @@ class MorphingOrbWidget(QWidget):
     # ------------------------------------------------------------------
     def _apply_always_on_top(self, value: bool) -> None:
         try:
+            was_full = self.isFullScreen()
             self.setWindowFlag(Qt.WindowStaysOnTopHint, bool(value))
-            self.show()
+            if was_full:
+                self.showFullScreen()
+            else:
+                self.show()
         except Exception:
             pass
 
@@ -1707,6 +2142,29 @@ class MorphingOrbWidget(QWidget):
         self._invalidate_status_cache()
         self._flash("Réglages réinitialisés")
 
+    def _open_mode_apps_dialog(self) -> None:
+        """Ouvre le réglage des applications fermées par les modes jeu/focus.
+
+        La fermeture réelle reste du ressort du mode (src/modes.py) ; la
+        fenêtre ne fait que lire/écrire la configuration persistante.
+        """
+        try:
+            from src.modes import get_default_mode_manager
+
+            if get_default_mode_manager().should_suppress_visuals():
+                # En mode jeu, aucun affichage au-dessus du jeu.
+                self._flash("Mode jeu actif : sans affichage")
+                return
+        except Exception:
+            pass
+        try:
+            from .mode_apps_dialog import show_mode_apps_dialog
+
+            self._close_radial_menu()
+            show_mode_apps_dialog(self)
+        except Exception as exc:
+            self._flash(f"Réglage indisponible : {exc}")
+
     def _save_menu_state(self, force: bool = False) -> None:
         """Sauvegarde l'état du menu, débouncée pendant les interactions.
 
@@ -1721,6 +2179,17 @@ class MorphingOrbWidget(QWidget):
         menu_state.save_state(self.menu_state, self._menu_state_path)
         self._menu_state_last_save = self.time
         self._menu_state_dirty = False
+
+    def _save_appearance_state(self, force: bool = False) -> None:
+        """Sauvegarde l'état d'apparence, débouncé (même rythme que l'état
+        menu). ``force=True`` écrit immédiatement (fermeture, clic…)."""
+        if not force:
+            if (self.time - self._appearance_state_last_save) < 0.5:
+                self._appearance_state_dirty = True
+                return
+        appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
+        self._appearance_state_last_save = self.time
+        self._appearance_state_dirty = False
 
     def _menu_callback_for(self, spec: MenuSpec, item: MenuItemSpec) -> Callable[[], None]:
         if spec.name == "Appearance":
@@ -1750,9 +2219,12 @@ class MorphingOrbWidget(QWidget):
                 # via _flash ; on n'écrase pas leur libellé.
                 if label in {
                     "Always Listening",
+                    "Listen After Reply",
                     "Interrupt Word",
                     "Startup",
                     "Long-term Memory",
+                    "Active Field",
+                    "Text Files",
                 }:
                     pass
                 else:
@@ -1778,6 +2250,8 @@ class MorphingOrbWidget(QWidget):
                 system_actions.save_state(self.system_state, self._system_state_path)
                 menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
                 self._flash(f"Réponses : {self.system_state.response_mode_label}")
+            elif name == "System" and label == "Mode Apps":
+                self._open_mode_apps_dialog()
             elif name == "System" and label == "Reset Settings":
                 self._reset_settings()
             elif name == "System" and label == "Quit":
@@ -1804,6 +2278,13 @@ class MorphingOrbWidget(QWidget):
         return _callback
 
     def _appearance_callback_for(self, item: MenuItemSpec) -> Callable[[], None]:
+        if item.label == "Item BG Opacity":
+            # Slider : un clic (touche Entrée) affiche la valeur courante,
+            # comme pour les sliders des autres menus — le glisser-souris et
+            # la molette sont gérés par les chemins sliders génériques.
+            def _flash_value() -> None:
+                self._flash(f"{item.label}: {self._appearance_value(item.label)}")
+            return _flash_value
         action_map = {
             "Color": appearance_actions.cycle_theme,
             "Glow +": appearance_actions.increase_glow,
@@ -1812,6 +2293,7 @@ class MorphingOrbWidget(QWidget):
             "Blob Size -": appearance_actions.decrease_blob_size,
             "Minimal Mode": appearance_actions.toggle_minimal_mode,
             "Cinematic Mode": appearance_actions.toggle_cinematic_mode,
+            "Blob Visible": appearance_actions.toggle_blob_visibility,
         }
         action = action_map.get(item.label)
         if action is None:
@@ -1819,9 +2301,50 @@ class MorphingOrbWidget(QWidget):
         def _callback() -> None:
             action(self.appearance_state)
             self._apply_appearance_state()
-            appearance_actions.save_state(self.appearance_state, self._appearance_state_path)
+            self._save_appearance_state(force=True)
+            if item.label == "Blob Visible":
+                # Masquer l'orbe ferme la fenêtre qui porte le menu : on
+                # applique la visibilité et on court-circuite le flash, qui ne
+                # serait de toute façon pas visible.
+                self._apply_blob_visibility(save=False)
+                return
             self._flash(f"{item.label}: {self._appearance_value(item.label)}")
         return _callback
+
+    def _apply_blob_visibility(self, save: bool = True) -> None:
+        """Masque ou réaffiche l'orbe selon ``appearance_state.blob_hidden``.
+
+        Masquer l'orbe ne suspend RIEN d'autre : l'assistant vocal (wake word,
+        Gemini Live, routines, rappels) tourne dans son propre thread — voir
+        ``src/ui.py``. Seule la fenêtre disparaît, exactement comme le fait
+        déjà le mode jeu. Le retour se fait via l'icône de notification
+        (« Afficher Jarvis ») ou en relançant Jarvis.
+        """
+        hidden = bool(self.appearance_state.blob_hidden)
+        if save:
+            appearance_actions.save_state(
+                self.appearance_state, self._appearance_state_path
+            )
+        if hidden:
+            self._close_radial_menu()
+            if self.isVisible():
+                self.hide()
+            self._window_hidden = True
+            print(f"[Jarvis] Orbe masqué. {appearance_actions.BLOB_RESTORE_HINT}")
+            return
+        self._window_hidden = False
+        if not self.isVisible():
+            self.showFullScreen()
+        self._flash("Blob affiché")
+
+    def set_blob_visible(self, visible: bool = True) -> None:
+        """Réaffiche (ou masque) l'orbe depuis l'extérieur.
+
+        Point d'entrée utilisé par l'icône de notification : elle doit pouvoir
+        ramener l'orbe même quand celui-ci a été masqué depuis le menu.
+        """
+        self.appearance_state.blob_hidden = not bool(visible)
+        self._apply_blob_visibility()
 
     def _apply_appearance_state(self) -> None:
         state = self.appearance_state
@@ -1883,6 +2406,364 @@ class MorphingOrbWidget(QWidget):
             ]
             self._menu_hot_node = -1
 
+    # ------------------------------------------------------------------
+    # LAYOUT : espacements résolus pour garantir ZÉRO chevauchement
+    # ------------------------------------------------------------------
+    # Le design d'origine (colonnes de 126 px, lignes de 46 px…) est la
+    # BASE. Un solveur mesure la largeur réelle des libellés (métriques de
+    # police identiques au rendu, pire cas survol) et élargit UNIQUEMENT
+    # quand un couple libellé/pastille/barre se chevaucherait. Aucun menu
+    # « sain » n'est déplacé : le correctif s'applique donc partout (Voice,
+    # System, Memory, Appearance, Routines) sans redessiner l'interface.
+
+    #: Espacements de base du design (1.3.1 et avant).
+    _LAYOUT_COL_BASE = 126.0
+    _LAYOUT_ROW_BASE = 46.0
+    #: Marge exigée (px) lorsqu'un correctif est nécessaire.
+    _LAYOUT_MARGIN = 4.0
+    #: Bornes du solveur (éviter tout écart excessif dans des cas pathologiques).
+    _LAYOUT_COL_MAX = 420.0
+    _LAYOUT_ROW_MAX = 110.0
+    _LAYOUT_LINE_MAX = 130.0
+
+    @staticmethod
+    def _layout_line_base(spec: MenuSpec) -> float:
+        """Espacement de base en mode « ligne » (formule historique)."""
+        return 20.0 + 2.0 * spec.branch_bias + 16.0
+
+    def _layout_font(self) -> QFont:
+        """Police du libellé en PIRE CAS : survol plein (letter-spacing 1.1)."""
+        font = QFont("Segoe UI", 9)
+        if self._menu_layout_mode == "grid":
+            font.setPointSizeF(8.3)
+        font.setLetterSpacing(QFont.AbsoluteSpacing, 1.1)
+        return font
+
+    def _layout_label_text(self, spec: MenuSpec, node: MenuNode) -> str:
+        """Libellé complet affiché — miroir exact de ``_draw_menu_node``."""
+        if node.label == "Long-term Memory":
+            return "Long-term\nMemory"
+        value_text = self._menu_value(spec, node)
+        if value_text and value_text != "Clear":
+            return f"{node.label} · {value_text}"
+        return node.label
+
+    def _layout_label_metrics(self, spec: MenuSpec):
+        """Largeurs/hauteurs des libellés avec les métriques du rendu.
+
+        Retourne ``(widths, heights, y_shifts)``. Les métriques sont mises en
+        cache par mode de layout (la police est constante par mode).
+        """
+        cache = self._layout_metrics_cache
+        mode = self._menu_layout_mode
+        metrics = cache.get(mode)
+        if metrics is None:
+            metrics = QFontMetricsF(self._layout_font())
+            cache[mode] = metrics
+        widths: list[float] = []
+        heights: list[float] = []
+        y_shifts: list[float] = []
+        for node in self._menu_nodes:
+            text = self._layout_label_text(spec, node)
+            lines = text.split("\n")
+            widths.append(
+                max(metrics.horizontalAdvance(line) for line in lines) if lines else 0.0
+            )
+            heights.append(metrics.lineSpacing() * len(lines) + 2.0 * HOVER_PAD_Y)
+            # Le libellé deux lignes « Long-term Memory » est recentré de 3 px
+            # dans le dessin (rect y−3, hauteur 30) — miroir de ce décalage.
+            y_shifts.append(3.0 if len(lines) > 1 else 0.0)
+        return widths, heights, y_shifts
+
+    def _layout_targets(
+        self,
+        anchor: QPointF,
+        sx: float,
+        sy: float,
+        perp_x: float,
+        perp_y: float,
+        curve: float,
+        col_spacing: float,
+        row_pitch: float,
+        line_spacing: float,
+    ) -> list[QPointF]:
+        """SOURCE UNIQUE des positions cibles : animation ET solveur.
+
+        Toute divergence ici rendrait le solveur incapable de prédire le
+        rendu réel — ces formules doivent rester identiques à celles
+        historiquement utilisées dans ``_update_menu_nodes``.
+        """
+        count = len(self._menu_nodes)
+        targets: list[QPointF] = []
+        if self._menu_layout_mode == "grid":
+            rows = max(1, math.ceil(count / 2))
+            for index in range(count):
+                col = index % 2
+                row = index // 2
+                col_offset = (col - 0.5) * col_spacing
+                row_offset = (row - (rows - 1) * 0.5) * row_pitch
+                targets.append(
+                    QPointF(
+                        anchor.x()
+                        + perp_x * col_offset
+                        + sx * (34.0 + row * 5.0 + curve),
+                        anchor.y()
+                        + perp_y * col_offset
+                        + sy * (34.0 + row * 5.0 + curve)
+                        + row_offset,
+                    )
+                )
+        else:
+            count_mid = (count - 1) * 0.5
+            for index in range(count):
+                lane = index - count_mid
+                targets.append(
+                    QPointF(
+                        anchor.x()
+                        + perp_x * lane * line_spacing
+                        + sx * (18.0 + index * 2.4 + curve),
+                        anchor.y()
+                        + perp_y * lane * line_spacing
+                        + sy * (18.0 + index * 2.4 + curve),
+                    )
+                )
+        return targets
+
+    def _layout_boxes(
+        self,
+        spec: MenuSpec,
+        positions: list[QPointF],
+        widths: list[float],
+        heights: list[float],
+        y_shifts: list[float],
+    ) -> list[tuple[tuple[float, float, float, float], tuple[float, float, float, float]]]:
+        """Rectangles occupés (pire cas) : ``(libellé, pastille+barre)``.
+
+        Miroir des formules de ``_draw_menu_node`` avec les valeurs maximales
+        (survol/activation complets) : le solveur ne doit déclencher que si
+        le chevauchement est possible même au pire moment.
+        """
+        sx, sy = self._sector_vector(max(0, self._menu_sector))
+        perp_x, perp_y = -sy, sx
+        grid = self._menu_layout_mode == "grid"
+        boxes = []
+        for index, node in enumerate(self._menu_nodes):
+            pos = positions[index]
+            w, h, shift = widths[index], heights[index], y_shifts[index]
+            r = float(node.radius)
+            # Pastille pire cas (1 + 0.18 survol + 0.08 clic) + garde, et
+            # barre de slider (réservée pour tous, plus conservateur).
+            body_half = r * 1.26 + 2.0
+            body_bottom = r * 1.26 + 5.0 + 3.6 + 2.0
+            if grid:
+                # Miroir de _draw_menu_node : libellé vers l'extérieur de la
+                # paire de colonnes (colonne gauche → libellé à gauche).
+                col_sign = (index % 2) - 0.5
+                col_dx = perp_x * col_sign
+                outward = -1.0 if col_dx < -1e-6 else 1.0
+                if sy > 0.0:
+                    # Menu vers le bas : libellé à droite OU à gauche.
+                    if outward > 0.0:
+                        x0 = pos.x() + 28.0  # label_dx pire cas (22+4+2)
+                    else:
+                        x0 = pos.x() - 28.0 - w  # AlignRight, pire cas
+                    y_c = pos.y()
+                else:
+                    # Menu vers le haut : le long du perp, vers l'extérieur.
+                    offset = 37.0 * outward
+                    if outward > 0.0:
+                        x0 = pos.x() + perp_x * offset - 8.0
+                    else:
+                        # AlignRight : le texte occupe [ancr.−w, ancr.−8].
+                        x0 = pos.x() + perp_x * offset - 8.0 - w
+                    y_c = pos.y() + perp_y * offset
+            elif sx < 0.0:
+                # Mode ligne, déploiement à gauche : libellé aligné à droite.
+                x0 = pos.x() - 28.0 - 10.0 - w
+                y_c = pos.y()
+            else:
+                x0 = pos.x() + 28.0
+                y_c = pos.y()
+            y_c += shift
+            label_box = (
+                x0 - HOVER_PAD_X,
+                y_c - h / 2.0,
+                x0 + w + HOVER_PAD_X,
+                y_c + h / 2.0,
+            )
+            body_box = (
+                pos.x() - body_half,
+                pos.y() - body_half,
+                pos.x() + body_half,
+                pos.y() + body_bottom,
+            )
+            boxes.append((label_box, body_box))
+        return boxes
+
+    def _layout_overlap_scan(
+        self, spec: MenuSpec, positions: list[QPointF]
+    ) -> list[tuple[int, int, str, float, float]]:
+        """Couples en chevauchement : ``(i, j, type, ox, oy)`` (ox/oy = profondeurs)."""
+        widths, heights, y_shifts = self._layout_label_metrics(spec)
+        boxes = self._layout_boxes(spec, positions, widths, heights, y_shifts)
+        found: list[tuple[int, int, str, float, float]] = []
+        for i in range(len(boxes)):
+            li, bi = boxes[i]
+            for j in range(i + 1, len(boxes)):
+                lj, bj = boxes[j]
+                for kind, a, b in (
+                    ("TEXTE/TEXTE", li, lj),
+                    ("TEXTE/PASTILLE", li, bj),
+                    ("TEXTE/PASTILLE", lj, bi),
+                    ("PASTILLE/PASTILLE", bi, bj),
+                ):
+                    ox = min(a[2], b[2]) - max(a[0], b[0])
+                    oy = min(a[3], b[3]) - max(a[1], b[1])
+                    if ox > 0.0 and oy > 0.0:
+                        found.append((i, j, kind, ox, oy))
+                        break  # un couple = un enregistrement (suffit au solveur)
+        return found
+
+    def _solve_layout_spacings(
+        self,
+        spec: MenuSpec,
+        sx: float,
+        sy: float,
+        perp_x: float,
+        perp_y: float,
+        curve: float,
+    ) -> tuple[float, float, float]:
+        """Résout ``(colonne, pas de ligne, espacement ligne)`` sans chevauchement.
+
+        Itératif et borné : chaque passe calcule, pour chaque couple en
+        conflit, l'axe le moins coûteux (colonne via X ou Y, pas de ligne via
+        Y…), puis applique le maximum requis par axe. Les positions relatives
+        ne dépendent que des paramètres (les termes constants s'annulent), le
+        résultat est donc stable d'une image à l'autre. Warm-start sur le
+        menu courant pour ne payer qu'une vérification par image.
+        """
+        count = len(self._menu_nodes)
+        base_line = self._layout_line_base(spec)
+        if count == 0:
+            return self._LAYOUT_COL_BASE, self._LAYOUT_ROW_BASE, base_line
+
+        cached = self._layout_solved
+        # La clé inclut le mode : une solution « grille » n'est pas
+        # valide en « ligne » (et inversement) — sinon le warm-start
+        # propage un espacement résolu pour l'autre orientation.
+        if (
+            cached is not None
+            and cached[0] == spec.name
+            and cached[1] == self._menu_layout_mode
+        ):
+            col, row, line = cached[2], cached[3], cached[4]
+        else:
+            col, row, line = self._LAYOUT_COL_BASE, self._LAYOUT_ROW_BASE, base_line
+
+        # Repère par index : colonne/pas (grid) ou index (ligne).
+        if self._menu_layout_mode == "grid":
+            units_a = [(index % 2, index // 2) for index in range(count)]  # (col, row)
+        else:
+            units_a = [(index, 0) for index in range(count)]  # (lane, 0)
+
+        anchor = QPointF(0.0, 0.0)  # le scan n'utilise que les positions relatives
+        for _ in range(24):
+            positions = self._layout_targets(
+                anchor, sx, sy, perp_x, perp_y, curve, col, row, line
+            )
+            conflicts = self._layout_overlap_scan(spec, positions)
+            if not conflicts:
+                break
+            need_col = 0.0
+            need_row = 0.0
+            need_line = 0.0
+            grid = self._menu_layout_mode == "grid"
+            for i, j, _kind, ox, oy in conflicts:
+                gain_x = ox + self._LAYOUT_MARGIN
+                gain_y = oy + self._LAYOUT_MARGIN
+                candidates: list[tuple[str, float]] = []
+                if grid:
+                    d_col = abs(units_a[i][0] - units_a[j][0])
+                    d_row = abs(units_a[i][1] - units_a[j][1])
+                    if d_col:
+                        # Conflit INTER-colonnes : le vrai problème est
+                        # horizontal (libellés de la colonne gauche qui
+                        # plongent dans la colonne droite). N'autoriser que
+                        # la colonne — sinon l'heuristique « axe le moins
+                        # cher » choisit le pas de rang (Y) et fait exploser
+                        # row (ex. Appearance row=46 → 107 = nœuds hors
+                        # fenêtre, changement de secteur au survol).
+                        deriv_x = abs(d_col * perp_x)
+                        deriv_y = abs(d_col * perp_y)
+                        if deriv_x > 1e-6:
+                            candidates.append(("col", gain_x / deriv_x))
+                        if deriv_y > 1e-6:
+                            candidates.append(("col", gain_y / deriv_y))
+                    elif d_row:
+                        # Même colonne : seul le pas de rang sépare en Y.
+                        candidates.append(("row", gain_y / d_row))
+                else:
+                    d_lane = abs(units_a[i][0] - units_a[j][0])
+                    if d_lane:
+                        deriv_x = abs(d_lane * perp_x)
+                        deriv_y = abs(d_lane * perp_y)
+                        if deriv_x > 1e-6:
+                            candidates.append(("line", gain_x / deriv_x))
+                        if deriv_y > 1e-6:
+                            candidates.append(("line", gain_y / deriv_y))
+                if not candidates:
+                    # Axe inatteignable dans ce mode (cas limite) : élargir
+                    # tous les paramètres concernés plutôt que de boucler.
+                    need_col = max(need_col, gain_x)
+                    continue
+                axis, inc = min(candidates, key=lambda item: item[1])
+                if axis == "col":
+                    need_col = max(need_col, inc)
+                elif axis == "row":
+                    need_row = max(need_row, inc)
+                else:
+                    need_line = max(need_line, inc)
+            col = min(self._LAYOUT_COL_MAX, col + max(need_col, 1.0))
+            row = min(self._LAYOUT_ROW_MAX, row + max(need_row, 1.0))
+            line = min(self._LAYOUT_LINE_MAX, line + max(need_line, 1.0))
+
+        self._layout_solved = (spec.name, self._menu_layout_mode, col, row, line)
+        return col, row, line
+
+    def _menu_layout_overlaps(self) -> list[str]:
+        """Rapport des chevauchements aux positions COURANTES des nœuds.
+
+        ``[]`` = aucun chevauchement libellé/pastille/barre. Sert aux tests
+        de non-régression et au diagnostic ``scripts/diag_menu_overlap.py``.
+        """
+        spec = self._menu_spec()
+        if spec is None or not self._menu_nodes or self._menu_alpha <= 0.01:
+            return []
+        positions = [QPointF(node.position) for node in self._menu_nodes]
+        widths, heights, y_shifts = self._layout_label_metrics(spec)
+        boxes = self._layout_boxes(spec, positions, widths, heights, y_shifts)
+        labels = [self._layout_label_text(spec, node) for node in self._menu_nodes]
+        report: list[str] = []
+        for i in range(len(boxes)):
+            li, bi = boxes[i]
+            for j in range(i + 1, len(boxes)):
+                lj, bj = boxes[j]
+                for kind, a, b in (
+                    ("TEXTE∩TEXTE", li, lj),
+                    ("TEXTE∩PASTILLE", li, bj),
+                    ("TEXTE∩PASTILLE", lj, bi),
+                    ("PASTILLE∩PASTILLE", bi, bj),
+                ):
+                    ox = min(a[2], b[2]) - max(a[0], b[0])
+                    oy = min(a[3], b[3]) - max(a[1], b[1])
+                    if ox > 0.0 and oy > 0.0:
+                        report.append(
+                            f"{kind}: {labels[i]!r} ↔ {labels[j]!r} "
+                            f"(Δx={-ox:.1f}, Δy={-oy:.1f})"
+                        )
+                        break
+        return report
+
     def _update_menu_nodes(self) -> None:
         self._refresh_routines_spec()
         spec = self._menu_spec()
@@ -1913,30 +2794,22 @@ class MorphingOrbWidget(QWidget):
 
         hover_index = -1
         hover_score = -1.0
-        count_mid = (count - 1) * 0.5
-        spacing = 20.0 + 2.0 * spec.branch_bias
-        if self._menu_layout_mode == "line":
-            spacing += 16.0
         curve_strength = 7.0 + 5.0 * reveal
 
+        # Espacements résolus pour ZÉRO chevauchement (voir
+        # _solve_layout_spacings) : le design d'origine est la base, le
+        # solveur ne fait qu'élargir si le contenu l'exige (libellés longs,
+        # menu à 10 items…). Warm-start sur le menu courant.
+        col_spacing, row_pitch, spacing = self._solve_layout_spacings(
+            spec, sx, sy, perp_x, perp_y, curve_strength
+        )
+        targets = self._layout_targets(
+            anchor, sx, sy, perp_x, perp_y,
+            curve_strength, col_spacing, row_pitch, spacing,
+        )
+
         for index, node in enumerate(self._menu_nodes):
-            if self._menu_layout_mode == "grid":
-                columns = 2
-                rows = max(1, math.ceil(count / columns))
-                col = index % columns
-                row = index // columns
-                col_offset = (col - 0.5) * 126.0
-                row_offset = (row - (rows - 1) * 0.5) * 46.0
-                target = QPointF(
-                    anchor.x() + perp_x * col_offset + sx * (34.0 + row * 5.0 + curve_strength),
-                    anchor.y() + perp_y * col_offset + sy * (34.0 + row * 5.0 + curve_strength) + row_offset,
-                )
-            else:
-                lane = (index - count_mid)
-                target = QPointF(
-                    anchor.x() + perp_x * lane * spacing + sx * (18.0 + index * 2.4 + curve_strength),
-                    anchor.y() + perp_y * lane * spacing + sy * (18.0 + index * 2.4 + curve_strength),
-                )
+            target = targets[index]
             node.position.setX(lerp(node.position.x(), target.x(), 0.14))
             node.position.setY(lerp(node.position.y(), target.y(), 0.14))
             node.active = True
@@ -2025,11 +2898,17 @@ class MorphingOrbWidget(QWidget):
         if index == self._menu_focus_index:
             hover = max(hover, 0.85)
         click = clamp(node.click_amount, 0.0, 1.0)
+        # FOND D'ITEM — comportement contractuel des 5 menus :
+        #   menu fermé  (visible ≈ 0) → aucun fond n'est dessiné du tout ;
+        #   menu ouvert (visible ≈ 1) → le fond de CHAQUE item est affiché
+        #   simultanément, indépendamment du survol.
+        # Le survol (hover) n'ajoute qu'un surcroît d'accent : il n'est
+        # plus nécessaire pour que le fond existe.
+        item_bg = int((150 + 80 * hover + 60 * click) * visible)
         line_alpha = int((52 + 120 * hover + 80 * click) * visible)
-        node_alpha = int((130 + 90 * hover + 60 * click) * visible)
         text_alpha = int((175 + 60 * hover + 40 * click) * visible)
+        node_alpha = item_bg
         state = self.appearance_state
-
         # Couleur d'accent pour les toggles actifs (état ON).
         is_toggle_on = (
             item is not None
@@ -2055,18 +2934,20 @@ class MorphingOrbWidget(QWidget):
         painter.setBrush(glow_color)
         painter.drawEllipse(node.position, glow_radius, glow_radius)
 
+        # Fond du nœud : coefficient volontairement lisible dès
+        # visible ≈ 1 (menu ouvert, sans survol) ; le toggle ON reste net.
         fill_color = QColor(
             state.glow_color.red(),
             state.glow_color.green(),
             state.glow_color.blue(),
-            int(node_alpha * 0.18),
+            int(node_alpha * 0.26),
         )
         if is_toggle_on:
             fill_color = QColor(
                 state.glow_color.red(),
                 state.glow_color.green(),
                 state.glow_color.blue(),
-                int(node_alpha * 0.40),
+                int(node_alpha * 0.45),
             )
         outline_color = QColor(
             state.text_color.red(),
@@ -2107,17 +2988,48 @@ class MorphingOrbWidget(QWidget):
         label_dx = 22.0 + 4.0 * hover + 2.0 * click
         sector_sx, sector_sy = self._sector_vector(max(0, self._menu_sector))
         if self._menu_layout_mode == "grid":
+            # Côté du libellé : toujours vers l'EXTÉRIEUR de la paire de
+            # colonnes (sinon les libellés de la colonne gauche plongent
+            # dans la colonne droite → chevauchements → solveur qui écarte
+            # trop → nœuds hors secteur). Miroir exact de _layout_boxes.
+            col_sign = (index % 2) - 0.5  # -0.5 (gauche structurelle) / +0.5
+            perp_x, perp_y = -sector_sy, sector_sx
+            col_dx = perp_x * col_sign
+            outward = -1.0 if col_dx < -1e-6 else 1.0
             if sector_sy > 0.0:  # menu deploye vers le bas
-                label_pos = QPointF(node.position.x() + label_dx, node.position.y())
-                label_rect = QRectF(label_pos.x(), label_pos.y() - 9.0, 160.0, 18.0)
-                label_alignment = Qt.AlignLeft | Qt.AlignVCenter
+                if outward > 0.0:
+                    label_pos = QPointF(
+                        node.position.x() + label_dx, node.position.y()
+                    )
+                    label_rect = QRectF(
+                        label_pos.x(), label_pos.y() - 9.0, 160.0, 18.0
+                    )
+                    label_alignment = Qt.AlignLeft | Qt.AlignVCenter
+                else:
+                    label_pos = QPointF(
+                        node.position.x() - label_dx, node.position.y()
+                    )
+                    label_rect = QRectF(
+                        label_pos.x() - 160.0, label_pos.y() - 9.0, 160.0, 18.0
+                    )
+                    label_alignment = Qt.AlignRight | Qt.AlignVCenter
             else:
+                # Menu vers le haut : le long du perp, vers l'extérieur.
+                offset = (34.0 + 3.0 * hover) * outward
                 label_pos = QPointF(
-                    node.position.x() + perp_x * (34.0 + 3.0 * hover),
-                    node.position.y() + perp_y * (34.0 + 3.0 * hover),
+                    node.position.x() + perp_x * offset,
+                    node.position.y() + perp_y * offset,
                 )
-                label_rect = QRectF(label_pos.x() - 8.0, label_pos.y() - 8.0, 170.0, 18.0)
-                label_alignment = Qt.AlignLeft | Qt.AlignVCenter
+                if outward > 0.0:
+                    label_rect = QRectF(
+                        label_pos.x() - 8.0, label_pos.y() - 8.0, 170.0, 18.0
+                    )
+                    label_alignment = Qt.AlignLeft | Qt.AlignVCenter
+                else:
+                    label_rect = QRectF(
+                        label_pos.x() - 162.0, label_pos.y() - 8.0, 170.0, 18.0
+                    )
+                    label_alignment = Qt.AlignRight | Qt.AlignVCenter
         elif sector_sx < 0.0:  # menu deploye vers la gauche : libelle aligne a droite
             label_pos = QPointF(node.position.x() - label_dx, node.position.y())
             label_rect = QRectF(label_pos.x() - 130.0, label_pos.y() - 9.0, 120.0, 18.0)
@@ -2135,11 +3047,72 @@ class MorphingOrbWidget(QWidget):
             value_text = self._menu_value(spec, node)
             if value_text and value_text != "Clear":
                 label_text = f"{node.label} · {value_text}"
+        # Fond d'item permanent : dessiné SOUS le texte, d'après la position
+        # finale du libellé. Il n'ajoute aucune marge et ne déplace donc rien.
+        # Le rectangle existe dès que le menu est ouvert (visible ≈ 1), pour
+        # CHAQUE item et sans attendre le survol ; le survol ne fait que le
+        # renforcer (il monte jusqu'à l'opacité maximale).
+        # Opacité de repli pilotée par le réglage Appearance « Item BG
+        # Opacity » (1.3.2) : 0.55 par défaut (comportement 1.3.1), 0.0 =
+        # fond uniquement au survol, 1.0 = fond aussi fort que le survol.
+        # Le réglage ne touche QU'aux rectangles derrière les libellés :
+        # texte, pastilles, liserés et blob gardent leur propre opacité.
+        rest = clamp(
+            float(getattr(state, "item_bg_opacity", ITEM_BG_REST)), 0.0, 1.0
+        )
+        background_amount = visible * (rest + (1.0 - rest) * hover)
+        self._draw_hover_background(
+            painter,
+            state.glow_color,
+            label_rect,
+            label_alignment,
+            label_text,
+            background_amount,
+        )
+        painter.setPen(QColor(state.text_color.red(), state.text_color.green(), state.text_color.blue(), text_alpha))
         painter.drawText(
             label_rect,
             label_alignment,
             label_text,
         )
+
+    def _draw_hover_background(
+        self,
+        painter: QPainter,
+        theme_color: QColor,
+        label_rect: QRectF,
+        label_alignment,
+        label_text: str,
+        amount: float,
+    ) -> None:
+        """Rectangle sombre derrière le libellé survolé (effet de survol).
+
+        Le rectangle épouse le texte mesuré avec les métriques de la police
+        courante : il n'ajoute aucune marge au libellé et ne déplace donc ni le
+        texte ni les autres nœuds. Sa couleur est dérivée du thème courant du
+        Blob (``theme_color``), jamais codée en dur.
+        """
+        amount = clamp(amount, 0.0, 1.0)
+        if amount <= 0.02:
+            return
+        metrics = painter.fontMetrics()
+        lines = str(label_text).split("\n")
+        text_width = max(metrics.horizontalAdvance(line) for line in lines)
+        text_height = metrics.lineSpacing() * len(lines)
+        if bool(label_alignment & Qt.AlignRight):
+            left = label_rect.right() - text_width
+        else:
+            left = label_rect.left()
+        top = label_rect.center().y() - text_height / 2.0
+        rect = QRectF(
+            left - HOVER_PAD_X,
+            top - HOVER_PAD_Y,
+            text_width + 2.0 * HOVER_PAD_X,
+            text_height + 2.0 * HOVER_PAD_Y,
+        )
+        painter.setPen(QPen(hover_border_color(theme_color, amount), 1.0))
+        painter.setBrush(hover_background_color(theme_color, amount))
+        painter.drawRoundedRect(rect, HOVER_RADIUS, HOVER_RADIUS)
 
     # =========================================================
     # DRAWING
@@ -2216,7 +3189,10 @@ class MorphingOrbWidget(QWidget):
             mic_on = True
 
         state = self.appearance_state
-        if not mic_on:
+        if presence_state == "speaking":
+            label = "RÉPONSE EN COURS"
+            dot_color = QColor(state.glow_color).lighter(130)
+        elif not mic_on:
             label = "MICRO COUPÉ"
             dot_color = QColor(255, 140, 130)
         elif presence_state == "loading":
@@ -2228,9 +3204,6 @@ class MorphingOrbWidget(QWidget):
         elif presence_state == "thinking":
             label = "RÉFLEXION…"
             dot_color = QColor(state.glow_color)
-        elif presence_state == "speaking":
-            label = "RÉPONSE EN COURS"
-            dot_color = QColor(state.glow_color).lighter(130)
         else:
             return
 
@@ -2340,7 +3313,12 @@ class MorphingOrbWidget(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
 
+            # SourceOver + transparent est un no-op : l'image précédente
+            # (fonds d'un autre menu) resterait dans le tampon. Source
+            # remplace vraiment le tampon, y compris par du transparent.
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
             painter.fillRect(self.rect(), Qt.transparent)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
             path = self._blob_path()
 

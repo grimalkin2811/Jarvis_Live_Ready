@@ -16,7 +16,6 @@ Exemples :
 """
 
 import argparse
-import asyncio
 import sys
 
 # Les imports lourds (audio, Gemini) sont faits dans run_headless : ainsi
@@ -38,13 +37,19 @@ except Exception:  # pragma: no cover - PySide6 absent
 
 
 def _load_menu_bridge() -> None:
-    """Charge les réglages du menu radial (UI/menu_state.json) pour que la
-    voix, le volume, le micro, etc. restent cohérents entre le mode console
-    et le mode orbe. Échoue silencieusement en cas d'absence."""
+    """Charge les réglages persistants (voix, volume, micro, mode de réponse…)
+
+    Source unique : ``UI.menu_state.LIVE``. Tous les modes (console, orbe,
+    desktop) doivent passer par ici pour ne pas retomber sur la voix par
+    défaut. Échoue silencieusement en cas d'absence.
+    """
     try:
         from UI import menu_state as ms
 
-        ms.load_state(str(paths.menu_state_file()))
+        ms.load_runtime_preferences(
+            str(paths.menu_state_file()),
+            str(paths.system_state_file()),
+        )
     except Exception:
         pass
 
@@ -170,6 +175,8 @@ def _run_smoke_test() -> int:
 
 
 async def run_headless():
+    import asyncio
+
     from .audio import AudioIO
     from .config import load_config
     from .gemini_live import AuthError, GeminiLive
@@ -230,8 +237,24 @@ async def run_headless():
             mic_enabled=MENU_LIVE.get_mic_enabled if MENU_LIVE else None,
             wake_threshold=MENU_LIVE.get_wake_threshold if MENU_LIVE else None,
             barge_in_provider=MENU_LIVE.get_barge_in if MENU_LIVE else None,
+            post_response_provider=(
+                MENU_LIVE.get_post_response_listen if MENU_LIVE else None
+            ),
             on_barge_in=on_barge_in,
         )
+        voice_kwargs = {}
+        if MENU_LIVE is not None:
+            try:
+                from UI.menu_state import voice_backend_kwargs
+
+                voice_kwargs = voice_backend_kwargs()
+            except Exception:
+                voice_kwargs = {
+                    "response_mode_provider": MENU_RESPONSE_MODE,
+                    "voice_provider": MENU_LIVE.get_voice_name,
+                    "voice_version_provider": MENU_LIVE.get_voice_version,
+                    "speech_pace_provider": MENU_LIVE.get_speech_pace,
+                }
         gemini = GeminiLive(
             config.api_key,
             config.model,
@@ -240,11 +263,8 @@ async def run_headless():
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
             on_speaking=audio.begin_speaking,
-            response_mode_provider=MENU_RESPONSE_MODE,
-            voice_provider=MENU_LIVE.get_voice_name if MENU_LIVE else None,
-            voice_version_provider=MENU_LIVE.get_voice_version if MENU_LIVE else None,
-            speech_pace_provider=MENU_LIVE.get_speech_pace if MENU_LIVE else None,
             memory_manager=memory_manager,
+            **voice_kwargs,
         )
 
         print(f"Jarvis Live - Bonjour {config.user}")
@@ -386,6 +406,10 @@ def main(argv=None) -> int:
                 print("[Jarvis] Configuration annulée.")
                 return 1
         return run_ui(mode)
+
+    # Import local : asyncio n'est utile que pour le mode console, pas
+    # pour --ui/--desktop (gain sur le chemin de démarrage de l'UI).
+    import asyncio
 
     try:
         asyncio.run(run_headless())

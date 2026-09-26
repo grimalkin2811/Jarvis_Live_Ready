@@ -16,6 +16,10 @@ data/
 *.db-shm
 *.db-wal
 
+# Auth Deezer locale (token OAuth — ne jamais committer)
+deezer_auth.json
+**/deezer_auth.json
+
 # Routines, rappels et modes locaux (hors du depot par defaut : ~/.jarvis)
 routines.json
 schedule.db
@@ -32,6 +36,11 @@ build/
 *.zip
 *.sha256
 *.exe
+
+# Textes générés par le Writing System (le dossier reste versionné)
+user_content/*
+!user_content/.gitkeep
+!user_content/README.md
 
 # Outils
 .idea/

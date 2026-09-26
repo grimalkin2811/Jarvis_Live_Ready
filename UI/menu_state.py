@@ -52,8 +52,17 @@ class MenuState:
     mic_enabled: bool = True
     hotword_sensitivity: int = 50
     listen_mode: bool = False
+    #: Écoute post-réponse : après sa réponse, Jarvis reste à l'écoute
+    #: pendant la fenêtre de suivi (``AudioIO.FOLLOW_UP_SECONDS``) sans
+    #: exiger un nouveau « Hey Jarvis ». Désactivée, le wake word redevient
+    #: obligatoire à chaque interaction.
+    post_response_listen: bool = True
     #: Interruption vocale : dire « stop » coupe la réponse en cours.
     barge_in: bool = True
+    #: Writing → Active field. Indépendant de la création de fichiers.
+    writing_active_field: bool = True
+    #: Writing → Create text files. Indépendant de l'insertion au curseur.
+    writing_text_files: bool = True
 
     # System
     startup: bool = False
@@ -85,7 +94,18 @@ def _clamp_float(value: float, low: float, high: float) -> float:
         return low
 
 
-_BOOL_FIELDS = {"mic_enabled", "startup", "startup_managed", "overlay", "always_on_top", "listen_mode", "barge_in"}
+_BOOL_FIELDS = {
+    "mic_enabled",
+    "startup",
+    "startup_managed",
+    "overlay",
+    "always_on_top",
+    "listen_mode",
+    "post_response_listen",
+    "barge_in",
+    "writing_active_field",
+    "writing_text_files",
+}
 
 
 def _apply_payload(state: MenuState, payload: dict) -> None:
@@ -155,7 +175,10 @@ class LiveControls:
         self.tts_volume = 70
         self.speech_speed = 50
         self.listen_mode = False
+        self.post_response_listen = True
         self.barge_in = True
+        self.writing_active_field = True
+        self.writing_text_files = True
         self.voice_name = GEMINI_VOICE_NAMES[VOICE_OPTIONS[0]]
         self._voice_version = 0
         #: Poignée fournie par le backend vocal pour couper la réponse en
@@ -223,6 +246,15 @@ class LiveControls:
         with self._lock:
             self.listen_mode = bool(value)
 
+    # Écoute post-réponse (fenêtre de suivi après la réponse de Jarvis) --
+    def get_post_response_listen(self) -> bool:
+        with self._lock:
+            return self.post_response_listen
+
+    def set_post_response_listen(self, value: bool) -> None:
+        with self._lock:
+            self.post_response_listen = bool(value)
+
     # Interruption vocale (« stop » coupe la réponse en cours) -----------
     def get_barge_in(self) -> bool:
         with self._lock:
@@ -231,6 +263,23 @@ class LiveControls:
     def set_barge_in(self, value: bool) -> None:
         with self._lock:
             self.barge_in = bool(value)
+
+    # Writing System (champ actif / fichiers .txt) ------------------------
+    def get_writing_active_field(self) -> bool:
+        with self._lock:
+            return self.writing_active_field
+
+    def set_writing_active_field(self, value: bool) -> None:
+        with self._lock:
+            self.writing_active_field = bool(value)
+
+    def get_writing_text_files(self) -> bool:
+        with self._lock:
+            return self.writing_text_files
+
+    def set_writing_text_files(self, value: bool) -> None:
+        with self._lock:
+            self.writing_text_files = bool(value)
 
     # Arrêt immédiat de la réponse (bouton / raccourci) ------------------
     def set_stop_speaking_handler(self, handler) -> None:
@@ -314,5 +363,78 @@ def _sync_live(state: MenuState) -> None:
     LIVE.set_tts_volume(state.tts_volume)
     LIVE.set_speech_speed(state.speech_speed)
     LIVE.set_listen_mode(state.listen_mode)
+    LIVE.set_post_response_listen(state.post_response_listen)
     LIVE.set_barge_in(state.barge_in)
+    LIVE.set_writing_active_field(state.writing_active_field)
+    LIVE.set_writing_text_files(state.writing_text_files)
     LIVE.set_voice_name(VOICE_OPTIONS[state.voice_select % len(VOICE_OPTIONS)])
+
+
+def voice_backend_kwargs() -> dict:
+    """Fournisseurs TTS/Gemini partagés par tous les modes (Blob, Desktop, Console).
+
+    Source unique : le pont ``LIVE``. Ne pas dupliquer une config vocale
+    spécifique au Desktop — Blob et overlay doivent lire exactement ceci.
+    """
+    return {
+        "response_mode_provider": response_mode_label_from_live,
+        "voice_provider": LIVE.get_voice_name,
+        "voice_version_provider": LIVE.get_voice_version,
+        "speech_pace_provider": LIVE.get_speech_pace,
+    }
+
+
+def tts_runtime_config() -> dict:
+    """Instantané de la configuration vocale effectivement consommée au runtime."""
+    return {
+        "voice_name": LIVE.get_voice_name(),
+        "voice_version": LIVE.get_voice_version(),
+        "tts_volume": LIVE.get_tts_volume(),
+        "speech_speed": LIVE.get_speech_speed(),
+        "speech_pace": LIVE.get_speech_pace(),
+        "mic_enabled": LIVE.get_mic_enabled(),
+        "wake_threshold": LIVE.get_wake_threshold(),
+        "listen_mode": LIVE.get_listen_mode(),
+        "barge_in": LIVE.get_barge_in(),
+        "response_mode": response_mode_label_from_live(),
+    }
+
+
+def load_runtime_preferences(
+    menu_path: str | None = None,
+    system_path: str | None = None,
+) -> MenuState:
+    """Charge les préférences persistantes dans ``LIVE`` (tous les modes).
+
+    * ``menu_state.json`` : voix, volume, débit, micro, hotword, etc.
+    * ``system_state.json`` : mode de réponse (Concis / Équilibré / Détaillé).
+
+    Sans cet appel, le Desktop et la console resteraient sur les valeurs
+    par défaut du pont (voix Charon, volume 70, …) même si l'utilisateur
+    avait choisi une autre voix dans l'orbe.
+    """
+    if not menu_path:
+        try:
+            from src import paths
+
+            menu_path = str(paths.menu_state_file())
+        except Exception:
+            menu_path = ""
+    state = load_state(menu_path)
+
+    if not system_path:
+        try:
+            from src import paths
+
+            system_path = str(paths.system_state_file())
+        except Exception:
+            system_path = ""
+    if system_path and os.path.exists(system_path):
+        try:
+            with open(system_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict) and "response_mode_index" in payload:
+                LIVE.set_response_mode_index(int(payload["response_mode_index"]))
+        except Exception:
+            pass
+    return state
