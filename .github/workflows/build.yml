@@ -77,6 +77,9 @@ jobs:
       - name: "diag: test_menu_layout"
         if: always()
         run: python -m unittest tests.test_menu_layout -v
+      - name: "diag: test_ui_menu_regression"
+        if: always()
+        run: python -m unittest tests.test_ui_menu_regression -v
       - name: "diag: test_item_bg_opacity"
         if: always()
         run: python -m unittest tests.test_item_bg_opacity -v
@@ -129,6 +132,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      # La v1.5.0 a été étiquetée sur la tête de la branche Deezer (PR #27),
+      # coupée depuis v1.1.2 : les binaires publiés ont embarqué une UI
+      # antérieure à la 1.2.0 (plus de fonds d'items, menus superposés), et
+      # la CI est restée verte parce que la branche transportait aussi ses
+      # propres tests (anciens). Une vérification de LIGNÉE est le seul
+      # garde-fou possible pour ce cas.
+      - name: "Garde-fou publication — lignée & contrat UI"
+        shell: bash
+        run: python scripts/check_release_lineage.py --ref "${{ github.sha }}"
 
       - name: Lire la version et vérifier cohérence tag
         id: vars

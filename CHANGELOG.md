@@ -9,6 +9,37 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [Non publié]
+
+### Corrigé
+
+- **Régression UI de la release v1.5.0 — fonds d'items et menus superposés.**
+  Le tag `v1.5.0` a été posé sur `68392d4`, tête de la branche Deezer
+  (PR #27), branche coupée depuis `v1.1.2`. Ce commit ne contient donc
+  **aucun** des travaux 1.2.0 → 1.4.2 : pas de fonds d'items dans les menus
+  radiaux (1.3.1/1.3.2), pas de solveur de layout anti-chevauchement (1.3.2),
+  pas de masquage du Blob, pas de Writing Mode. Les binaires publiés
+  (`JarvisSetup-1.5.0.exe`, zip portable) embarquent donc une interface
+  antérieure à la 1.2.0. `main` (union réalisée par la PR #28) n'a, lui,
+  **jamais** perdu ces fonctionnalités : son rendu est identique au pixel
+  près à celui de `v1.3.2`, aux deux items Voice ajoutés par le Writing Mode
+  près. Aucun code UI n'avait donc à être restauré ; c'est la **publication**
+  qui était en cause. → republier depuis `main`.
+
+### Ajouté
+
+- `scripts/check_release_lineage.py` — garde-fou de publication : refuse
+  d'étiqueter/publier un commit qui ne contient pas toutes les versions
+  déjà livrées, et vérifie la présence du contrat UI (fonds d'items +
+  anti-chevauchement). Exécuté par le job `build` sur les tags. Il aurait
+  bloqué la v1.5.0 (`v1.2.0` … `v1.4.1` absents de la lignée).
+- `tests/test_ui_menu_regression.py` — verrouillage explicite du contrat UI :
+  présence des API (échoue sur tout arbre antérieur à la 1.3.2), fond peint
+  derrière chaque item des 5 menus (mesure différentielle), absence de
+  highlight permanent, survol distinct et localisé, disparition des fonds à
+  la fermeture, et zéro chevauchement — dont le menu Voice à 12 items.
+  Les 15 tests échouent sur l'arbre publié en v1.5.0.
+
 ## [1.5.0] — 2026-09-25
 
 ### Ajouté
