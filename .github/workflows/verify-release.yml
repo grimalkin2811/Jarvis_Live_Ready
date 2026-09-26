@@ -1,0 +1,222 @@
+name: Verify Release
+
+# Vérification POST-PUBLICATION d'une release déjà publiée.
+#
+# La release v1.5.0 était verte de bout en bout alors que ses binaires ne
+# contenaient ni les fonds d'items des menus, ni le solveur
+# anti-chevauchement, ni le Writing Mode : aucun contrôle n'ouvrait le
+# binaire produit. Ce workflow télécharge les artefacts RÉELLEMENT publiés,
+# vérifie leurs empreintes, exécute le binaire, puis inspecte l'archive PYZ
+# embarquée dans l'exécutable pour prouver que le code attendu s'y trouve.
+#
+# Chaque contrôle est une étape distincte : sa conclusion est lisible via
+# l'API GitHub même lorsque les journaux bruts ne sont pas téléchargeables.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag de la release à vérifier (ex. v1.5.1)"
+        required: true
+        default: "v1.5.1"
+      expected_version:
+        description: "Version attendue dans le binaire (ex. 1.5.1)"
+        required: true
+        default: "1.5.1"
+      expected_tools:
+        description: "Nombre d'outils Gemini attendu"
+        required: true
+        default: "112"
+      report_pr:
+        description: "Numéro de PR où publier le rapport (0 = aucun)"
+        required: false
+        default: "0"
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  verify:
+    name: Vérification des artefacts publiés
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      # On se place sur le TAG vérifié : la liste d'outils attendue et le
+      # script de contrôle doivent venir de la source exacte de la release.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: "Contrôle 0 — lignée Git du tag"
+        run: python scripts/check_release_lineage.py --ref ${{ inputs.tag }}
+
+      - name: "Contrôle 1 — télécharger les artefacts publiés"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p relcheck
+          gh release download "${{ inputs.tag }}" --dir relcheck --clobber
+          ls -l relcheck
+
+      - name: "Contrôle 2 — provenance de la release (tag, commit, état)"
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release view "${{ inputs.tag }}" \
+            --json tagName,isDraft,isPrerelease,targetCommitish,publishedAt,assets \
+            > release.json
+          python - <<'PY'
+          import json, subprocess, sys
+          data = json.load(open("release.json", encoding="utf-8"))
+          tag = data["tagName"]
+          commit = subprocess.check_output(
+              ["git", "rev-parse", f"{tag}^{{commit}}"], text=True).strip()
+          print(f"tag            : {tag}")
+          print(f"commit         : {commit}")
+          print(f"draft          : {data['isDraft']}")
+          print(f"prerelease     : {data['isPrerelease']}")
+          print(f"publié le      : {data['publishedAt']}")
+          problems = []
+          if data["isDraft"]:
+              problems.append("la release est en brouillon")
+          if data["isPrerelease"]:
+              problems.append("la release est marquée pre-release")
+          if len(data["assets"]) < 3:
+              problems.append(f"{len(data['assets'])} artefact(s) au lieu de 3")
+          if problems:
+              print("PROBLEMES : " + " | ".join(problems))
+              sys.exit(1)
+          print("provenance OK")
+          PY
+
+      - name: "Contrôle 3 — SHA-256 des artefacts vs fichier .sha256"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd relcheck
+          python - <<'PY'
+          import hashlib, glob, os, sys
+
+          def sha256(path):
+              h = hashlib.sha256()
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      h.update(chunk)
+              return h.hexdigest()
+
+          lines, problems = [], []
+          for path in sorted(glob.glob("*")):
+              if path.endswith(".sha256"):
+                  continue
+              digest = sha256(path)
+              size = os.path.getsize(path)
+              lines.append(f"| `{path}` | {size} | `{digest}` |")
+              print(f"{path}\n  taille  : {size}\n  sha256  : {digest}")
+              side = path + ".sha256"
+              if os.path.isfile(side):
+                  published = open(side, encoding="utf-8-sig").read().split()[0].strip().lower()
+                  if published != digest:
+                      problems.append(f"{path} : .sha256 publié={published} calculé={digest}")
+                  else:
+                      print("  .sha256 publié : IDENTIQUE OK")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              env.write("ARTIFACT_TABLE<<EOF\n" + "\n".join(lines) + "\nEOF\n")
+          if problems:
+              print("PROBLEMES : " + " | ".join(problems))
+              sys.exit(1)
+          PY
+
+      - name: "Contrôle 4 — extraire le portable et lire version.json"
+        shell: bash
+        run: |
+          set -euo pipefail
+          zip=$(ls relcheck/*portable*.zip)
+          mkdir -p extracted
+          python -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall('extracted')" "$zip"
+          find extracted -maxdepth 2 -name version.json -o -maxdepth 2 -name "Jarvis.exe" | sort
+          python - <<'PY'
+          import json, glob, sys
+          expected = "${{ inputs.expected_version }}"
+          hits = glob.glob("extracted/**/version.json", recursive=True)
+          if not hits:
+              print("version.json introuvable dans le ZIP"); sys.exit(1)
+          found = json.load(open(hits[0], encoding="utf-8-sig")).get("version")
+          print(f"version.json : {found} (attendu {expected})")
+          sys.exit(0 if str(found) == expected else 1)
+          PY
+
+      - name: "Contrôle 5 — le binaire publié annonce la bonne version"
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(find extracted -name Jarvis.exe | head -n 1)
+          echo "exécutable : $exe"
+          "$exe" --smoke-test | tee smoke.txt
+          grep -q "Version: ${{ inputs.expected_version }}" smoke.txt
+
+      - name: "Contrôle 6 — contenu réel du binaire (PYZ : menus, Writing, Deezer, outils)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe=$(find extracted -name Jarvis.exe | head -n 1)
+          python scripts/verify_release_bundle.py \
+            --bundle "$(dirname "$exe")" \
+            --version "${{ inputs.expected_version }}" \
+            --expect-tools "${{ inputs.expected_tools }}" | tee bundle.txt
+
+      - name: "Contrôle 7 — l'installeur publié porte la bonne version"
+        shell: bash
+        run: |
+          set -euo pipefail
+          setup=$(ls relcheck/JarvisSetup-*.exe)
+          echo "installeur : $setup"
+          case "$setup" in
+            *"${{ inputs.expected_version }}"*) echo "nom de fichier cohérent OK" ;;
+            *) echo "nom de fichier incohérent"; exit 1 ;;
+          esac
+
+      - name: "Rapport"
+        if: always()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          {
+            echo "## Vérification de la release ${{ inputs.tag }}"
+            echo
+            echo "| Artefact | Taille (octets) | SHA-256 |"
+            echo "|---|---:|---|"
+            echo "${ARTIFACT_TABLE:-| (indisponible) | | |}"
+            echo
+            echo "### Version annoncée par le binaire publié"
+            echo '```'
+            grep -E "^(Version|Frozen):" smoke.txt 2>/dev/null || echo "(non exécuté)"
+            echo '```'
+            echo "### Contenu du binaire"
+            echo '```'
+            cat bundle.txt 2>/dev/null || echo "(non exécuté)"
+            echo '```'
+          } > report.md
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ inputs.report_pr }}" != "0" ]; then
+            gh pr comment "${{ inputs.report_pr }}" --body-file report.md || true
+          fi

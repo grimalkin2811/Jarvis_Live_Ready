@@ -81,6 +81,7 @@ REQUIRED_TESTS = [
     "tests/test_item_bg_opacity.py",
     "tests/test_blob_visibility.py",
     "tests/test_ui_menu_regression.py",
+    "tests/test_verify_release_bundle.py",
 ]
 
 _VERSION_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
