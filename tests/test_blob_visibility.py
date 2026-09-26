@@ -3,11 +3,13 @@
 Vérifie, sans aucun affichage réel (Qt offscreen) :
 
 * l'item existe dans le menu Appearance et rend son état réel ;
-* l'activation masque la fenêtre et persiste le réglage ;
-* la réactivation réaffiche la fenêtre et persiste l'état inverse ;
+* l'activation masque la fenêtre pendant la SESSION (comportement 1.3.1) ;
+* la réactivation réaffiche la fenêtre ;
 * ``tick()`` maintient la fenêtre masquée (pas de réapparition parasite) ;
-* l'état survit à un rechargement, et un ancien fichier sans la clé reste
-  « orbe visible » ;
+* **l'état masqué n'est JAMAIS persisté comme démarrage** (1.3.2) : ni dans
+  ``state_to_dict``, ni relu par ``apply_state_dict`` (même avec un ancien
+  fichier portant ``blob_hidden: true``) ;
+* masquer → fermeture → relancement = **visible**, tous chemins de fermeture ;
 * Jarvis continue de fonctionner pendant que l'orbe est masqué.
 """
 
@@ -136,12 +138,13 @@ class BlobVisibilityBehaviourTests(unittest.TestCase):
         self._click_blob_visible()
         self.assertLess(self.widget._menu_sector, 0)
 
-    def test_setting_is_persisted(self) -> None:
+    def test_hidden_state_is_not_written_as_startup_state(self) -> None:
+        """Masquer ne doit PAS écrire ``blob_hidden`` dans le fichier."""
         self._click_blob_visible()
         path = paths.appearance_state_file()
         self.assertTrue(path.exists())
         payload = json.loads(path.read_text(encoding="utf-8"))
-        self.assertTrue(payload["blob_hidden"])
+        self.assertNotIn("blob_hidden", payload)
 
     def test_tick_keeps_the_blob_hidden(self) -> None:
         self._click_blob_visible()
@@ -171,7 +174,7 @@ class BlobVisibilityBehaviourTests(unittest.TestCase):
         self.assertTrue(self.widget.isVisible())
         self.assertFalse(self.widget.appearance_state.blob_hidden)
         payload = json.loads(paths.appearance_state_file().read_text(encoding="utf-8"))
-        self.assertFalse(payload["blob_hidden"])
+        self.assertNotIn("blob_hidden", payload)
 
     def test_backend_keeps_running_while_hidden(self) -> None:
         """L'orbe masqué ne coupe rien : le rendu et l'état vocal continuent."""
@@ -187,10 +190,12 @@ class BlobVisibilityBehaviourTests(unittest.TestCase):
         self.assertEqual(jm.presence_state, "listening")
         self.assertFalse(self.widget.isVisible())
 
-    def test_hidden_blob_survives_a_reload(self) -> None:
+    def test_reload_after_hide_starts_visible(self) -> None:
+        """Masquer → recharger l'état (équivalent relancement) = visible."""
         self._click_blob_visible()
+        self.assertTrue(self.widget.appearance_state.blob_hidden)
         reloaded = appearance_actions.load_state(str(paths.appearance_state_file()))
-        self.assertTrue(reloaded.blob_hidden)
+        self.assertFalse(reloaded.blob_hidden)
 
     def test_legacy_state_file_defaults_to_visible(self) -> None:
         # Un fichier écrit avant la 1.2.0 ne contient pas « blob_hidden ».
@@ -204,9 +209,98 @@ class BlobVisibilityBehaviourTests(unittest.TestCase):
         self.assertFalse(state.blob_hidden)
         self.assertEqual(state.theme_name, "green")
 
+    def test_legacy_payload_with_blob_hidden_true_starts_visible(self) -> None:
+        """Ancien payload 1.2.0–1.3.1 ``blob_hidden: true`` → visible."""
+        path = paths.appearance_state_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "theme_name": "green",
+                    "glow_intensity": 1.0,
+                    "blob_hidden": True,
+                }
+            ),
+            encoding="utf-8",
+        )
+        state = appearance_actions.load_state(str(path))
+        self.assertFalse(state.blob_hidden)
+        self.assertEqual(state.theme_name, "green")
+
+
+class CloseWhileHiddenRestartTests(unittest.TestCase):
+    """Masquer → quitter → relancer = visible (chaque chemin de fermeture)."""
+
+    def _fresh_widget(self):
+        widget = jm.MorphingOrbWidget()
+        widget.resize(1024, 768)
+        widget.show()
+        QApplication.processEvents()
+        return widget
+
+    def _hide_via_menu(self, widget) -> None:
+        widget._open_radial_menu(_appearance_sector())
+        node = next(n for n in widget._menu_nodes if n.label == "Blob Visible")
+        node.callback()
+        QApplication.processEvents()
+        self.assertFalse(widget.isVisible())
+        self.assertTrue(widget.appearance_state.blob_hidden)
+
+    def test_close_event_while_hidden_then_restart_visible(self) -> None:
+        app = _qt_app()
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["JARVIS_DATA_DIR"] = tmp
+            try:
+                widget = self._fresh_widget()
+                self._hide_via_menu(widget)
+                # Chemin de fermeture normal (Échap → close(), aboutToQuit…).
+                widget.close()
+                QApplication.processEvents()
+                # « Relancement » : nouvel orbe sur le même répertoire de données.
+                widget2 = self._fresh_widget()
+                self.assertTrue(widget2.isVisible())
+                self.assertFalse(widget2.appearance_state.blob_hidden)
+                # Le fichier sur disque ne porte aucune trace du masquage.
+                payload = json.loads(
+                    paths.appearance_state_file().read_text(encoding="utf-8")
+                )
+                self.assertNotIn("blob_hidden", payload)
+                widget2.close()
+                widget2.deleteLater()
+                widget.deleteLater()
+            finally:
+                os.environ.pop("JARVIS_DATA_DIR", None)
+
+    def test_close_while_hidden_never_persists_hidden_flag(self) -> None:
+        """Même en forçant save_state en caché, blob_hidden n'est pas écrit."""
+        app = _qt_app()  # noqa: F841
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ["JARVIS_DATA_DIR"] = tmp
+            try:
+                widget = self._fresh_widget()
+                self._hide_via_menu(widget)
+                # Tous les chemins de fermeture passent par save_state via
+                # state_to_dict — on force l'écriture pour prouver le contrat.
+                appearance_actions.save_state(
+                    widget.appearance_state,
+                    str(paths.appearance_state_file()),
+                )
+                payload = json.loads(
+                    paths.appearance_state_file().read_text(encoding="utf-8")
+                )
+                self.assertNotIn("blob_hidden", payload)
+                reloaded = appearance_actions.load_state(
+                    str(paths.appearance_state_file())
+                )
+                self.assertFalse(reloaded.blob_hidden)
+                widget.close()
+                widget.deleteLater()
+            finally:
+                os.environ.pop("JARVIS_DATA_DIR", None)
+
 
 class AppearanceStatePersistenceTests(unittest.TestCase):
-    """Persistance de la nouvelle clé d'apparence (sans Qt widget)."""
+    """Persistance de la clé d'apparence (sans Qt widget)."""
 
     def test_state_round_trip(self) -> None:
         state = appearance_actions.AppearanceState()
@@ -216,11 +310,17 @@ class AppearanceStatePersistenceTests(unittest.TestCase):
         appearance_actions.toggle_blob_visibility(state)
         self.assertFalse(state.blob_hidden)
 
-    def test_dict_contains_blob_hidden(self) -> None:
+    def test_dict_does_not_contain_blob_hidden(self) -> None:
         state = appearance_actions.AppearanceState()
         state.blob_hidden = True
-        self.assertIn("blob_hidden", appearance_actions.state_to_dict(state))
-        self.assertTrue(appearance_actions.state_to_dict(state)["blob_hidden"])
+        self.assertNotIn("blob_hidden", appearance_actions.state_to_dict(state))
+
+    def test_apply_state_dict_forces_visible(self) -> None:
+        state = appearance_actions.AppearanceState()
+        appearance_actions.apply_state_dict(
+            state, {"theme_name": "blue", "blob_hidden": True}
+        )
+        self.assertFalse(state.blob_hidden)
 
     def test_set_blob_hidden_is_idempotent(self) -> None:
         state = appearance_actions.AppearanceState()
@@ -242,7 +342,12 @@ class AppearanceStatePersistenceTests(unittest.TestCase):
         self.assertEqual(state.blob_scale, 1.0)
         self.assertEqual(state.glow_intensity, glow_before)
         self.assertTrue(state.minimal_mode)
-        self.assertFalse(state.cinematic_mode)
+
+    def test_restore_hint_exists(self) -> None:
+        # L'icône de notification reste le chemin de retour documenté.
+        hint = appearance_actions.BLOB_RESTORE_HINT
+        self.assertTrue(hint)
+        self.assertIsInstance(hint, str)
 
 
 if __name__ == "__main__":

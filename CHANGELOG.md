@@ -9,6 +9,53 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## 1.3.2 — Layout sans chevauchement, opacité des fonds, démarrage plus rapide
+
+### Ajouts
+
+- **Appearance → « Item BG Opacity »** : nouveau slider (0–100 %) qui règle
+  l'opacité des **fonds des items** des menus (pas le blob, ni le texte, ni
+  le halo). Appliqué à l'image suivante, cohérent sur les 5 menus (même
+  `appearance_state`), persisté avec les autres réglages Appearance dans
+  `appearance_state.json`. Fichier d'avant 1.3.2 sans la clé → défaut
+  identique au comportement 1.3.1 (`ITEM_BG_REST`).
+
+### Corrections
+
+- **Layout des menus sans chevauchement (systémique)** : le placement
+  historique reste la base ; un solveur mesure les libellés avec les
+  métriques de police exactes du rendu (pire cas survol) et élargit
+  **seulement** l'espacement fautif (colonne ou pas de rang) quand deux
+  zones se chevaucheraient. Corrige notamment le menu Voice (9 chevauchements
+  mesurés en 1.3.1) **sans redessiner l'UI** — valable pour toutes les
+  tailles de contenu et les deux orientations (grille / ligne).
+- **Masquage jamais pris pour un démarrage** : `blob_hidden` n'est plus
+  sérialisé (`state_to_dict`) et est ignoré au chargement (même ancien
+  fichier `blob_hidden: true` → orbe **visible**). Masquer en session
+  fonctionne exactement comme avant ; masquer → fermeture → relancement =
+  visible, quels que soient les chemins de fermeture (Échap, System → Quit,
+  icône de notification, `aboutToQuit`).
+
+### Performance
+
+- **Démarrage** : imports lourds déportés hors du chemin critique
+  (`asyncio`, `audio`, `gemini_live`, `memory`, `scheduler` dans la boucle
+  vocale ; `screen_halo_overlay` en mode desktop seul ; `UI` exports lazy
+  PEP 562 ; construction du menu Routines via `list_routine_names()` sans
+  importer `src.tools`). Mesure locale (offscreen) : « Interface démarrée »
+  **≈ 0,68 s → ≈ 0,17 s**. Le launcher n'est pas concerné (hors périmètre).
+  La voix reste prête au même instant absolu (~0,8 s) — présence « loading »
+  pendant ~130 ms de plus, aucun écran de chargement ajouté.
+
+### Qualité
+
+- Tests : `test_menu_layout.py` (zéro chevauchement, 5 menus × 2
+  orientations), `test_item_bg_opacity.py` (présentation, application,
+  persistance, périmètre), réécriture de `test_blob_visibility.py`
+  (contrat visible au démarrage + chemins de fermeture), différentiel des
+  fonds patché sur `state.item_bg_opacity`.
+- CI : étapes `diag:` pour les deux nouveaux fichiers de tests.
+
 ## 1.3.1 — Fonds des items réellement visibles
 
 ### Correction

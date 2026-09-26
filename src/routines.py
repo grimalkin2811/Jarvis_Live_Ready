@@ -509,6 +509,35 @@ class RoutineManager:
         ]
         return _ok(routines=routines, count=len(routines), fichier=self.path)
 
+    def list_routine_names(self) -> dict:
+        """Noms d'affichage **sans** validation des étapes (usage UI).
+
+        Contrairement à ``list_routines()``, cette lecture n'appelle pas
+        ``_sanitize``/``parse_steps`` et n'importe donc PAS le registre
+        ``src.tools`` (~50 ms + pycaw/psutil/urllib). C'est le chemin utilisé
+        au démarrage de l'orbe pour construire le menu Routines : à cet
+        instant, seule la liste des noms est nécessaire. Toute décision qui
+        dépend des étapes (exécution, dialogue Catalogue, outils vocaux) doit
+        continuer de passer par ``list_routines()`` / ``describe_routine()``.
+        """
+        if not self.enabled:
+            return _err("Routines désactivées.")
+        with self._lock:
+            payload = self._load(sanitize=False)
+        routines = []
+        for item in payload["routines"]:
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            routines.append(
+                {
+                    "name": name,
+                    "preset_id": str(item.get("preset_id") or ""),
+                    "enabled": bool(item.get("enabled", True)),
+                }
+            )
+        return _ok(routines=routines, count=len(routines), fichier=self.path)
+
     def describe_routine(self, name: str) -> dict:
         if not self.enabled:
             return _err("Routines désactivées.")

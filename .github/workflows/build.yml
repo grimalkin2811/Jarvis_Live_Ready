@@ -62,6 +62,12 @@ jobs:
       - name: "diag: test_menu_backgrounds"
         if: always()
         run: python -m unittest tests.test_menu_backgrounds -v
+      - name: "diag: test_menu_layout"
+        if: always()
+        run: python -m unittest tests.test_menu_layout -v
+      - name: "diag: test_item_bg_opacity"
+        if: always()
+        run: python -m unittest tests.test_item_bg_opacity -v
       - name: "diag: test_orb_visibility"
         if: always()
         run: python -m unittest tests.test_orb_visibility -v

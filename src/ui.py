@@ -13,7 +13,6 @@ via des signaux Qt, ce qui est thread-safe.
 
 from __future__ import annotations
 
-import asyncio
 import sys
 import threading
 import traceback
@@ -22,15 +21,16 @@ from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
-from .audio import AudioIO
+# Imports CHEAP restant au niveau module (le chemin de démarrage UI) :
+# config, paths, protocols et les ponts UI sont déjà nécessaires avant
+# l'affichage. Les imports lourds (asyncio, audio, gemini_live, memory,
+# scheduler, screen_halo_overlay) sont déportés dans le code qui les
+# utilise vraiment — voir _run_voice_loop et le branch desktop — pour
+# réduire le temps avant « Interface démarrée » (1.3.2).
 from .config import load_config
-from .gemini_live import AuthError, GeminiLive
-from .memory import MemoryManager, set_default_memory_manager
 from . import paths, protocols
-from .scheduler import start_default_scheduler
 from UI import appearance_actions
 from UI import menu_state
-from UI.screen_halo_overlay import ScreenHaloOverlay
 from UI.notification_bridge import NotificationBridge
 
 
@@ -41,7 +41,7 @@ class PresenceBridge(QObject):
 
 
 class PresenceRouter(QObject):
-    def __init__(self, overlay: ScreenHaloOverlay) -> None:
+    def __init__(self, overlay) -> None:
         super().__init__()
         self._overlay = overlay
 
@@ -75,7 +75,7 @@ class VoiceEnergyRouter(QObject):
         jarvis_menu.set_voice_energy(level)
 
 
-def _on_speaking(audio: AudioIO, presence_hook) -> None:
+def _on_speaking(audio, presence_hook) -> None:
     """Jarvis commence à parler : on le marque comme 'speaking' dans AudioIO
     (pour suspendre le timeout) et on informe l'UI le cas échéant."""
     audio.begin_speaking()
@@ -92,7 +92,23 @@ def _run_voice_loop(
     """Boucle vocale, identique à src.main.main() mais exécutée dans un thread.
 
     Elle possède sa propre boucle asyncio, comme l'exige Gemini aio.live.
+
+    Les imports du backend vocal sont faits ICI (et non au niveau module) :
+    ils pèsent ~450 ms (sounddevice, google genai, sqlite…) et ne sont
+    nécessaires qu'une fois l'UI affichée. En cas d'échec, l'UI reste
+    utilisable et le message indique que la voix est indisponible.
     """
+    import asyncio
+
+    try:
+        from .audio import AudioIO
+        from .gemini_live import AuthError, GeminiLive
+        from .memory import MemoryManager, set_default_memory_manager
+        from .scheduler import start_default_scheduler
+    except Exception as exc:
+        print(f"[Jarvis] Backend vocal indisponible : {exc}")
+        return
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
@@ -381,6 +397,10 @@ def run_ui(mode: str = "desktop") -> int:
 
         app.aboutToQuit.connect(_persist_orb_state)
     else:
+        # Overlay halo (mode desktop seul) : import paresseux — le mode
+        # orbe (le plus courant) n'a pas besoin de ce module (~20 ms).
+        from UI.screen_halo_overlay import ScreenHaloOverlay
+
         overlay = ScreenHaloOverlay(appearance_state)
         bridge = PresenceBridge()
         router = PresenceRouter(overlay)

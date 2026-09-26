@@ -427,7 +427,7 @@ class MenuBackgroundTests(unittest.TestCase):
         """Le fond d'item existe VRAIMENT sans survol, dans les 5 menus.
 
         Test en DIFFÉRENTIEL : on rend le menu ouvert deux fois, avec puis
-        sans le fond permanent (``ITEM_BG_REST`` forcé à 0), et on compte les
+        sans le fond permanent (``item_bg_opacity`` forcé à 0), et on compte les
         pixels qui changent. Mesurer une valeur absolue ne prouvait rien (le
         texte et la pastille sont déjà opaques) : la 1.3.0 passait ses
         propres tests alors qu'aucun fond n'était visible à l'écran
@@ -444,7 +444,10 @@ class MenuBackgroundTests(unittest.TestCase):
                 _force_fully_open(widget)
                 self.assertTrue(widget._menu_nodes, name)
 
-                with patch.object(jm, "ITEM_BG_REST", 0.0):
+                # Fond d'items piloté par le réglage Appearance
+                # « Item BG Opacity » (state.item_bg_opacity) : on le force
+                # à 0 pour mesurer le différentiel du fond permanent.
+                with patch.object(widget.appearance_state, "item_bg_opacity", 0.0):
                     sans_fond = widget.grab().toImage()
                 avec_fond = widget.grab().toImage()
 
