@@ -50,6 +50,19 @@ release historique, inchangée, avec ses propres tag, SHA et artefacts.
   highlight permanent, survol distinct et localisé, disparition des fonds à
   la fermeture, et zéro chevauchement — dont le menu Voice à 12 items.
   Les 15 tests échouent sur l'arbre publié en v1.5.0.
+- `scripts/verify_release_bundle.py` et le workflow `Verify Release`
+  (ajoutés sur `main` juste après le tag `v1.5.1`, et utilisés pour certifier
+  ses artefacts) — vérification **post-publication** : téléchargement des
+  artefacts réellement publiés, recalcul des SHA-256 et comparaison au fichier
+  `.sha256`, exécution de `Jarvis.exe --smoke-test`, puis lecture de l'archive
+  PYZ embarquée dans l'exécutable pour prouver la présence des modules
+  (`UI.*`, `src.writing.*`, `src.music.*`), des symboles du contrat
+  (`_draw_hover_background`, `item_bg_opacity`, `_solve_layout_spacings`,
+  `_menu_layout_overlaps`), de la version compilée et des 112 outils Gemini.
+  C'est le contrôle qui manquait à l'autre bout de la chaîne : aucune
+  vérification n'ouvrait le binaire produit. Sur un bundle construit depuis
+  `68392d4`, il sort en erreur (Writing Mode absent, 8 symboles de menu
+  absents, 11 outils absents).
 
 ### Inchangé
 
