@@ -7,6 +7,7 @@ Sans Qt : seule la logique métier et le parsing d'arguments sont testés ici
 import os
 import sys
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -148,23 +149,58 @@ class InstallUpdateTests(unittest.TestCase):
 
 
 class LaunchTests(unittest.TestCase):
+    def _launch(self, mode, *, running=False, wait=False, popen=True):
+        """Lance avec ``is_app_running`` contrôlé (évite le tasklist Windows)."""
+        run_patch = mock.patch("launcher.core.subprocess.run") if wait else nullcontext()
+        popen_patch = (
+            mock.patch("launcher.core.subprocess.Popen") if popen and not wait else nullcontext()
+        )
+        with mock.patch("launcher.core.updater.is_app_running", return_value=running):
+            with run_patch as run_mock:
+                with popen_patch as popen_mock:
+                    result = core.launch_jarvis(mode, wait=wait)
+                    return result, popen_mock, run_mock
+
     def test_unknown_mode_rejected(self):
         result = core.launch_jarvis("turbo")
         self.assertFalse(result.ok)
 
     def test_dev_launch_spawns_process(self):
-        with mock.patch("launcher.core.subprocess.Popen") as popen:
-            result = core.launch_jarvis("ui")
+        result, popen, _ = self._launch("ui")
         self.assertTrue(result.ok)
         popen.assert_called_once()
         cmd = popen.call_args.args[0]
         self.assertIn("--ui", cmd)
 
     def test_dev_launch_desktop(self):
-        with mock.patch("launcher.core.subprocess.Popen") as popen:
-            result = core.launch_jarvis("desktop")
+        result, popen, _ = self._launch("desktop")
         self.assertTrue(result.ok)
         self.assertIn("--desktop", popen.call_args.args[0])
+
+    def test_launcher_ui_mode(self):
+        result, popen, _ = self._launch("ui")
+        self.assertTrue(result.ok)
+        self.assertIn("--ui", popen.call_args.args[0])
+
+    def test_launcher_desktop_mode(self):
+        result, popen, _ = self._launch("desktop")
+        self.assertTrue(result.ok)
+        cmd = popen.call_args.args[0]
+        self.assertIn("--desktop", cmd)
+        self.assertNotIn("--ui", cmd)
+
+    def test_launcher_console_mode(self):
+        result, popen, _ = self._launch("console")
+        self.assertTrue(result.ok)
+        cmd = popen.call_args.args[0]
+        self.assertNotIn("--ui", cmd)
+        self.assertNotIn("--desktop", cmd)
+
+    def test_refuses_double_instance(self):
+        result, popen, _ = self._launch("ui", running=True)
+        self.assertFalse(result.ok)
+        self.assertIn("déjà", result.message.lower())
+        popen.assert_not_called()
 
     def test_creationflags_posix_are_zero(self):
         # Hors Windows, aucun flag de création (pas de console à masquer).
@@ -189,16 +225,18 @@ class LaunchTests(unittest.TestCase):
         flag = 0x08000000
         with mock.patch("launcher.core.os.name", "nt"):
             with mock.patch("launcher.core.subprocess.CREATE_NO_WINDOW", flag, create=True):
-                with mock.patch("launcher.core.subprocess.Popen") as popen:
-                    result = core.launch_jarvis("ui")
-        self.assertTrue(result.ok)
-        self.assertEqual(popen.call_args.kwargs.get("creationflags"), flag)
+                with mock.patch("launcher.core.updater.is_app_running", return_value=False):
+                    with mock.patch("launcher.core.subprocess.Popen") as popen:
+                        result = core.launch_jarvis("ui")
+                        self.assertTrue(result.ok)
+                        self.assertEqual(popen.call_args.kwargs.get("creationflags"), flag)
 
     def test_wait_mode_returns_code(self):
         completed = mock.Mock()
         completed.returncode = 3
-        with mock.patch("launcher.core.subprocess.run", return_value=completed):
-            result = core.launch_jarvis("console", wait=True)
+        with mock.patch("launcher.core.updater.is_app_running", return_value=False):
+            with mock.patch("launcher.core.subprocess.run", return_value=completed):
+                result = core.launch_jarvis("console", wait=True)
         self.assertFalse(result.ok)
         self.assertEqual(result.returncode, 3)
 

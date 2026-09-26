@@ -17,7 +17,7 @@ import sys
 import threading
 import traceback
 
-from PySide6.QtCore import QObject, Qt, Signal, Slot
+from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -41,9 +41,23 @@ class PresenceBridge(QObject):
 
 
 class PresenceRouter(QObject):
+    """Relie l'état vocal au cadre Desktop.
+
+    En écoute continue, AudioIO ne revient jamais en « hidden » : un
+    minuteur local masque alors le cadre après la fenêtre de follow-up,
+    pour qu'il ne reste pas affiché indéfiniment.
+    """
+
     def __init__(self, overlay) -> None:
         super().__init__()
         self._overlay = overlay
+        self._listen_hide_timer = QTimer(self)
+        self._listen_hide_timer.setSingleShot(True)
+        self._listen_hide_timer.timeout.connect(self._hide_if_listening)
+
+    def _hide_if_listening(self) -> None:
+        if getattr(self._overlay, "_presence_state", "") == "listening":
+            self._overlay.hide_overlay()
 
     @Slot(str)
     def handle_presence(self, state: str) -> None:
@@ -51,17 +65,32 @@ class PresenceRouter(QObject):
             from .modes import get_default_mode_manager
 
             if get_default_mode_manager().should_suppress_visuals():
+                self._listen_hide_timer.stop()
                 self._overlay.hide_overlay()
                 return
         except Exception:
             pass
         if state == "listening":
             self._overlay.show_listening()
+            # Suivre la fenêtre de conversation AudioIO (8 s) + une courte
+            # marge : le cadre disparaît même si l'écoute continue reste active.
+            # AudioIO n'est pas importé au niveau module (démarrage 1.3.2).
+            delay_ms = 8400
+            try:
+                from .audio import AudioIO
+
+                delay_ms = int(AudioIO.FOLLOW_UP_SECONDS * 1000) + 400
+            except Exception:
+                pass
+            self._listen_hide_timer.start(delay_ms)
         elif state == "thinking":
+            self._listen_hide_timer.stop()
             self._overlay.show_thinking()
         elif state == "speaking":
+            self._listen_hide_timer.stop()
             self._overlay.show_speaking()
         else:
+            self._listen_hide_timer.stop()
             self._overlay.hide_overlay()
 
 
@@ -81,6 +110,12 @@ def _on_speaking(audio, presence_hook) -> None:
     audio.begin_speaking()
     if presence_hook is not None:
         presence_hook("speaking")
+
+
+def _on_thinking(presence_hook) -> None:
+    """Jarvis traite (outil / réflexion) : le Blob et le cadre Desktop suivent."""
+    if presence_hook is not None:
+        presence_hook("thinking")
 
 
 def _run_voice_loop(
@@ -175,11 +210,9 @@ def _run_voice_loop(
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
             on_speaking=lambda: _on_speaking(audio, presence_hook),
-            response_mode_provider=menu_state.response_mode_label_from_live,
-            voice_provider=menu_state.LIVE.get_voice_name,
-            voice_version_provider=menu_state.LIVE.get_voice_version,
-            speech_pace_provider=menu_state.LIVE.get_speech_pace,
+            on_thinking=lambda: _on_thinking(presence_hook),
             memory_manager=memory_manager,
+            **menu_state.voice_backend_kwargs(),
         )
 
         print(f"Jarvis Live - Bonjour {config.user}")
@@ -252,10 +285,35 @@ def _start_voice(config, presence_hook, voice_hook, stop_event) -> threading.Thr
     return thread
 
 
-def _build_tray_icon(on_activate, on_quit):
+class SessionVisibility:
+    """État Masquer/Afficher de la session. Jamais persisté.
+
+    Un Quit pendant que Jarvis est masqué ne doit pas laisser un drapeau
+    « caché » qui bloquerait le prochain lancement.
+    """
+
+    def __init__(self) -> None:
+        self.hidden = False
+
+    def hide(self) -> None:
+        self.hidden = True
+
+    def show(self) -> None:
+        self.hidden = False
+
+    def reset(self) -> None:
+        self.hidden = False
+
+
+def _build_tray_icon(on_activate, on_quit, on_hide=None, visibility: SessionVisibility | None = None):
     """Icône de zone de notification : moyen visible et fiable de quitter
     Jarvis, indispensable en mode --desktop où aucune fenêtre ne réagit à
-    Échap."""
+    Échap.
+
+    Cas A : Masquer → l'UI disparaît (processus vivant).
+    Cas B : Quitter depuis le tray, même masqué → le processus se termine.
+    Cas C : l'état masqué n'est pas persisté ; un relance réaffiche l'UI.
+    """
     try:
         from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
@@ -278,6 +336,27 @@ def _build_tray_icon(on_activate, on_quit):
         menu = QMenu()
         show_action = menu.addAction("Afficher Jarvis")
         show_action.triggered.connect(on_activate)
+        hide_action = menu.addAction("Masquer Jarvis")
+        if on_hide is not None:
+            hide_action.triggered.connect(on_hide)
+        else:
+            hide_action.setEnabled(False)
+
+        def _on_tray_activated(reason) -> None:
+            trigger = getattr(QSystemTrayIcon, "ActivationReason", None)
+            trigger_value = getattr(trigger, "Trigger", None) if trigger is not None else None
+            if trigger_value is None:
+                trigger_value = getattr(QSystemTrayIcon, "Trigger", 1)
+            if reason != trigger_value:
+                return
+            if visibility is not None and visibility.hidden:
+                on_activate()
+            elif on_hide is not None:
+                on_hide()
+            else:
+                on_activate()
+
+        tray.activated.connect(_on_tray_activated)
         from UI.routines_dialog import show_routines_dialog
 
         def _show_routines_if_allowed() -> None:
@@ -350,12 +429,28 @@ def run_ui(mode: str = "desktop") -> int:
             pass
         return 1
 
+    # Voix / volume / micro / mode de réponse : même source pour Blob et Desktop.
+    try:
+        menu_state.load_runtime_preferences(
+            str(paths.menu_state_file()),
+            str(paths.system_state_file()),
+        )
+    except Exception:
+        pass
+
     appearance_state = appearance_actions.load_state(
         str(paths.appearance_state_file())
     )
 
     stop_event = threading.Event()
     tray = None
+    visibility = SessionVisibility()
+    # Hide ne doit jamais quitter : le tray est le moyen de Quitter.
+    app.setQuitOnLastWindowClosed(False)
+
+    def _quit() -> None:
+        visibility.reset()
+        app.quit()
 
     if mode == "ui":
         from UI import jarvis_menu
@@ -367,6 +462,7 @@ def run_ui(mode: str = "desktop") -> int:
 
         window = MorphingOrbWidget()
         window.showFullScreen()
+        visibility.show()
 
         presence_hook = jarvis_menu.set_presence_state
 
@@ -384,12 +480,21 @@ def run_ui(mode: str = "desktop") -> int:
             # « Blob Visible ») : l'icône de notification est le chemin de
             # retour prévu, elle lève donc aussi ce réglage.
             window.set_blob_visible(True)
+            visibility.show()
 
-        tray = _build_tray_icon(_activate, app.quit)
+        def _hide() -> None:
+            try:
+                window.hide()
+            except Exception:
+                pass
+            visibility.hide()
+
+        tray = _build_tray_icon(_activate, _quit, on_hide=_hide, visibility=visibility)
 
         def _persist_orb_state() -> None:
             # Quit via la zone de notification : closeEvent n'est pas
             # déclenché automatiquement, on force la sauvegarde.
+            visibility.reset()
             try:
                 window.close()
             except Exception:
@@ -409,22 +514,26 @@ def run_ui(mode: str = "desktop") -> int:
         voice_hook = None
         presence_hook = bridge.presence_changed.emit
 
-        # En mode overlay, il n'y a aucune fenêtre interactive : sans icône
-        # de notification, il n'existe aucun moyen propre de quitter.
-        app.setQuitOnLastWindowClosed(False)
-
         def _activate_overlay() -> None:
             try:
                 from .modes import get_default_mode_manager
 
                 if get_default_mode_manager().should_suppress_visuals():
                     overlay.hide_overlay()
+                    visibility.hide()
                     return
             except Exception:
                 pass
             overlay.show_idle()
+            visibility.show()
 
-        tray = _build_tray_icon(_activate_overlay, app.quit)
+        def _hide_overlay() -> None:
+            overlay.hide_overlay()
+            visibility.hide()
+
+        tray = _build_tray_icon(
+            _activate_overlay, _quit, on_hide=_hide_overlay, visibility=visibility
+        )
         if tray is None:
             print("[Jarvis] Aucune icône de notification disponible : "
                   "utilise Ctrl+C dans cette console pour quitter.")

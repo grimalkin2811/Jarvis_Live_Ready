@@ -35,6 +35,12 @@ from . import menu_state
 from . import system_actions
 from . import visibility_bridge
 from src import paths
+from src.writing.settings import (
+    ACTIVE_FIELD_DESCRIPTION,
+    ACTIVE_FIELD_TITLE,
+    TEXT_FILES_DESCRIPTION,
+    TEXT_FILES_TITLE,
+)
 
 
 voice_energy = 0.0
@@ -61,14 +67,20 @@ def set_presence_state(state: str) -> None:
     value = str(state or "hidden").strip().lower()
     allowed = {"loading", "listening", "thinking", "speaking", "hidden"}
     presence_state = value if value in allowed else "hidden"
-
-
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
 
 def lerp(a: float, b: float, t: float) -> float:
     return a + (b - a) * t
+
+
+def _writing_flash(title: str, enabled: bool, description: str) -> str:
+    """Pastille ON/OFF des réglages Writing, description comprise quand c'est On."""
+    state = "On" if enabled else "Off"
+    if enabled and description:
+        return f"{title}: {state}. {description}"
+    return f"{title}: {state}."
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +165,7 @@ class MenuItemSpec:
     label: str
     kind: str
     routine_name: str = ""
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -199,6 +212,16 @@ MENU_SPECS = [
             MenuItemSpec("Always Listening", "toggle"),
             MenuItemSpec("Listen After Reply", "toggle"),
             MenuItemSpec("Interrupt Word", "toggle"),
+            MenuItemSpec(
+                "Active Field",
+                "toggle",
+                description=ACTIVE_FIELD_DESCRIPTION,
+            ),
+            MenuItemSpec(
+                "Text Files",
+                "toggle",
+                description=TEXT_FILES_DESCRIPTION,
+            ),
             MenuItemSpec("Stop Speaking", "pulse"),
             MenuItemSpec("Audio Test", "pulse"),
         ],
@@ -463,6 +486,15 @@ class MorphingOrbWidget(QWidget):
         # État interactif persistant du menu.
         self._menu_state_path = str(paths.menu_state_file())
         self.menu_state = menu_state.load_state(self._menu_state_path)
+        try:
+            menu_state.LIVE.set_response_mode_index(self.system_state.response_mode_index)
+        except Exception:
+            pass
+        # Appliquer les réglages fenêtre persistés SANS show() : run_ui
+        # gère le plein écran. Un show() ici ferait sortir du fullscreen.
+        if self.menu_state.always_on_top:
+            self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self._apply_transparency(self.menu_state.transparency)
         self._menu_open_projection = self.base_radius * 0.42
         self._menu_close_projection = self.base_radius * 3.00
         self._menu_open_lateral = self.base_radius * 1.15
@@ -593,7 +625,10 @@ class MorphingOrbWidget(QWidget):
         except Exception:
             mic_on = True
         presence_target = presence_targets.get(presence_state, 0.0)
-        if not mic_on:
+        # Micro coupé : l'orbe se calme, sauf si Jarvis est encore en train
+        # de parler / réfléchir — sinon l'état visuel resterait « coincé »
+        # en idle pendant une réponse.
+        if not mic_on and presence_state not in {"speaking", "thinking"}:
             presence_target = 0.0
         self._presence_energy = lerp(self._presence_energy, presence_target, 0.06)
         self._mic_mute_factor = lerp(self._mic_mute_factor, 1.0 if mic_on else 0.55, 0.08)
@@ -1280,7 +1315,8 @@ class MorphingOrbWidget(QWidget):
         C'est le seul canal de confirmation visuelle des clics menu : sans
         lui, l'utilisateur ne sait pas si son action a été prise en compte.
         """
-        self._menu_action_flash = str(message)[:80]
+        # 140 : les descriptions Writing (1.4.0) doivent tenir dans le flash.
+        self._menu_action_flash = str(message)[:140]
         self._menu_action_flash_time = self.time
 
     # ------------------------------------------------------------------
@@ -1332,8 +1368,13 @@ class MorphingOrbWidget(QWidget):
         self._menu_sector = -1
         self._menu_candidate = -1
         self._menu_focus_index = -1
+        self._menu_hot_node = -1
         self._menu_drag_index = -1
         self._menu_keyboard_open = False
+        for node in self._menu_nodes:
+            node.hover_amount = 0.0
+            node.click_amount = 0.0
+        self._set_pointer_cursor(False)
         self.update()
 
     def _reset_menu_visuals(self) -> None:
@@ -1680,6 +1721,10 @@ class MorphingOrbWidget(QWidget):
             return "On" if st.post_response_listen else "Off"
         if label == "Interrupt Word":
             return "On" if st.barge_in else "Off"
+        if label == "Active Field":
+            return "On" if st.writing_active_field else "Off"
+        if label == "Text Files":
+            return "On" if st.writing_text_files else "Off"
         if label == "Stop Speaking":
             return "Stop"
         return ""
@@ -1848,6 +1893,10 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.post_response_listen
         if name == "Voice" and label == "Interrupt Word":
             return self.menu_state.barge_in
+        if name == "Voice" and label == "Active Field":
+            return self.menu_state.writing_active_field
+        if name == "Voice" and label == "Text Files":
+            return self.menu_state.writing_text_files
         if name == "System" and label == "Startup":
             # État réel (fichier de démarrage présent ou non), mis en cache :
             # cette valeur est lue à chaque image pour le rendu.
@@ -1912,6 +1961,14 @@ class MorphingOrbWidget(QWidget):
                 if value
                 else "Interruption vocale : désactivée"
             )
+        elif name == "Voice" and label == "Active Field":
+            self.menu_state.writing_active_field = value
+            menu_state.LIVE.set_writing_active_field(value)
+            self._flash(_writing_flash(ACTIVE_FIELD_TITLE, value, item.description))
+        elif name == "Voice" and label == "Text Files":
+            self.menu_state.writing_text_files = value
+            menu_state.LIVE.set_writing_text_files(value)
+            self._flash(_writing_flash(TEXT_FILES_TITLE, value, item.description))
         elif name == "System" and label == "Startup":
             result = system_actions.set_startup(value)
             self.menu_state.startup = bool(result.get("success") and value)
@@ -1991,8 +2048,12 @@ class MorphingOrbWidget(QWidget):
     # ------------------------------------------------------------------
     def _apply_always_on_top(self, value: bool) -> None:
         try:
+            was_full = self.isFullScreen()
             self.setWindowFlag(Qt.WindowStaysOnTopHint, bool(value))
-            self.show()
+            if was_full:
+                self.showFullScreen()
+            else:
+                self.show()
         except Exception:
             pass
 
@@ -2162,6 +2223,8 @@ class MorphingOrbWidget(QWidget):
                     "Interrupt Word",
                     "Startup",
                     "Long-term Memory",
+                    "Active Field",
+                    "Text Files",
                 }:
                     pass
                 else:
@@ -3126,7 +3189,10 @@ class MorphingOrbWidget(QWidget):
             mic_on = True
 
         state = self.appearance_state
-        if not mic_on:
+        if presence_state == "speaking":
+            label = "RÉPONSE EN COURS"
+            dot_color = QColor(state.glow_color).lighter(130)
+        elif not mic_on:
             label = "MICRO COUPÉ"
             dot_color = QColor(255, 140, 130)
         elif presence_state == "loading":
@@ -3138,9 +3204,6 @@ class MorphingOrbWidget(QWidget):
         elif presence_state == "thinking":
             label = "RÉFLEXION…"
             dot_color = QColor(state.glow_color)
-        elif presence_state == "speaking":
-            label = "RÉPONSE EN COURS"
-            dot_color = QColor(state.glow_color).lighter(130)
         else:
             return
 
@@ -3250,7 +3313,12 @@ class MorphingOrbWidget(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
 
+            # SourceOver + transparent est un no-op : l'image précédente
+            # (fonds d'un autre menu) resterait dans le tampon. Source
+            # remplace vraiment le tampon, y compris par du transparent.
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
             painter.fillRect(self.rect(), Qt.transparent)
+            painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
 
             path = self._blob_path()
 

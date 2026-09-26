@@ -127,6 +127,10 @@ class ScreenHaloOverlay(QWidget):
     def hide_overlay(self) -> None:
         self._animate_to(0.0, duration=280, presence_state="hidden")
 
+    def current_presence(self) -> str:
+        """État visuel courant du cadre (listening / speaking / hidden…)."""
+        return str(self._presence_state or "hidden")
+
     def get_overlay_intensity(self) -> float:
         return self._overlay_intensity
 

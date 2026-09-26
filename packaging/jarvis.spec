@@ -28,6 +28,16 @@ hiddenimports += collect_submodules("google.genai.live")
 
 # Validation de packaging (utilisé par --smoke-test et updater)
 hiddenimports += ["src.packaging_validation", "src.updater", "src.version", "src.paths", "src.wakeword"]
+hiddenimports += [
+    "src.writing",
+    "src.writing.service",
+    "src.writing.active_field",
+    "src.writing.files",
+    "src.writing.filenames",
+    "src.writing.intent",
+    "src.writing.settings",
+    "src.writing.text",
+]
 
 # openwakeword télécharge parfois ses modèles dans resources/models ;
 # on les récupère s'ils existent déjà (CI les télécharge avant le build).

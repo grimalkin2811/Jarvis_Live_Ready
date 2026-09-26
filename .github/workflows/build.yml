@@ -21,6 +21,9 @@ jobs:
     name: Tests (Windows)
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      statuses: write
     steps:
       - uses: actions/checkout@v4
 
@@ -36,6 +39,15 @@ jobs:
       - name: Lancer les tests
         shell: bash
         run: python -m unittest discover tests -v
+
+      - name: Code module en echec
+        if: failure()
+        shell: bash
+        run: python scripts/emit_test_annotations.py
+      - name: Code assertion
+        if: failure()
+        shell: bash
+        run: python -c "import os,sys; sys.exit(int(os.environ.get('FAIL_ASSERT_CODE','3')))"
 
       # Étapes de diagnostic (toujours exécutées) : chaque fichier de tests
       # ajouté/modifié est rejoué isolément. Leur conclusion individuelle est

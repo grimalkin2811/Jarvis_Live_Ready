@@ -9,6 +9,78 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## 1.4.2 — Writing Mode : le curseur par défaut
+
+Release volontairement ciblée : un seul changement fonctionnel, dans le
+système d'écriture. Le reste de Jarvis est inchangé.
+
+### Changement
+
+- **Le curseur actif devient la sortie par défaut.** « Écris-moi un message
+  pour prévenir mon professeur », « rédige une lettre », « fais-moi une lettre
+  de motivation » : Jarvis génère le texte et l'écrit à l'emplacement du
+  curseur, sans créer de fichier.
+- **Un fichier `.txt` n'est créé que sur demande explicite** : « dans un
+  fichier », « un fichier texte », « un .txt », « un document à générer »,
+  « un fichier à enregistrer / sauvegarder », « un contenu sous forme de
+  fichier », « un fichier téléchargeable ».
+- **Cas ambigu** (aucun format précisé) : le curseur est privilégié, aucune
+  clarification n'est demandée. Un artefact rédactionnel seul (lettre, mail,
+  message, CV, rapport, paragraphe, résumé…) ne déclenche plus de fichier.
+- Filet local : si le modèle appelle `create_text_file` alors que la demande
+  vise clairement le curseur, l'écriture part au curseur — aucun `.txt` n'est
+  créé. Inversement, une sortie explicitement demandée n'est jamais remplacée
+  par l'autre.
+
+### Inchangé
+
+Génération du texte, insertion au curseur (`SendInput`, presse-papiers en
+secours), création des `.txt` dans `user_content/` (noms sûrs, pas
+d'écrasement), interrupteurs Writing → Active field / Text files, refus des
+questions et hypothèses, gestion des erreurs.
+
+## 1.4.1 — Stabilisation (voix Desktop, persistance, tray)
+
+Release de correction : pas de nouvelle grosse fonctionnalité. Writing Mode
+est inchangé.
+
+### Corrections
+
+- **Voix Desktop** : le mode overlay utilise la voix, le volume, le débit et
+  le mode de réponse choisis dans les paramètres (même pont `LIVE` que l'orbe
+  et la console), au lieu de retomber sur la voix Gemini par défaut.
+- **Persistance** : les réglages vocaux et le mode de réponse sont rechargés
+  au démarrage des trois modes. Transparence et always-on-top sont appliqués
+  dès l'ouverture de l'orbe.
+- **Tray** : Masquer / Afficher / Quitter. L'état masqué n'est pas persisté :
+  un relance réaffiche l'interface. Quitter depuis le tray termine le process.
+- **Launcher** : refuse une double instance de Jarvis.
+- **Cadre Desktop** : apparaît à l'écoute / la réflexion / la réponse, puis
+  disparaît après la fenêtre de follow-up (y compris en écoute continue).
+- **Menus** : fermeture sans surbrillance résiduelle ; always-on-top ne sort
+  plus du plein écran.
+
+## 1.4.0 — Writing System
+
+Deux modes d'écriture, indépendants, uniquement sur ordre explicite. Une réponse
+conversationnelle ne déclenche jamais d'écriture, et le texte produit n'est pas
+relu à voix haute.
+
+### Ajouts
+
+- **Insertion dans le champ actif** : le texte généré est tapé au curseur de la
+  fenêtre au premier plan (navigateur, mail, éditeur, Discord, Word,
+  formulaire), sans sélectionner ni remplacer le texte déjà présent. Accents,
+  paragraphes et textes longs sont conservés. Sous Windows, la saisie passe par
+  `SendInput` ; le presse-papiers n'est utilisé qu'en secours, puis restauré.
+- **Fichiers `.txt`** : création dans `user_content/` (dossier créé s'il manque,
+  relatif à l'application — jamais un chemin absolu figé). Noms courts et sûrs
+  (`trous_noirs.txt`, sinon `document.txt`). Jamais d'écrasement silencieux :
+  `document_1.txt`, `document_2.txt`.
+- **Réglages indépendants** dans le menu Voix, persistés, activés par défaut :
+  Writing → Active field, Writing → Create text files.
+- Assainissement des noms de fichiers, collisions, erreurs non fatales et tests.
+
 ## 1.3.2 — Layout sans chevauchement, opacité des fonds, démarrage plus rapide
 
 ### Ajouts

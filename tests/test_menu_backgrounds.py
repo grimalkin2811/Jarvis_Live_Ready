@@ -81,15 +81,26 @@ def _sector_vector(widget: "jm.MorphingOrbWidget", sector: int):
 def _peint_par_le_menu_courant(widget: "jm.MorphingOrbWidget", pos) -> bool:
     """Vrai si le point peut être peint par un item du menu actuel.
 
-    Un item = sa pastille (rayon ≈ 15) + le rectangle de son libellé, qui
-    s'étend jusqu'à ~170 px à gauche ou à droite selon le sens de
-    déploiement du menu. Toute position située dans cette bande est
-    légitimement peinte par le menu courant : on ne peut pas y chercher la
-    fuite d'un ancien menu.
+    La bande fixe de 180 px ne couvre plus les libellés Voice (12 items,
+    valeur « On » / « Off »). On utilise les boîtes réelles du solveur de
+    layout : un pixel du menu courant n'est pas une fuite de l'ancien.
     """
+    spec = widget._menu_spec()
+    if spec is not None and widget._menu_nodes:
+        try:
+            positions = [node.position for node in widget._menu_nodes]
+            widths, heights, y_shifts = widget._layout_label_metrics(spec)
+            boxes = widget._layout_boxes(spec, positions, widths, heights, y_shifts)
+            x, y = pos.x(), pos.y()
+            for label_box, body_box in boxes:
+                for box in (label_box, body_box):
+                    if box[0] - 12 <= x <= box[2] + 12 and box[1] - 12 <= y <= box[3] + 12:
+                        return True
+        except Exception:
+            pass
     for node in widget._menu_nodes:
-        if abs(pos.y() - node.position.y()) <= 30.0:
-            if -180.0 <= (pos.x() - node.position.x()) <= 180.0:
+        if abs(pos.y() - node.position.y()) <= 36.0:
+            if -240.0 <= (pos.x() - node.position.x()) <= 240.0:
                 return True
     return False
 
@@ -98,15 +109,20 @@ class MenuBackgroundTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.app = _qt_app()
-        cls.widget = jm.MorphingOrbWidget()
-        # Isoler les fichiers d'état : aucun test n'écrit dans le profil
-        # utilisateur réel.
+        # Isoler AVANT de construire le widget : __init__ charge l'apparence
+        # et le menu depuis JARVIS_DATA_DIR / %LOCALAPPDATA%\\Jarvis. Un test
+        # précédent (ex. interruption UI) y écrit, et les 12 items Voice
+        # rendent alors le test de fuite de fonds dépendant de cet état.
         cls.tmp = Path(tempfile.mkdtemp(prefix="jarvis_menu_bg_"))
+        cls._prev_data_dir = os.environ.get("JARVIS_DATA_DIR")
+        os.environ["JARVIS_DATA_DIR"] = str(cls.tmp)
+        cls.widget = jm.MorphingOrbWidget()
         cls.widget._menu_state_path = str(cls.tmp / "menu_state.json")
         cls.widget._appearance_state_path = str(cls.tmp / "appearance.json")
         cls.widget._system_state_path = str(cls.tmp / "system.json")
         cls.widget._debug_log_path = str(cls.tmp / "debug.log")
-        cls.widget.resize(1280, 800)
+        cls.widget.menu_state = jm.menu_state.MenuState()
+        cls.widget.setFixedSize(1280, 800)
         cls.widget.show()
         jm.set_presence_state("hidden")
         cls.sectors = {spec.name: index for index, spec in enumerate(jm.MENU_SPECS)}
@@ -117,10 +133,20 @@ class MenuBackgroundTests(unittest.TestCase):
         cls.widget._close_radial_menu()
         cls.widget.close()
         cls.widget.deleteLater()
+        if cls._prev_data_dir is None:
+            os.environ.pop("JARVIS_DATA_DIR", None)
+        else:
+            os.environ["JARVIS_DATA_DIR"] = cls._prev_data_dir
 
     def setUp(self) -> None:
         visibility_bridge.VISIBILITY.reset()
+        # Un test précédent (visibilité du blob) laisse voice_energy à 0.7.
+        # Le halo élargi dépasse alors BG_GONE sur d'anciennes positions.
+        jm.set_voice_energy(0.0)
+        jm.set_presence_state("hidden")
         widget = self.widget
+        widget._halo_energy = 0.0
+        widget._presence_energy = 0.0
         widget._close_radial_menu()
         widget._reset_menu_visuals()
         widget._blob_hidden_by_command = False
@@ -130,9 +156,19 @@ class MenuBackgroundTests(unittest.TestCase):
         widget.cursor = widget.center
         widget._menu_checked_at = -10.0
         widget._mode_checked_at = -10.0
+
+        def _show_fixed() -> None:
+            widget.setFixedSize(1280, 800)
+            super(jm.MorphingOrbWidget, widget).show()
+
+        # tick() rappelle showFullScreen() après un masquage. L'écran virtuel
+        # du runner est trop petit pour les 12 items du menu Voice.
+        widget.showFullScreen = _show_fixed
+        widget.setFixedSize(1280, 800)
+        widget.show()
         _settle(widget, 30)
         if not widget.isVisible():
-            widget.showFullScreen()
+            widget.show()
 
     # ------------------------------------------------------------------
     # 1-4. Pour CHAQUE menu : ouvert → tous les fonds ; survol ; hors items

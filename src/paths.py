@@ -167,6 +167,34 @@ def notes_file() -> Path:
     return data_dir() / "notes.json"
 
 
+def user_content_dir() -> Path:
+    """Dossier des fichiers ``.txt`` générés par le système d'écriture.
+
+    Toujours relatif à l'application, jamais un chemin absolu codé en dur :
+
+    * développement : ``<racine du dépôt>/user_content`` (le dépôt peut être
+      déplacé, le dossier suit) ;
+    * application installée : ``<données utilisateur>/user_content``, pour que
+      le remplacement de ``app/`` lors d'une mise à jour ne détruise pas les
+      textes.
+
+    Surcharge : ``JARVIS_USER_CONTENT_DIR``.
+    """
+    override = os.environ.get("JARVIS_USER_CONTENT_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if is_frozen():
+        return data_dir() / "user_content"
+    return app_dir() / "user_content"
+
+
+def ensure_user_content_dir() -> Path:
+    """Crée ``user_content`` s'il n'existe pas et retourne son chemin."""
+    directory = user_content_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def menu_state_file() -> Path:
     """Fichier d'état du menu radial (préférences vocales / UI)."""
     return ui_state_dir() / "menu_state.json"

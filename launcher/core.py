@@ -352,6 +352,15 @@ def launch_jarvis(mode: str = "ui", *, wait: bool = False) -> LaunchResult:
     validation = validate_installation()
     if not validation.ok:
         return LaunchResult(False, validation.message)
+    try:
+        if updater.is_app_running(str(jarvis_executable())):
+            return LaunchResult(
+                False,
+                "Jarvis est déjà en cours d'exécution. "
+                "Utilisez l'icône de notification pour l'afficher ou le quitter.",
+            )
+    except Exception:
+        pass
     if is_frozen():
         exe = jarvis_executable()
         if not exe.is_file():

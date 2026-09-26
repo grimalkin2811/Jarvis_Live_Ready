@@ -590,8 +590,12 @@ def is_app_running(install_dir: str | os.PathLike, exe_name: str = "Jarvis.exe")
             text=True,
             timeout=10,
         ).stdout
-        name = exe_name.lower()
-        return any(name in line.lower() for line in output.splitlines())
+        name = str(exe_name).replace("\\", "/").rsplit("/", 1)[-1].lower()
+        for line in output.splitlines():
+            image = line.split(",")[0].strip().strip('"').lower()
+            if image == name:
+                return True
+        return False
     except Exception:
         return False
 

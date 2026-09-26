@@ -153,9 +153,9 @@ class MenuLayoutOverlapTests(unittest.TestCase):
                     )
 
     def test_voice_menu_item_count_unchanged(self) -> None:
-        """Le layout ne doit ni ajouter ni retirer d'item (Voice = 10)."""
+        """Le layout ne doit ni ajouter ni retirer d'item (Voice = 12)."""
         voice = next(s for s in jm.MENU_SPECS if s.name == "Voice")
-        self.assertEqual(len(voice.items), 10)
+        self.assertEqual(len(voice.items), 12)
 
     def test_healthy_layout_stays_near_base_spacings(self) -> None:
         """Un menu sans conflit garde le design d'origine (col 126 / row 46)."""
