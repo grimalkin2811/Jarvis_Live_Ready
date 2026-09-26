@@ -88,6 +88,20 @@ jobs:
           ref: ${{ env.TAG }}
           fetch-depth: 0
 
+      # Le tag vérifié peut être antérieur à l'ajout du vérificateur : on
+      # récupère l'outillage depuis la révision qui exécute ce workflow, tout
+      # en gardant l'arbre source du tag (liste d'outils attendue, contrat).
+      - uses: actions/checkout@v4
+        with:
+          path: _tooling
+
+      - name: "Outillage de vérification"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp _tooling/scripts/verify_release_bundle.py scripts/verify_release_bundle.py
+          echo "vérificateur issu de $(git -C _tooling rev-parse HEAD)"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
