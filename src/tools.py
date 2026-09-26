@@ -146,6 +146,7 @@ APPS = {
     "pycharm": "pycharm64.exe",
     # --- Multimédia & communication ---------------------------------------
     "spotify": "spotify.exe",
+    "deezer": "Deezer.exe",
     "vlc": "vlc.exe",
     "lecteur windows media": "wmplayer.exe",
     "discord": "discord.exe",
@@ -680,6 +681,163 @@ def media_stop():
     if not IS_WINDOWS:
         return _windows_only()
     return _ok(action="stop") if _send_key(VK_MEDIA_STOP) else _err("Touche média refusée.")
+
+
+# ===========================================================================
+# MUSIQUE (Deezer via MusicManager)
+# ===========================================================================
+
+
+def _music_manager():
+    """Retourne le MusicManager par défaut (import tardif, testable)."""
+    from .music import get_default_music_manager
+
+    return get_default_music_manager()
+
+
+def music_search(query, limit=8):
+    """Recherche Deezer (artistes, morceaux, albums, playlists)."""
+    try:
+        lim = max(1, min(int(limit or 8), 20))
+    except (TypeError, ValueError):
+        lim = 8
+    return _music_manager().search(str(query or ""), limit=lim)
+
+
+def music_play(
+    query="",
+    track="",
+    artist="",
+    album="",
+    playlist="",
+    kind="",
+    personal=False,
+):
+    """Lance une lecture Deezer (morceau, artiste, album, playlist ou musique libre).
+
+    Gemini peut fournir soit ``kind`` + le slot correspondant, soit une
+    ``query`` libre (« Around the World de Daft Punk »).
+    """
+    manager = _music_manager()
+    kind_norm = _normalize_name(kind or "")
+    personal = bool(personal)
+
+    if kind_norm in {"track", "morceau", "chanson", "titre"} and (track or query):
+        return manager.play_track(track or query, artist=artist or None)
+    if kind_norm in {"artist", "artiste"} and (artist or query):
+        return manager.play_artist(artist or query)
+    if kind_norm in {"album"} and (album or query):
+        return manager.play_album(album or query, artist=artist or None)
+    if kind_norm in {"playlist"} and (playlist or query):
+        return manager.play_playlist(playlist or query, personal=personal)
+    if kind_norm in {"music", "musique", "flow", "chart", "radio"}:
+        return manager.play_music()
+
+    if playlist:
+        return manager.play_playlist(playlist, personal=personal)
+    if album:
+        return manager.play_album(album, artist=artist or None)
+    if track:
+        return manager.play_track(track, artist=artist or None)
+    if artist and not track and not album:
+        return manager.play_artist(artist)
+
+    text = str(query or track or artist or album or playlist or "").strip()
+    if not text:
+        return manager.play_music()
+
+    # Intention libre : laisse le parseur local + le manager trancher.
+    from .music.intents import parse_music_intent
+
+    intent = parse_music_intent(text if _looks_like_command(text) else f"joue {text}")
+    # Si la query est juste un nom (pas une phrase de commande), forcer PLAY.
+    if intent.intent in {"UNKNOWN", "SEARCH"} and text:
+        # Heuristique : « ma playlist X » déjà géré par le parseur ; sinon artiste/track.
+        if personal or _normalize_name(text).startswith("playlist"):
+            name = re.sub(r"(?i)^\s*(ma|mes|my)?\s*playlist\s*", "", text).strip() or text
+            return manager.play_playlist(name, personal=True)
+        if artist and track:
+            return manager.play_track(track, artist=artist)
+        return manager.handle_intent(intent if intent.intent != "UNKNOWN" else f"joue {text}")
+    return manager.handle_intent(intent)
+
+
+def _looks_like_command(text: str) -> bool:
+    norm = _normalize_name(text)
+    starters = (
+        "joue", "lance", "mets", "met", "play", "cherche", "recherche",
+        "pause", "reprend", "suivant", "precedent", "arrete", "stop",
+    )
+    return any(norm == s or norm.startswith(s + " ") for s in starters)
+
+
+def music_play_track(track, artist=""):
+    """Joue un morceau Deezer (raccourci explicite)."""
+    return _music_manager().play_track(str(track or ""), artist=artist or None)
+
+
+def music_play_artist(artist):
+    """Joue un artiste Deezer."""
+    return _music_manager().play_artist(str(artist or ""))
+
+
+def music_play_album(album, artist=""):
+    """Joue un album Deezer."""
+    return _music_manager().play_album(str(album or ""), artist=artist or None)
+
+
+def music_play_playlist(playlist, personal=False):
+    """Joue une playlist Deezer (personnelle si personal=true)."""
+    return _music_manager().play_playlist(str(playlist or ""), personal=bool(personal))
+
+
+def music_pause():
+    """Met en pause la lecture Deezer / média en cours."""
+    return _music_manager().pause()
+
+
+def music_resume():
+    """Reprend la lecture Deezer / média en cours."""
+    return _music_manager().resume()
+
+
+def music_next():
+    """Passe au morceau Deezer suivant."""
+    return _music_manager().next()
+
+
+def music_previous():
+    """Revient au morceau Deezer précédent."""
+    return _music_manager().previous()
+
+
+def music_stop():
+    """Arrête la lecture musicale."""
+    return _music_manager().stop()
+
+
+def music_current():
+    """Indique le morceau en cours si connu."""
+    return _music_manager().get_current_track()
+
+
+def music_list_playlists(limit=30):
+    """Liste les playlists personnelles Deezer (auth requise)."""
+    try:
+        lim = max(1, min(int(limit or 30), 50))
+    except (TypeError, ValueError):
+        lim = 30
+    return _music_manager().get_playlists(personal=True, limit=lim)
+
+
+def music_status():
+    """État de l'intégration Deezer (auth, app, provider)."""
+    return _music_manager().status()
+
+
+def music_disconnect():
+    """Oublie le token Deezer local."""
+    return _music_manager().disconnect()
 
 
 # ===========================================================================
@@ -2030,6 +2188,22 @@ _RAW_TOOL_FUNCTIONS = {
     "media_next": media_next,
     "media_previous": media_previous,
     "media_stop": media_stop,
+    # Musique Deezer
+    "music_search": music_search,
+    "music_play": music_play,
+    "music_play_track": music_play_track,
+    "music_play_artist": music_play_artist,
+    "music_play_album": music_play_album,
+    "music_play_playlist": music_play_playlist,
+    "music_pause": music_pause,
+    "music_resume": music_resume,
+    "music_next": music_next,
+    "music_previous": music_previous,
+    "music_stop": music_stop,
+    "music_current": music_current,
+    "music_list_playlists": music_list_playlists,
+    "music_status": music_status,
+    "music_disconnect": music_disconnect,
     # Système
     "get_system_info": get_system_info,
     "get_battery_status": get_battery_status,
@@ -2222,6 +2396,97 @@ TOOL_DECLARATIONS = [
     _decl("media_next", "Passe a la piste suivante."),
     _decl("media_previous", "Revient a la piste precedente."),
     _decl("media_stop", "Arrete la lecture multimedia."),
+    # --- Musique Deezer (v1.5.0) ---------------------------------------------
+    _decl(
+        "music_search",
+        "Recherche sur Deezer : artistes, morceaux, albums et playlists. "
+        "A utiliser quand l'utilisateur veut chercher sans forcément lancer la lecture.",
+        {
+            "query": {**_STR, "description": "Texte a rechercher (artiste, titre, album, playlist)."},
+            "limit": {**_INT, "description": "Nombre max de resultats par type (defaut 8)."},
+        },
+        ["query"],
+    ),
+    _decl(
+        "music_play",
+        "Lance de la musique sur Deezer. Comprend une requete libre "
+        "('Around the World de Daft Punk', 'Daft Punk', 'ma playlist Chill') "
+        "ou des champs structures (track/artist/album/playlist/kind). "
+        "Pour 'mets de la musique' sans precision, appelle sans parametre ou kind=music. "
+        "Si plusieurs resultats correspondent, le succes est false avec candidates : "
+        "demande alors a l'utilisateur de preciser.",
+        {
+            "query": {**_STR, "description": "Requete libre (titre, artiste, 'titre de artiste', playlist…)."},
+            "track": {**_STR, "description": "Titre du morceau."},
+            "artist": {**_STR, "description": "Nom de l'artiste."},
+            "album": {**_STR, "description": "Titre de l'album."},
+            "playlist": {**_STR, "description": "Nom de la playlist."},
+            "kind": {
+                **_STR,
+                "description": "Type force : track, artist, album, playlist, music.",
+            },
+            "personal": {
+                **_BOOL,
+                "description": "True si l'utilisateur parle de SA playlist (ma playlist X).",
+            },
+        },
+    ),
+    _decl(
+        "music_play_track",
+        "Joue un morceau precis sur Deezer.",
+        {
+            "track": {**_STR, "description": "Titre du morceau."},
+            "artist": {**_STR, "description": "Artiste optionnel pour lever l'ambiguite."},
+        },
+        ["track"],
+    ),
+    _decl(
+        "music_play_artist",
+        "Joue un artiste sur Deezer (top / page artiste).",
+        {"artist": {**_STR, "description": "Nom de l'artiste."}},
+        ["artist"],
+    ),
+    _decl(
+        "music_play_album",
+        "Joue un album sur Deezer.",
+        {
+            "album": {**_STR, "description": "Titre de l'album."},
+            "artist": {**_STR, "description": "Artiste optionnel."},
+        },
+        ["album"],
+    ),
+    _decl(
+        "music_play_playlist",
+        "Joue une playlist Deezer. Mets personal=true pour 'ma playlist …'.",
+        {
+            "playlist": {**_STR, "description": "Nom de la playlist."},
+            "personal": {**_BOOL, "description": "Playlist personnelle de l'utilisateur."},
+        },
+        ["playlist"],
+    ),
+    _decl("music_pause", "Met en pause la lecture Deezer / media en cours."),
+    _decl("music_resume", "Reprend la lecture Deezer / media en cours."),
+    _decl("music_next", "Passe au morceau Deezer suivant."),
+    _decl("music_previous", "Revient au morceau Deezer precedent."),
+    _decl("music_stop", "Arrete la lecture musicale."),
+    _decl(
+        "music_current",
+        "Indique le morceau en cours s'il est connu (derniere lecture lancee par Jarvis). "
+        "Deezer ne fournit pas d'API now-playing tierce : ne jamais inventer le titre.",
+    ),
+    _decl(
+        "music_list_playlists",
+        "Liste les playlists personnelles Deezer. Necessite DEEZER_ACCESS_TOKEN.",
+        {"limit": {**_INT, "description": "Nombre max de playlists."}},
+    ),
+    _decl(
+        "music_status",
+        "Donne l'etat de l'integration Deezer (connexion, authentification, provider).",
+    ),
+    _decl(
+        "music_disconnect",
+        "Oublie le jeton Deezer local (deconnexion). Ne demande le token qu'avec confirmation.",
+    ),
     # --- Système -------------------------------------------------------------
     _decl("get_system_info", "Donne les informations systeme (OS, CPU, RAM, disque)."),
     _decl("get_battery_status", "Donne le niveau de batterie et l'etat de charge."),
