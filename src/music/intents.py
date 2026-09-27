@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
-# Intentions supportées (alignées sur le cahier des charges 1.5.0).
+# Intentions supportées (alignées sur le cahier des charges 1.5.2).
 PLAY_TRACK = "PLAY_TRACK"
 PLAY_ARTIST = "PLAY_ARTIST"
 PLAY_ALBUM = "PLAY_ALBUM"
@@ -27,7 +27,10 @@ NEXT = "NEXT"
 PREVIOUS = "PREVIOUS"
 STOP = "STOP"
 CURRENT_TRACK = "CURRENT_TRACK"
-LIST_PLAYLISTS = "LIST_PLAYLISTS"
+LIST_PLAYLISTS = "LIST_PLAYLISTS"  # playlists personnelles Deezer via OAuth
+SAVE_LOCAL_PLAYLIST = "SAVE_LOCAL_PLAYLIST"
+REMOVE_LOCAL_PLAYLIST = "REMOVE_LOCAL_PLAYLIST"
+LIST_LOCAL_PLAYLISTS = "LIST_LOCAL_PLAYLISTS"
 AUTH_STATUS = "AUTH_STATUS"
 UNKNOWN = "UNKNOWN"
 
@@ -45,6 +48,9 @@ ALL_INTENTS = (
     STOP,
     CURRENT_TRACK,
     LIST_PLAYLISTS,
+    SAVE_LOCAL_PLAYLIST,
+    REMOVE_LOCAL_PLAYLIST,
+    LIST_LOCAL_PLAYLISTS,
     AUTH_STATUS,
     UNKNOWN,
 )
@@ -192,6 +198,44 @@ def parse_music_intent(text: str) -> MusicIntent:
 
     if not norm:
         return intent
+
+    # Gestion du mapping local Deezer. Ces commandes doivent être reconnues
+    # avant PLAY_PLAYLIST : elles modifient Jarvis, pas Deezer.
+    if re.search(r"\b(playlists?|listes?)\s+(?:enregistr[ée]es?|sauvegard[ée]es?|locales?)\b", norm):
+        intent.intent = LIST_LOCAL_PLAYLISTS
+        intent.personal = True
+        intent.confidence = 0.95
+        return intent
+
+    save_match = re.search(
+        rf"(?:enregistre|sauvegarde|memorise|mémorise|memoriser|mémoriser)\s+"
+        rf"(?:{_MY}\s+)?(?:playlist\s+)?(?P<name>.+?)(?:\s+(?:dans|pour)(?:\s+jarvis)?)?$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if save_match:
+        name = save_match.group("name").strip()
+        if name:
+            intent.intent = SAVE_LOCAL_PLAYLIST
+            intent.playlist = name
+            intent.personal = True
+            intent.confidence = 0.94
+            return intent
+
+    remove_match = re.search(
+        rf"(?:supprime|retire|oublie)\s+(?:{_MY}\s+)?(?:playlist\s+)?(?P<name>.+?)"
+        rf"(?:\s+de(?:\s+jarvis)?)?$",
+        cleaned,
+        re.IGNORECASE,
+    )
+    if remove_match:
+        name = remove_match.group("name").strip()
+        if name:
+            intent.intent = REMOVE_LOCAL_PLAYLIST
+            intent.playlist = name
+            intent.personal = True
+            intent.confidence = 0.94
+            return intent
 
     # 1. Contrôles exacts
     for name, pattern in _CONTROL_EXACT:

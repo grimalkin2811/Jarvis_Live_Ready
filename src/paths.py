@@ -200,6 +200,11 @@ def deezer_auth_file() -> Path:
     return data_dir() / "deezer_auth.json"
 
 
+def deezer_playlists_file() -> Path:
+    """Associations locales nom → ID Deezer (sans token ni cookie)."""
+    return data_dir() / "deezer_playlists.json"
+
+
 def menu_state_file() -> Path:
     """Fichier d'état du menu radial (préférences vocales / UI)."""
     return ui_state_dir() / "menu_state.json"

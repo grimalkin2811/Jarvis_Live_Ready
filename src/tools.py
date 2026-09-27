@@ -822,12 +822,36 @@ def music_current():
 
 
 def music_list_playlists(limit=30):
-    """Liste les playlists personnelles Deezer (auth requise)."""
+    """Liste les playlists personnelles Deezer via OAuth (contrat historique)."""
     try:
         lim = max(1, min(int(limit or 30), 50))
     except (TypeError, ValueError):
         lim = 30
     return _music_manager().get_playlists(personal=True, limit=lim)
+
+
+def music_playlist_save(name, playlist_id="", url=""):
+    """Enregistre un alias Deezer local, par URL/ID ou par import OAuth explicite."""
+    return _music_manager().save_local_playlist(
+        str(name or ""),
+        playlist_id=str(playlist_id or "").strip() or None,
+        url=str(url or "").strip() or None,
+    )
+
+
+def music_playlist_import(name):
+    """Importe une playlist personnelle OAuth dans les associations locales."""
+    return _music_manager().import_local_playlist(str(name or ""))
+
+
+def music_playlist_remove(name):
+    """Supprime uniquement l'association locale de Jarvis, pas Deezer."""
+    return _music_manager().remove_local_playlist(str(name or ""))
+
+
+def music_playlist_list():
+    """Liste les playlists Deezer enregistrées localement, sans OAuth ni réseau."""
+    return _music_manager().get_local_playlists()
 
 
 def music_status():
@@ -2228,6 +2252,10 @@ _RAW_TOOL_FUNCTIONS = {
     "music_stop": music_stop,
     "music_current": music_current,
     "music_list_playlists": music_list_playlists,
+    "music_playlist_save": music_playlist_save,
+    "music_playlist_import": music_playlist_import,
+    "music_playlist_remove": music_playlist_remove,
+    "music_playlist_list": music_playlist_list,
     "music_status": music_status,
     "music_disconnect": music_disconnect,
     # Système
@@ -2423,7 +2451,7 @@ TOOL_DECLARATIONS = [
     _decl("media_next", "Passe a la piste suivante."),
     _decl("media_previous", "Revient a la piste precedente."),
     _decl("media_stop", "Arrete la lecture multimedia."),
-    # --- Musique Deezer (v1.5.0) ---------------------------------------------
+    # --- Musique Deezer (v1.5.2) ---------------------------------------------
     _decl(
         "music_search",
         "Recherche sur Deezer : artistes, morceaux, albums et playlists. "
@@ -2503,8 +2531,37 @@ TOOL_DECLARATIONS = [
     ),
     _decl(
         "music_list_playlists",
-        "Liste les playlists personnelles Deezer. Necessite DEEZER_ACCESS_TOKEN.",
+        "Liste les playlists personnelles Deezer via OAuth. Necessite DEEZER_ACCESS_TOKEN.",
         {"limit": {**_INT, "description": "Nombre max de playlists."}},
+    ),
+    _decl(
+        "music_playlist_save",
+        "Enregistre une playlist Deezer dans Jarvis sans modifier Deezer. "
+        "Fournis playlist_id ou url pour un enregistrement sans OAuth. "
+        "Sans les deux, importe explicitement la playlist personnelle par son nom via OAuth.",
+        {
+            "name": {**_STR, "description": "Nom local utilise ensuite dans 'joue ma playlist X'."},
+            "playlist_id": {**_STR, "description": "ID Deezer numerique, sans token."},
+            "url": {**_STR, "description": "Lien officiel https://www.deezer.com/playlist/... ."},
+        },
+        ["name"],
+    ),
+    _decl(
+        "music_playlist_import",
+        "Importe par OAuth une playlist personnelle dans le stockage local de Jarvis. "
+        "L'import evite de refaire une requete lors des lectures suivantes.",
+        {"name": {**_STR, "description": "Nom de la playlist personnelle Deezer."}},
+        ["name"],
+    ),
+    _decl(
+        "music_playlist_remove",
+        "Supprime une association locale de Jarvis uniquement. Ne supprime jamais la playlist de Deezer.",
+        {"name": {**_STR, "description": "Nom de la playlist enregistree localement."}},
+        ["name"],
+    ),
+    _decl(
+        "music_playlist_list",
+        "Liste les associations de playlists Deezer enregistrees dans Jarvis. Aucun OAuth ni reseau n'est requis.",
     ),
     _decl(
         "music_status",

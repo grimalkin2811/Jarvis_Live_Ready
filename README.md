@@ -737,9 +737,9 @@ a été créé dans user_content. »
 
 ## Fonctions
 
-Jarvis dispose de **113 outils** déclarés dans `src/tools.py` (voir
-`TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **15 outils musique Deezer**
-ajoutés en v1.5.0.
+Jarvis dispose de **117 outils** déclarés dans `src/tools.py` (voir
+`TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **19 outils musique Deezer**
+(dont les 4 outils de playlists locales ajoutés en v1.5.2).
 
 | Catégorie | Outils |
 |---|---|
