@@ -2,25 +2,37 @@
 
 from __future__ import annotations
 
-__all__ = ["ScreenHaloOverlay", "build_presence_hook"]
+__all__ = [
+    "DesktopOverlay",
+    "DesktopOverlayController",
+    "ScreenHaloOverlay",
+    "build_presence_hook",
+]
+
+#: Nom exporté -> (module, attribut). Tous ces symboles tirent PySide6 ; ils
+#: restent donc paresseux (PEP 562).
+_LAZY = {
+    "ScreenHaloOverlay": (".screen_halo_overlay", "ScreenHaloOverlay"),
+    "build_presence_hook": (".screen_halo_overlay", "build_presence_hook"),
+    "DesktopOverlay": (".desktop.overlay", "DesktopOverlay"),
+    "DesktopOverlayController": (".desktop.overlay", "DesktopOverlayController"),
+}
 
 
 def __getattr__(name: str):
-    # Lazy (PEP 562) : screen_halo_overlay coûte ~20-25 ms à l'import et
-    # n'est nécessaire qu'en mode desktop. Les sous-modules (appearance_actions,
+    # Lazy (PEP 562) : l'overlay Desktop coûte ~20-25 ms à l'import et n'est
+    # nécessaire qu'en mode desktop. Les sous-modules (appearance_actions,
     # menu_state, jarvis_menu…) restent importables normalement via
     # « from UI import … » — on lève AttributeError pour eux.
-    if name in __all__:
-        from .screen_halo_overlay import ScreenHaloOverlay, build_presence_hook
+    target = _LAZY.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    import importlib
 
-        mapping = {
-            "ScreenHaloOverlay": ScreenHaloOverlay,
-            "build_presence_hook": build_presence_hook,
-        }
-        value = mapping[name]
-        globals()[name] = value  # cache pour les accès suivants
-        return value
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = importlib.import_module(target[0], __name__)
+    value = getattr(module, target[1])
+    globals()[name] = value  # cache pour les accès suivants
+    return value
 
 
 def __dir__():
