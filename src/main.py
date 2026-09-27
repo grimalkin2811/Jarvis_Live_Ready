@@ -124,6 +124,11 @@ def _run_smoke_test() -> int:
         ("src.packaging_validation", "packaging_validation"),
         ("src.protocols", "protocols"),
         ("src.wakeword", "wakeword"),
+        # Desktop Mode (1.7.0) — sans Qt : le smoke test doit rester
+        # exécutable sans écran, mais l'absence de ces modules dans le bundle
+        # signifierait un Desktop Mode muet.
+        ("UI.desktop.state", "desktop.state"),
+        ("UI.desktop.config", "desktop.config"),
     ]
 
     for module_name, short in imports_to_test:

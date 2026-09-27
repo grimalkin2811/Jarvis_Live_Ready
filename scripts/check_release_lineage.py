@@ -71,6 +71,38 @@ UI_CONTRACT = [
         "_menu_layout_overlaps",
         "rapport de chevauchement utilisé par les tests de layout (1.3.2)",
     ),
+    # Desktop Mode (1.7.0) : mêmes garde-fous, pour qu'une future publication
+    # ne puisse pas repartir d'une branche antérieure au HUD.
+    (
+        "UI/desktop/state.py",
+        "DesktopStateMachine",
+        "machine d'états visuelle du Desktop Mode (1.7.0)",
+    ),
+    (
+        "UI/desktop/config.py",
+        "DesktopAppearanceConfig",
+        "réglages d'apparence du Desktop Mode (1.7.0)",
+    ),
+    (
+        "UI/desktop/halo.py",
+        "HaloRenderer",
+        "rendu du halo périphérique avec cache de pixmaps (1.7.0)",
+    ),
+    (
+        "UI/desktop/overlay.py",
+        "DesktopOverlayController",
+        "contrôleur Desktop piloté par les évènements réels (1.7.0)",
+    ),
+    (
+        "UI/desktop_appearance_dialog.py",
+        "DesktopAppearanceDialog",
+        "éditeur d'apparence du Desktop Mode (1.7.0)",
+    ),
+    (
+        "UI/appearance_actions.py",
+        "desktop_config",
+        "bloc Desktop persisté avec les réglages d'apparence (1.7.0)",
+    ),
 ]
 
 #: Tests de non-régression qui DOIVENT accompagner le contrat UI. Leur
@@ -82,6 +114,14 @@ REQUIRED_TESTS = [
     "tests/test_blob_visibility.py",
     "tests/test_ui_menu_regression.py",
     "tests/test_verify_release_bundle.py",
+    # Desktop Mode (1.7.0)
+    "tests/test_desktop_overlay.py",
+    "tests/test_desktop_state_machine.py",
+    "tests/test_desktop_config.py",
+    "tests/test_desktop_hud.py",
+    "tests/test_desktop_appearance_dialog.py",
+    "tests/test_desktop_events.py",
+    "tests/test_desktop_integration.py",
 ]
 
 _VERSION_TAG = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")

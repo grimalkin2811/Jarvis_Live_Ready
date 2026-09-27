@@ -1,6 +1,6 @@
 ; Inno Setup script — Jarvis (installation par utilisateur, sans admin).
 ;
-; Compile avec :  iscc packaging/installer.iss /DVERSION=1.6.0 /DSourceDir=..\\dist
+; Compile avec :  iscc packaging/installer.iss /DVERSION=1.7.0 /DSourceDir=..\\dist
 ; Le programme est installé dans %LOCALAPPDATA%\\Jarvis (per-user) afin que le
 ; launcher puisse remplacer l'application à chaque mise à jour sans demander de
 ; droits administrateur. Les DONNÉES UTILISATEUR (config, mémoire, logs,
@@ -28,7 +28,7 @@
 ; qui reste la source unique de vérité. Le laisser périmé produisait un
 ; JarvisSetup-<ancienne version>.exe trompeur en compilation manuelle.
 #ifndef VERSION
-  #define VERSION "1.6.0"
+  #define VERSION "1.7.0"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\\dist"

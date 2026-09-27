@@ -12,6 +12,29 @@ les **GitHub Releases**, **sans jamais toucher à vos données**.
 
 ---
 
+## 1.7.0 — Desktop Mode
+
+* Machine d'états visuelle explicite : écoute, réflexion, action, réponse,
+  écoute de suivi, interruption, erreur — chacune avec **sa couleur et sa
+  forme**, pas seulement son intensité
+* Halo réécrit : repaint limité aux bords, pixmaps en cache —
+  **18,9 ms → 1,6 ms** par image en 1080p, coût **nul** en veille
+* Piloté par les **évènements réels** du pipeline (hotword, transcription,
+  outil, TTS, interruption) et non plus par un minuteur
+* Widgets optionnels : état, transcription, réponse, outil, visualiseur audio,
+  contrôles Stop/Micro/Masquer
+* **Éditeur d'apparence Desktop** avec glisser-déposer, visibilité par état,
+  aperçu et réinitialisation (Appearance → **Desktop HUD**, ou icône de
+  notification → **Apparence Desktop…**)
+* **Traversant par défaut** : l'overlay ne prend jamais le focus et
+  n'intercepte aucun clic tant que vous n'activez pas de widget interactif
+* Réglages rangés dans le fichier d'apparence existant — aucun second fichier
+
+Le détail est dans [CHANGELOG.md](CHANGELOG.md) et dans
+[docs/DESKTOP_MODE.md](docs/DESKTOP_MODE.md).
+
+---
+
 ## 1.6.0 — Conversation Context
 
 * Contexte conversationnel multi-tour appartenant à Jarvis (`src/conversation.py`)
@@ -281,7 +304,33 @@ Jarvis propose désormais une interface reprenant l'orbe morphing de `grimalkin2
 |---|---|
 | `Jarvis.bat` | Assistant headless (console), comme avant. |
 | `Jarvis.bat --ui` | Orbe morphing interactif + menus radiaux + assistant vocal. |
-| `Jarvis.bat --desktop` | Overlay halo plein écran (transparent aux clics) reflétant l'état : écoute / parole / veille. |
+| `Jarvis.bat --desktop` | **Desktop Mode** : halo périphérique traversant + HUD discret reflétant l'état réel de Jarvis. Voir [docs/DESKTOP_MODE.md](docs/DESKTOP_MODE.md). |
+
+### Desktop Mode (v1.7.0)
+
+Pas de fenêtre, pas d'orbe : une lumière périphérique et quelques indicateurs
+optionnels. Chaque état a sa signature visuelle — la lumière **monte du bas**
+quand Jarvis écoute, **circule** le long du périmètre quand il réfléchit,
+s'allume par **segments** quand il exécute un outil, **pulse depuis les côtés**
+quand il répond, et une ligne de compte à rebours montre la fenêtre d'écoute se
+refermer.
+
+* **Traversant par défaut** : l'overlay ne prend jamais le focus, n'intercepte
+  ni clic, ni clavier, ni raccourci Windows, ni entrée de jeu. Trois politiques
+  sont disponibles (*toujours traversable* / *widgets interactifs uniquement* /
+  *overlay interactif*).
+* **Vous choisissez ce qui s'affiche** : halo, état, transcription, réponse,
+  outil, visualiseur audio, contrôles — activables et déplaçables un par un,
+  avec une visibilité réglable **par état**.
+* **Éditeur d'apparence** : Blob Mode → **Appearance → Desktop HUD**, ou icône
+  de notification → **Apparence Desktop…** (seul chemin en Desktop Mode, où le
+  menu radial est volontairement masqué). Glisser-déposer, aperçu par état,
+  animations réduites, réinitialisation — tout est enregistré immédiatement.
+* **En veille, coût nul** : aucune animation, aucune image produite.
+
+Les réglages sont stockés dans le bloc `desktop` de
+`%LOCALAPPDATA%\Jarvis\ui\appearance_state.json` : aucun second fichier de
+configuration, et un fichier écrit par la 1.6.0 continue de fonctionner.
 
 ### Retour visuel permanent
 
@@ -323,6 +372,7 @@ réglages :
 | **Stop Speaking** | Coupe immédiatement la réponse en cours. |
 | **Audio Test** | Émet un bip de test synthétisé. |
 | **Routines** | `Catalogue` affiche toutes les routines et leurs interrupteurs ; les noms du menu lancent les macros personnelles actives. `Reload` recharge le fichier. |
+| **Desktop HUD** (Appearance) | Ouvre l'éditeur d'apparence du **Desktop Mode** (v1.7.0) : éléments affichés, positions par glisser-déposer, visibilité par état, halo, clics. |
 
 **Survol (hover)** : survoler un item affiche un rectangle sombre aux coins
 arrondis derrière son libellé, pour montrer clairement quelle option est

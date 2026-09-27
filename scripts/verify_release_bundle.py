@@ -17,8 +17,8 @@ Il ne fait confiance ni au nom du fichier, ni au tag, ni à GitHub.
 
 Usage
 -----
-    python scripts/verify_release_bundle.py --bundle dist/app --version 1.6.0
-    python scripts/verify_release_bundle.py --bundle C:/tmp/Jarvis --version 1.6.0 \
+    python scripts/verify_release_bundle.py --bundle dist/app --version 1.7.0
+    python scripts/verify_release_bundle.py --bundle C:/tmp/Jarvis --version 1.7.0 \
         --expect-tools 119
 
 ``--bundle`` : dossier onedir contenant ``Jarvis.exe`` (ou ``Jarvis``) et
@@ -63,6 +63,16 @@ REQUIRED_MODULES = [
     "src.music.providers.deezer",
     # Contexte conversationnel (1.6.0)
     "src.conversation",
+    # Desktop Mode (1.7.0)
+    "UI.desktop.state",
+    "UI.desktop.config",
+    "UI.desktop.design",
+    "UI.desktop.halo",
+    "UI.desktop.widgets",
+    "UI.desktop.overlay",
+    "UI.desktop.events",
+    "UI.desktop_appearance_dialog",
+    "UI.screen_halo_overlay",
     # Socle
     "src.tools",
     "src.version",
@@ -99,6 +109,32 @@ REQUIRED_SYMBOLS = {
         "to_ollama_messages",
     ],
     "src.tools": ["reset_conversation", "get_conversation_state"],
+    # Desktop Mode (1.7.0) — machine d'états, configuration, rendu, éditeur.
+    "UI.desktop.state": [
+        "DesktopStateMachine",
+        "DesktopState",
+        "DesktopEvent",
+        "FOLLOW_UP_TIMEOUT",
+    ],
+    "UI.desktop.config": [
+        "DesktopAppearanceConfig",
+        "WidgetSlot",
+        "INTERACTION_WIDGETS",
+        "migrate_payload",
+    ],
+    "UI.desktop.halo": ["HaloRenderer"],
+    "UI.desktop.widgets": ["StatusChip", "TranscriptCard", "AudioBars", "ControlsBar"],
+    "UI.desktop.overlay": [
+        "DesktopOverlay",
+        "DesktopOverlayController",
+        "DesktopControlsWindow",
+    ],
+    "UI.desktop.events": ["DesktopEventBridge"],
+    "UI.desktop_appearance_dialog": [
+        "DesktopAppearanceDialog",
+        "show_desktop_appearance_dialog",
+    ],
+    "UI.screen_halo_overlay": ["ScreenHaloOverlay", "build_presence_hook"],
 }
 
 
