@@ -33,6 +33,38 @@ rapidement entre son Blob existant et son cadre Desktop existant.
   mécanismes existants. Desktop Mode reste le cadre réactif autour de l'écran,
   et non une nouvelle interface complète.
 
+
+## [1.5.2] — 2026-09-27
+
+### Ajouté
+
+- Associations locales de playlists Deezer (`nom → ID`) dans
+  `deezer_playlists.json`, séparées du stockage OAuth.
+- Enregistrement par URL ou ID Deezer, résolution tolérante des noms, liste et
+  suppression locales, avec outils `music_playlist_save`,
+  `music_playlist_import`, `music_playlist_list` et `music_playlist_remove`.
+- Lancement d’une playlist personnelle enregistrée directement par deep-link,
+  sans appel OAuth ni requête `/user/me/playlists`.
+
+### Amélioré
+
+- OAuth reste utilisé automatiquement pour découvrir/importer une playlist
+  personnelle quand aucune association locale ne correspond.
+- Un token invalide ne bloque pas une association locale existante ; les erreurs
+  d’authentification sont retournées clairement dans les autres cas.
+- Le fichier local est validé, écrit atomiquement et sauvegardé avant
+  réécriture ; les données corrompues ou les IDs/URLs invalides sont ignorés ou
+  refusés sans faire planter Jarvis.
+
+### Sécurité et documentation
+
+- Aucun token, mot de passe, cookie ou session Deezer n’est écrit dans le
+  fichier d’associations. Aucun scraping ni contournement des restrictions de
+  création d’applications Deezer n’est introduit.
+- `README.md` et `docs/DEEZER.md` documentent le parcours sans OAuth et la
+  différence entre retirer une association de Jarvis et supprimer une playlist
+  Deezer.
+
 ## [1.5.1] — 2026-09-26
 
 **Release de correction de provenance.** `v1.5.1` est la première release

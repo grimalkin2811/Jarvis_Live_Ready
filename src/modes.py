@@ -86,7 +86,7 @@ FOCUS_ALWAYS_BLOCKED_TOOLS = {
     "media_next",
     "media_previous",
     "media_stop",
-    # Musique Deezer (v1.5.0) : distraction pendant une session focus.
+    # Musique Deezer (v1.5.2) : distraction pendant une session focus.
     "music_search",
     "music_play",
     "music_play_track",
@@ -100,6 +100,10 @@ FOCUS_ALWAYS_BLOCKED_TOOLS = {
     "music_stop",
     "music_current",
     "music_list_playlists",
+    "music_playlist_save",
+    "music_playlist_import",
+    "music_playlist_remove",
+    "music_playlist_list",
     "music_status",
     "music_disconnect",
     "random_number",

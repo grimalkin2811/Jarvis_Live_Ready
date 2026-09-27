@@ -30,7 +30,7 @@ on:
       expected_tools:
         description: "Nombre d'outils Gemini attendu"
         required: false
-        default: "113"
+        default: "117"
       report_pr:
         description: "Numéro de PR où publier le rapport (0 = aucun)"
         required: false
@@ -67,7 +67,7 @@ jobs:
           VERSION="${{ inputs.expected_version }}"
           if [ -z "$VERSION" ]; then VERSION="${TAG#v}"; fi
           TOOLS="${{ inputs.expected_tools }}"
-          if [ -z "$TOOLS" ]; then TOOLS="113"; fi
+          if [ -z "$TOOLS" ]; then TOOLS="117"; fi
           PR="${{ inputs.report_pr }}"
           if [ -z "$PR" ] || [ "$PR" = "0" ]; then
             # Déclenchement par push : on rattache le rapport à la PR qui a

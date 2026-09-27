@@ -12,10 +12,11 @@ Capacités réelles (état 2025/2026) :
 * **Contrôles pause/suivant/précédent** : touches multimédia système Windows
   (VK_MEDIA_*), qui sont relayées à l'application au premier plan (Deezer
   desktop ou l'onglet web si le focus est correct).
-* **Playlists personnelles / favoris** : nécessitent OAuth 2.0. Deezer a
-  restreint la création de nouvelles applications API ; si l'utilisateur
-  dispose d'un token valide (``DEEZER_ACCESS_TOKEN``), Jarvis l'utilise.
-  Sinon la fonctionnalité est clairement signalée comme indisponible.
+* **Playlists personnelles / favoris** : OAuth 2.0 reste disponible pour
+  découvrir/importer les playlists lorsque l'utilisateur dispose d'un token
+  valide (``DEEZER_ACCESS_TOKEN``). Une playlist déjà associée localement à
+  son ID Deezer peut toutefois être lancée sans OAuth ; sans token ni
+  association locale, la limitation est signalée honnêtement.
 * **Morceau en cours** : l'API ne fournit pas d'endpoint de lecture temps
   réel. Jarvis conserve un **état local** de la dernière piste lancée et
   l'annonce honnêtement ; si rien n'a été lancé via Jarvis, il le dit.
@@ -34,7 +35,6 @@ import shutil
 import subprocess
 import threading
 import time
-import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -44,6 +44,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ... import paths
+from ..local_playlists import (
+    LocalPlaylistStore,
+    LocalPlaylistStoreError,
+    extract_playlist_id,
+)
 from ..models import (
     Album,
     Artist,
@@ -55,13 +60,14 @@ from ..models import (
     playlist_from_deezer,
     track_from_deezer,
 )
+from ..text import normalize_text, similarity
 
 log = logging.getLogger("jarvis.music.deezer")
 
 API_BASE = "https://api.deezer.com"
 CONNECT_BASE = "https://connect.deezer.com/oauth"
 DEFAULT_TIMEOUT = 12.0
-USER_AGENT = "Jarvis-Music/1.5.0 (+https://github.com/grimalkin2811/Jarvis_Live_Ready)"
+USER_AGENT = "Jarvis-Music/1.5.2 (+https://github.com/grimalkin2811/Jarvis_Live_Ready)"
 
 # Touches multimédia Windows (winuser.h).
 VK_MEDIA_NEXT = 0xB0
@@ -107,55 +113,6 @@ def _err(message: Any, **payload: Any) -> dict[str, Any]:
     if "message" not in payload:
         result["message"] = result["error"]
     return result
-
-
-def _strip_accents(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value or "")
-    return "".join(ch for ch in normalized if not unicodedata.combining(ch))
-
-
-def normalize_text(value: str) -> str:
-    """Normalise un libellé pour comparaisons floues (casse, accents, ponctuation)."""
-    text = _strip_accents(str(value or "")).lower()
-    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def similarity(a: str, b: str) -> float:
-    """Score de similarité simple ∈ [0, 1] (égalité, préfixe, inclusion, tokens)."""
-    na, nb = normalize_text(a), normalize_text(b)
-    if not na or not nb:
-        return 0.0
-    if na == nb:
-        return 1.0
-    # Compacté sans espaces : « cyberpunk » ≈ « cyber punk »
-    ca, cb = na.replace(" ", ""), nb.replace(" ", "")
-    if ca == cb:
-        return 0.96
-    if na in nb or nb in na or ca in cb or cb in ca:
-        shorter, longer = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
-        return 0.72 + 0.25 * (len(shorter) / max(len(longer), 1))
-    ta, tb = set(na.split()), set(nb.split())
-    if not ta or not tb:
-        return 0.0
-    inter = len(ta & tb)
-    union = len(ta | tb)
-    jaccard = inter / union if union else 0.0
-    # Bonus si tous les tokens de la requête sont présents.
-    coverage = inter / len(ta)
-    score = max(jaccard, coverage * 0.85)
-    # Sous-chaîne token-niveau : « punk » dans « cyberpunk »
-    if score < 0.5:
-        joined_b = " ".join(tb)
-        joined_a = " ".join(ta)
-        token_hits = sum(1 for t in ta if t in cb or any(t in x for x in tb))
-        if token_hits:
-            score = max(score, 0.55 * token_hits / max(len(ta), 1))
-        if ca and cb and (ca in cb or cb in ca):
-            score = max(score, 0.75)
-        _ = (joined_a, joined_b)  # silence linters
-    return score
 
 
 # ---------------------------------------------------------------------------
@@ -816,10 +773,13 @@ class DeezerProvider:
         media_key_sender: Callable[[int], bool] | None = None,
         content_opener: Callable[..., dict[str, Any]] | None = None,
         running_checker: Callable[[], bool] | None = None,
+        local_playlist_store: LocalPlaylistStore | None = None,
+        local_playlists_path: Path | None = None,
     ) -> None:
         self._token_path = token_path
         self._lock = threading.RLock()
         self._state = PlaybackState()
+        self._local_playlist_store = local_playlist_store or LocalPlaylistStore(local_playlists_path)
         self._personal_playlists_cache: list[Playlist] | None = None
         self._personal_playlists_ts = 0.0
         self._media_key_sender = media_key_sender or _send_media_key
@@ -1205,6 +1165,144 @@ class DeezerProvider:
 
     # -- playlists ----------------------------------------------------------
 
+    def save_local_playlist(
+        self,
+        name: str,
+        playlist_id: str | int | None = None,
+        url: str | None = None,
+    ) -> dict[str, Any]:
+        """Save a Deezer playlist alias without contacting Deezer.
+
+        If neither an id nor a URL is supplied, the operation is an explicit
+        OAuth import by name.  Direct id/URL saves never require OAuth.
+        """
+        display_name = str(name or "").strip()
+        if not display_name:
+            return _err("Précise un nom pour la playlist locale.", action="playlist_save")
+
+        if playlist_id is None and not (url or "").strip():
+            if not self.client.access_token:
+                return _err(
+                    "Je n'ai pas accès à tes playlists personnelles Deezer. "
+                    "Donne-moi le lien Deezer de la playlist pour que je puisse "
+                    "l'enregistrer sans OAuth.",
+                    action="playlist_save",
+                    auth_required=True,
+                    available=False,
+                )
+            try:
+                personal = self._load_personal_playlists(limit=50, force=True)
+            except DeezerAPIError as exc:
+                return self._api_error(exc, auth_sensitive=True)
+            best, alternatives, reason = pick_best_named(
+                personal, display_name, name_attr="title", min_score=0.5
+            )
+            if best is None:
+                if reason == "ambiguous" and alternatives:
+                    return _err(
+                        _format_named_ambiguity("playlists", alternatives, "title"),
+                        action="playlist_save",
+                        ambiguous=True,
+                        candidates=[item.to_dict() for item in alternatives],
+                    )
+                return _err(
+                    f"Je n'ai trouvé aucune playlist personnelle nommée « {display_name} ».",
+                    action="playlist_save",
+                    query=display_name,
+                )
+            playlist_id = best.id
+            url = best.link or None
+
+        try:
+            entry = self._local_playlist_store.add(display_name, playlist_id or "", url=url)
+            issues = self._local_playlist_store.issues
+        except LocalPlaylistStoreError as exc:
+            return _err(str(exc), action="playlist_save", invalid=True)
+        except OSError as exc:
+            log.warning("Écriture des playlists locales impossible: %s", exc)
+            return _err(
+                "Le stockage local des playlists est indisponible.",
+                action="playlist_save",
+                storage_error=True,
+            )
+        result = _ok(
+            action="playlist_save",
+            playlist=entry,
+            message=f"Playlist {entry['name']} enregistrée dans Jarvis.",
+            note="Cela ne supprime ni ne modifie la playlist dans Deezer.",
+        )
+        if issues:
+            result["warning"] = " ; ".join(dict.fromkeys(issues))
+        return result
+
+    def import_local_playlist(self, name: str) -> dict[str, Any]:
+        """Import a named personal playlist through OAuth into the local store."""
+        return self.save_local_playlist(name)
+
+    def remove_local_playlist(self, name: str) -> dict[str, Any]:
+        display_name = str(name or "").strip()
+        if not display_name:
+            return _err("Précise le nom de la playlist à retirer de Jarvis.", action="playlist_remove")
+        try:
+            removed = self._local_playlist_store.remove(display_name)
+        except Exception as exc:  # defensive: a broken local file must not crash Jarvis
+            log.warning("Suppression de playlist locale impossible: %s", exc)
+            return _err("Le stockage local des playlists est indisponible.", action="playlist_remove")
+        if not removed:
+            return _err(
+                f"Aucune playlist locale « {display_name} » n'est enregistrée.",
+                action="playlist_remove",
+                found=False,
+            )
+        return _ok(
+            action="playlist_remove",
+            name=display_name,
+            message=(
+                f"Playlist {display_name} supprimée de Jarvis. "
+                "Elle reste inchangée dans Deezer."
+            ),
+        )
+
+    def get_local_playlists(self) -> dict[str, Any]:
+        """List locally saved aliases; never calls the Deezer API."""
+        try:
+            playlists = self._local_playlist_store.list()
+            issues = self._local_playlist_store.issues
+        except Exception as exc:  # defensive against malformed user data
+            log.warning("Lecture des playlists locales impossible: %s", exc)
+            return _err("Le stockage local des playlists est indisponible.", action="playlist_list")
+        result = _ok(
+            action="playlist_list",
+            playlists=playlists,
+            count=len(playlists),
+            message=(
+                f"{len(playlists)} playlist(s) enregistrée(s) dans Jarvis."
+                if playlists
+                else "Aucune playlist n'est enregistrée dans Jarvis."
+            ),
+        )
+        if issues:
+            result["warning"] = " ; ".join(dict.fromkeys(issues))
+        return result
+
+    def resolve_local_playlist(self, name: str) -> dict[str, Any] | None:
+        """Resolve a local alias, returning an explicit ambiguity error if needed."""
+        try:
+            match, alternatives, reason = self._local_playlist_store.resolve(name)
+        except Exception as exc:  # malformed local data must not break playback
+            log.warning("Résolution de playlist locale impossible: %s", exc)
+            return _err("Le stockage local des playlists est indisponible.", action="playlist_resolve")
+        if match is not None:
+            return match
+        if reason == "ambiguous" and alternatives:
+            return _err(
+                _format_local_playlist_ambiguity(alternatives),
+                action="playlist_resolve",
+                ambiguous=True,
+                candidates=alternatives,
+            )
+        return None
+
     def get_playlists(self, *, personal: bool = True, limit: int = 30) -> dict[str, Any]:
         if personal:
             if not self.client.access_token:
@@ -1442,6 +1540,32 @@ class DeezerProvider:
         text = str(playlist or "").strip()
         if not text:
             return _err("Aucune playlist précisée.")
+
+        # A saved alias is deliberately resolved before OAuth or any network
+        # request.  This is the offline reliability path of v1.5.2.
+        if not text.isdigit():
+            local = self.resolve_local_playlist(text)
+            if local is not None:
+                if local.get("success") is False:
+                    return local
+                return Playlist(
+                    id=str(local["id"]),
+                    title=str(local["name"]),
+                    link=str(local.get("url") or ""),
+                    personal=True,
+                )
+
+        # A validated Deezer URL is also enough to launch directly; it does
+        # not require scraping the page or checking an OAuth session.
+        direct_id = extract_playlist_id(text)
+        if direct_id is not None:
+            return Playlist(
+                id=direct_id,
+                title=f"Playlist {direct_id}",
+                link=f"https://www.deezer.com/playlist/{direct_id}",
+                personal=personal,
+            )
+
         if text.isdigit():
             payload = self.client.get_playlist(text)
             if not payload or payload.get("error"):
@@ -1449,6 +1573,7 @@ class DeezerProvider:
             return playlist_from_deezer(payload, personal=personal)
 
         candidates: list[Playlist] = []
+        auth_error: dict[str, Any] | None = None
         # Priorité aux playlists personnelles si demandées / si auth dispo.
         if personal or self.client.access_token:
             if self.client.access_token:
@@ -1456,14 +1581,18 @@ class DeezerProvider:
                     personal_list = self._load_personal_playlists(limit=50)
                     candidates.extend(personal_list)
                 except DeezerAPIError as exc:
-                    if personal:
-                        return self._api_error(exc, auth_sensitive=True)
+                    # Keep the error until public search has had a chance to
+                    # find a public playlist.  A bad token must not affect a
+                    # previously saved local alias (handled above).
+                    auth_error = self._api_error(exc, auth_sensitive=True)
             elif personal:
                 return _err(
-                    "Les playlists personnelles nécessitent une authentification Deezer "
-                    "(DEEZER_ACCESS_TOKEN). Cette fonction n'est pas disponible sans compte lié.",
+                    "Je n'ai pas accès à tes playlists personnelles Deezer. "
+                    "Tu peux enregistrer une playlist avec son lien Deezer pour "
+                    "que je puisse la lancer sans OAuth.",
                     auth_required=True,
                     available=False,
+                    hint="music_playlist_save",
                 )
 
         # Compléter avec recherche publique
@@ -1493,7 +1622,13 @@ class DeezerProvider:
                     ambiguous=True,
                     candidates=[p.to_dict() for p in alts],
                 )
+            # A rejected OAuth token must not turn a low-score public result
+            # into a misleading personal playlist match.
+            if auth_error is not None:
+                return auth_error
             return alts[0]
+        if auth_error is not None:
+            return auth_error
         return _err("Je n'ai trouvé aucune playlist correspondant.", query=text)
 
     # -- erreurs API --------------------------------------------------------
@@ -1566,3 +1701,8 @@ def _format_named_ambiguity(
             labels.append(str(primary))
     joined = ", ".join(labels)
     return f"J'ai trouvé plusieurs {kind} : {joined}. Tu veux laquelle ?"
+
+
+def _format_local_playlist_ambiguity(items: list[dict[str, str]]) -> str:
+    labels = ", ".join(item.get("name", "") for item in items[:4])
+    return f"J'ai trouvé plusieurs playlists enregistrées : {labels}. Tu veux laquelle ?"

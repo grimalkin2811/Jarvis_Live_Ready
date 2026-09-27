@@ -14,6 +14,9 @@ from .intents import (
     AUTH_STATUS,
     CURRENT_TRACK,
     LIST_PLAYLISTS,
+    SAVE_LOCAL_PLAYLIST,
+    REMOVE_LOCAL_PLAYLIST,
+    LIST_LOCAL_PLAYLISTS,
     NEXT,
     PAUSE,
     PLAY_ALBUM,
@@ -109,6 +112,12 @@ class MusicManager:
                 return self.get_current_track()
             if name == LIST_PLAYLISTS:
                 return self.get_playlists(personal=True)
+            if name == SAVE_LOCAL_PLAYLIST:
+                return self.save_local_playlist(parsed.playlist or parsed.query)
+            if name == REMOVE_LOCAL_PLAYLIST:
+                return self.remove_local_playlist(parsed.playlist or parsed.query)
+            if name == LIST_LOCAL_PLAYLISTS:
+                return self.get_local_playlists()
             if name == AUTH_STATUS:
                 return self.auth_status()
             return _err(
@@ -232,6 +241,35 @@ class MusicManager:
 
     def get_playlists(self, *, personal: bool = True, limit: int = 30) -> dict[str, Any]:
         return self._tag(self.provider.get_playlists(personal=personal, limit=limit))
+
+    def save_local_playlist(
+        self,
+        name: str,
+        playlist_id: str | int | None = None,
+        url: str | None = None,
+    ) -> dict[str, Any]:
+        if not name:
+            return _err("Précise un nom pour la playlist locale.")
+        try:
+            return self._tag(self.provider.save_local_playlist(name, playlist_id=playlist_id, url=url))
+        except DeezerAPIError as exc:
+            return self._provider_err(exc)
+
+    def import_local_playlist(self, name: str) -> dict[str, Any]:
+        if not name:
+            return _err("Précise le nom de la playlist personnelle à importer.")
+        try:
+            return self._tag(self.provider.import_local_playlist(name))
+        except DeezerAPIError as exc:
+            return self._provider_err(exc)
+
+    def remove_local_playlist(self, name: str) -> dict[str, Any]:
+        if not name:
+            return _err("Précise le nom de la playlist locale à supprimer.")
+        return self._tag(self.provider.remove_local_playlist(name))
+
+    def get_local_playlists(self) -> dict[str, Any]:
+        return self._tag(self.provider.get_local_playlists())
 
     def auth_status(self) -> dict[str, Any]:
         return self._tag(self.provider.auth_status())
