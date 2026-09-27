@@ -4,10 +4,19 @@ import time
 from google import genai
 from google.genai import types
 
+from .conversation import (
+    ConversationContext,
+    get_default_conversation_context,
+    is_new_conversation_command,
+    to_gemini_contents,
+)
+from .logging_setup import get_logger
 from .memory import MemoryManager
 from .modes import get_default_mode_manager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
 from .writing.service import WRITING_TOOL_NAMES, system_instruction as writing_system_instruction
+
+log = get_logger("gemini")
 
 
 #: Durée pendant laquelle une interruption demandée localement (« stop »)
@@ -52,6 +61,7 @@ class GeminiLive:
         voice_version_provider=None,
         speech_pace_provider=None,
         memory_manager: MemoryManager | None = None,
+        conversation: ConversationContext | None = None,
     ):
         self.client = genai.Client(api_key=key)
         self.model = model
@@ -73,12 +83,28 @@ class GeminiLive:
         self.speech_pace_provider = speech_pace_provider
         self.memory_manager = memory_manager
 
+        # Contexte conversationnel multi-tour (v1.6.0). Il appartient à Jarvis,
+        # pas au fournisseur : la session Gemini n'en est qu'un consommateur.
+        self.conversation = (
+            conversation if conversation is not None else get_default_conversation_context()
+        )
+
         self.session = None
         self.ctx = None
         self.speaking = False
         self.tool_active = False
         self.resumption_handle = None
         self._turn_user_text = []
+        # Transcription de la réponse de Jarvis pour le tour en cours, et
+        # portion de la demande utilisateur déjà versée au contexte (la
+        # transcription arrive par fragments pendant que l'utilisateur parle).
+        self._turn_model_text = []
+        self._user_text_committed = ""
+        # Vrai quand le tour courant est clos côté contexte : la prochaine
+        # transcription entrante ouvre un nouveau tour (et ne recopie pas la
+        # demande précédente, cf. interruption suivie de turn_complete).
+        self._turn_closed = False
+        self._loop = None
         self._watcher_task = None
         self._voice_version_used = None
         # Vrai quand la session a été fermée volontairement pour appliquer un
@@ -118,6 +144,155 @@ class GeminiLive:
     def _clear_interrupt(self) -> None:
         self.interrupt_requested = False
         self._interrupt_until = 0.0
+
+    # ------------------------------------------------------------------
+    # Contexte conversationnel (v1.6.0)
+    # ------------------------------------------------------------------
+
+    def _commit_user_text(self) -> None:
+        """Verse la demande utilisateur du tour courant dans le contexte.
+
+        Appelée dès que le tour utilisateur produit un effet (appel d'outil ou
+        début de réponse) afin que l'ordre USER -> OUTILS -> ASSISTANT soit
+        toujours respecté, puis complétée si la transcription continue
+        d'arriver.
+        """
+        full = " ".join(self._turn_user_text).strip()
+        if not full:
+            return
+        committed = self._user_text_committed
+        if not committed:
+            self.conversation.add_user_message(full)
+        elif full == committed:
+            return
+        elif full.startswith(committed):
+            self.conversation.extend_user_message(full[len(committed):])
+        else:
+            # Transcription révisée par le serveur : on complète plutôt que de
+            # réécrire, pour ne jamais perdre ce qui a déjà servi de référence.
+            self.conversation.extend_user_message(full)
+        self._user_text_committed = full
+
+    def _commit_assistant_text(self) -> None:
+        text = " ".join(self._turn_model_text).strip()
+        self._turn_model_text.clear()
+        if text:
+            self.conversation.add_assistant_message(text)
+
+    def _begin_turn_if_needed(self) -> None:
+        """Ouvre un nouveau tour si le précédent est déjà clos.
+
+        La transcription entrante du tour suivant ne doit jamais être
+        interprétée comme la suite de la demande précédente : on repart d'un
+        tampon vide dès que le tour d'avant a été versé au contexte.
+        """
+        if not self._turn_closed:
+            return
+        self._turn_closed = False
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+
+    def _finish_turn(self) -> None:
+        """Clôt proprement le tour courant (fin de tour ou interruption).
+
+        Le tampon de transcription utilisateur n'est PAS vidé ici : la
+        mémoire persistante l'exploite encore juste après ``turn_complete``.
+        Il est remis à zéro à l'ouverture du tour suivant.
+        """
+        self._commit_user_text()
+        self._commit_assistant_text()
+        self.conversation.close_turn("fin de tour")
+        self._turn_closed = True
+
+    def _handle_context_reset(self, info) -> None:
+        """Le contexte a été réinitialisé : la session Gemini doit repartir.
+
+        Appelé depuis n'importe quel thread (outil ``reset_conversation``) ou
+        depuis la boucle vocale (commande « nouvelle conversation »). On coupe
+        la session en cours pour que le serveur n'ait plus, lui non plus, la
+        conversation précédente : la boucle externe reconnecte aussitôt.
+        """
+        self.resumption_handle = None
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self._turn_closed = False
+        if self.session is None and self.ctx is None:
+            return
+        self.reconnect_requested = True
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(self._schedule_session_restart)
+        except RuntimeError:  # pragma: no cover - boucle déjà arrêtée
+            log.debug("reset contexte : boucle asyncio indisponible")
+
+    def _schedule_session_restart(self) -> None:
+        try:
+            asyncio.ensure_future(self._shutdown_session())
+        except Exception as exc:  # pragma: no cover - défensif
+            log.debug("redémarrage de session impossible : %s", exc)
+
+    async def _replay_context(self) -> None:
+        """Rejoue le contexte local dans une session Gemini neuve.
+
+        Si un handle de reprise existe, le serveur restaure lui-même la
+        conversation : rejouer ferait doublon. Sinon (démarrage à froid,
+        reprise expirée, reset), Jarvis réinjecte SON contexte — c'est ce qui
+        rend la continuité indépendante d'un état implicite côté serveur.
+        """
+        if self.session is None:
+            return
+        if self.resumption_handle:
+            log.debug("contexte : reprise de session serveur (pas de rejeu local)")
+            return
+        messages = self.conversation.get_messages()
+        if not messages:
+            return
+        turns = to_gemini_contents(messages)
+        if not turns:
+            return
+        try:
+            await self.session.send_client_content(turns=turns, turn_complete=False)
+        except Exception as exc:
+            log.warning("rejeu du contexte conversationnel impossible : %s", exc)
+            return
+        log.debug(
+            "contexte rejoué id=%s messages=%s contents=%s",
+            self.conversation.conversation_id, len(messages), len(turns),
+        )
+
+    def _maybe_handle_reset_command(self) -> bool:
+        """Commande vocale « nouvelle conversation », traitée localement.
+
+        Aucun appel LLM supplémentaire : le contexte est vidé, la session est
+        recréée vierge et l'utilisateur reçoit un retour par le bus de
+        notifications existant.
+        """
+        text = " ".join(self._turn_user_text).strip()
+        if not text or not is_new_conversation_command(text):
+            return False
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self._turn_closed = False
+        self.request_interrupt()
+        info = self.conversation.start_new_conversation(reason="commande vocale")
+        self._notify_reset(info)
+        return True
+
+    @staticmethod
+    def _notify_reset(info) -> None:
+        message = "Conversation réinitialisée. La mémoire persistante est conservée."
+        try:
+            from .routine_actions import notify_user
+
+            notify_user(message)
+        except Exception:  # pragma: no cover - la notification ne doit rien casser
+            print(f"[Jarvis] {message}")
+        log.info("conversation réinitialisée -> %s", info.get("conversation_id", "?"))
 
     def can_send(self):
         # Pendant une interruption, le micro doit passer : c'est ainsi que
@@ -259,7 +434,16 @@ class GeminiLive:
             "Avant toute action destructrice ou irréversible "
             "(shutdown_pc, restart_pc, delete_notes, clear_memory, delete_routine), demande une "
             "confirmation orale explicite puis rappelle l'outil avec "
-            "confirm=true."
+            "confirm=true. "
+            "Tu disposes du contexte de la conversation en cours : les tours précédents te sont "
+            "fournis. Résous donc les références (« lui », « celui-là », « le deuxième », « l'autre », "
+            "« oui », « mets-la en pause », « reprends », « plus court ») à partir de ces tours, "
+            "et ne redemande pas une information déjà donnée juste avant. "
+            "Ce contexte est distinct de la mémoire persistante : ne mémorise rien simplement "
+            "parce que c'est dans la conversation. "
+            "Si l'utilisateur demande de repartir de zéro (« nouvelle conversation », "
+            "« efface le contexte », « réinitialise la conversation »), appelle reset_conversation : "
+            "le contexte conversationnel est vidé, la mémoire persistante et les réglages restent intacts."
         )
         if memory_context:
             system_instruction += f"\n\n{memory_context}"
@@ -287,7 +471,7 @@ class GeminiLive:
                 print(f"[Voix] Configuration refusée ({exc}), voix par défaut.")
                 speech_config = None
 
-        config = types.LiveConnectConfig(
+        config_kwargs = dict(
             response_modalities=["AUDIO"],
             system_instruction=system_instruction,
             tools=[
@@ -296,8 +480,24 @@ class GeminiLive:
                 )
             ],
             speech_config=speech_config,
-            session_resumption=resumption_config
+            session_resumption=resumption_config,
         )
+
+        # Transcriptions d'entrée et de sortie : c'est la matière première du
+        # contexte conversationnel local (avant la v1.6.0, Jarvis ne savait
+        # littéralement pas ce qui avait été dit au tour précédent). L'option
+        # est appliquée de façon défensive : une version plus ancienne du SDK
+        # ne doit pas empêcher Jarvis de démarrer.
+        try:
+            transcription = types.AudioTranscriptionConfig()
+            config = types.LiveConnectConfig(
+                input_audio_transcription=transcription,
+                output_audio_transcription=transcription,
+                **config_kwargs,
+            )
+        except Exception as exc:  # pragma: no cover - dépend de la version du SDK
+            log.warning("transcriptions Live indisponibles (%s) : contexte limité", exc)
+            config = types.LiveConnectConfig(**config_kwargs)
 
         try:
             self.ctx = self.client.aio.live.connect(
@@ -321,6 +521,17 @@ class GeminiLive:
             except Exception:
                 self._voice_version_used = None
         self.reconnect_requested = False
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - hors boucle asyncio
+            self._loop = None
+        self.conversation.bind_session(self._handle_context_reset)
+        self.conversation.set_provider("gemini")
+        log.debug(
+            "session Gemini ouverte — %s (reprise=%s)",
+            self.conversation.describe(), bool(self.resumption_handle),
+        )
+        await self._replay_context()
         self._start_voice_watcher()
 
     def _start_voice_watcher(self) -> None:
@@ -364,6 +575,35 @@ class GeminiLive:
         )
 
     async def receive_loop(self):
+        try:
+            await self._receive_loop()
+        except BaseException:
+            # Tour interrompu par une erreur réseau/serveur : le message
+            # utilisateur reste dans le contexte mais le tour est marqué en
+            # échec (comportement déterministe, testé).
+            self._fail_open_turn("erreur de session")
+            raise
+        else:
+            self._fail_open_turn("session fermée avant la réponse")
+
+    def _fail_open_turn(self, reason: str) -> None:
+        """Ferme le tour resté ouvert quand la session s'arrête.
+
+        Déterministe : la demande de l'utilisateur est conservée (elle doit
+        rester référençable après une coupure), la réponse partielle éventuelle
+        est conservée elle aussi ; sinon le tour est marqué ``failed``.
+        """
+        self._commit_user_text()
+        if self._turn_model_text:
+            self._commit_assistant_text()
+        elif self.conversation.has_open_turn():
+            self.conversation.fail_open_turn(reason)
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self._turn_closed = False
+
+    async def _receive_loop(self):
 
         async for r in self.session.receive():
 
@@ -381,15 +621,31 @@ class GeminiLive:
                 None
             )
 
-            # Certaines versions de Gemini Live peuvent fournir une
-            # transcription de l'audio utilisateur. Si elle existe, on la
-            # collecte pour une extraction mémoire conservatrice en fin de tour.
+            # Transcription de l'audio utilisateur (activée dans connect()).
+            # Elle alimente le contexte conversationnel, la détection locale
+            # de « nouvelle conversation » et l'extraction mémoire
+            # conservatrice existante.
             if server_content:
                 try:
                     transcript = getattr(server_content, "input_transcription", None)
                     text = getattr(transcript, "text", None) if transcript else None
                     if text:
+                        self._begin_turn_if_needed()
                         self._turn_user_text.append(str(text))
+                        if self._maybe_handle_reset_command():
+                            continue
+                except Exception:
+                    pass
+
+                # Transcription de la réponse de Jarvis : c'est elle qui rend
+                # « plus court », « et sa population ? » possibles au tour
+                # suivant.
+                try:
+                    out = getattr(server_content, "output_transcription", None)
+                    out_text = getattr(out, "text", None) if out else None
+                    if out_text:
+                        self._commit_user_text()
+                        self._turn_model_text.append(str(out_text))
                 except Exception:
                     pass
 
@@ -401,6 +657,9 @@ class GeminiLive:
                 server_content
                 and server_content.model_turn
             ):
+                # Le modèle répond : la demande de l'utilisateur est complète,
+                # on la fige dans le contexte avant tout message assistant.
+                self._commit_user_text()
                 # Interruption locale en cours : l'audio déjà généré par
                 # Gemini est jeté (Jarvis se tait) jusqu'à ce que le serveur
                 # confirme l'interruption ou que la fenêtre expire.
@@ -443,6 +702,9 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
+                # Ce que Jarvis avait commencé à dire reste référencable
+                # (« non, l'autre », « redis ça plus court »).
+                self._finish_turn()
                 if self.on_interrupted:
                     self.on_interrupted()
 
@@ -457,8 +719,14 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
+                # Contexte conversationnel d'abord : le tour est clos avec
+                # l'ordre USER -> OUTILS -> ASSISTANT.
+                self._finish_turn()
                 if self.on_turn_complete:
                     self.on_turn_complete()
+                # Mémoire persistante : inchangée, volontairement séparée du
+                # contexte. Seule l'extraction conservatrice existante peut
+                # écrire un souvenir (« souviens-toi que… »).
                 if self.memory_manager is not None and self._turn_user_text:
                     try:
                         text = " ".join(self._turn_user_text).strip()
@@ -468,6 +736,8 @@ class GeminiLive:
                         print(f"[Memory] Extraction ignorée : {exc}")
                     finally:
                         self._turn_user_text.clear()
+                else:
+                    self._turn_user_text.clear()
 
             # =================================================
             # OUTILS
@@ -487,6 +757,9 @@ class GeminiLive:
                         pass
                 self.tool_active = True
                 responses = []
+                # Un appel d'outil est une conséquence de la demande en cours :
+                # elle doit être dans le contexte AVANT l'appel.
+                self._commit_user_text()
 
                 # try/finally : même si un outil ou l'envoi échoue, le micro
                 # doit être réactivé (tool_active = False), sinon Jarvis
@@ -526,6 +799,11 @@ class GeminiLive:
                                     "error": str(e)
                                 }
 
+                        # Trace compacte dans le contexte : l'appel et son
+                        # résultat (jamais le payload JSON complet) pour que
+                        # « lance le deuxième » reste résoluble au tour suivant.
+                        self.conversation.add_tool_interaction(c.name, args, result)
+
                         responses.append(
                             types.FunctionResponse(
                                 name=c.name,
@@ -562,4 +840,7 @@ class GeminiLive:
         self._watcher_task = None
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
+        # Le contexte survit à la session (reconnexion, changement de voix,
+        # changement d'interface) : seul le pont de reset est détaché.
+        self.conversation.unbind_session(self._handle_context_reset)
         await self._shutdown_session()

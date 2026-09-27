@@ -12,6 +12,21 @@ les **GitHub Releases**, **sans jamais toucher à vos données**.
 
 ---
 
+## 1.6.0 — Conversation Context
+
+* Contexte conversationnel multi-tour appartenant à Jarvis (`src/conversation.py`)
+* Transcriptions Gemini Live entrée/sortie activées et enregistrées par tour
+* Traces d'outils compactes, limitation de taille, rognage par tours entiers
+* Adaptateurs Gemini et Ollama à partir du même contexte
+* Réinitialisation vocale locale (« nouvelle conversation ») et outils
+  `reset_conversation` / `get_conversation_state`
+* Mémoire persistante inchangée et toujours séparée du contexte
+
+Le détail est dans [CHANGELOG.md](CHANGELOG.md) et dans la section
+[Contexte conversationnel](#contexte-conversationnel-conversation-context).
+
+---
+
 ## 1.4.0 — Writing System
 
 * Added active-field text insertion
@@ -173,6 +188,10 @@ GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
 JARVIS_MEMORY_ENABLED=1
 JARVIS_ROUTINES_ENABLED=1
 JARVIS_REMINDERS_ENABLED=1
+# Contexte conversationnel (v1.6.0) — valeurs par défaut
+JARVIS_CONTEXT_ENABLED=1
+JARVIS_CONTEXT_MAX_TURNS=12
+JARVIS_CONTEXT_MAX_TOKENS=3000
 # Deezer (optionnel — playlists personnelles uniquement)
 #DEEZER_ACCESS_TOKEN=
 ```
@@ -391,6 +410,105 @@ Les seuils sont des constantes lisibles en haut de `AudioIO`
 `BARGE_IN_GRACE_SECONDS`) : si votre micro est très peu sensible et que « stop »
 ne passe pas, baissez `BARGE_IN_MIN_RMS` ; si Jarvis se coupe tout seul avec des
 enceintes fortes, augmentez `BARGE_IN_FACTOR`.
+
+## Contexte conversationnel (Conversation Context)
+
+Depuis la **v1.6.0**, Jarvis maintient **sa propre** représentation de la
+conversation en cours (`src/conversation.py`). Avant, chaque demande était
+traitée isolément : la continuité dépendait uniquement de l'état interne d'une
+session Gemini Live, qui disparaissait à la moindre reconnexion, et aucune
+transcription n'était conservée côté Jarvis.
+
+### Trois espaces distincts, jamais mélangés
+
+| Espace | Contenu | Durée de vie | Fichier |
+| --- | --- | --- | --- |
+| **Prompt système** | Identité, règles, outils, mémoire injectée au départ | Reconstruit à chaque connexion | `src/gemini_live.py` |
+| **Contexte conversationnel** | Tours récents : demandes, réponses, appels d'outils | En mémoire vive, perdu au redémarrage | `src/conversation.py` |
+| **Mémoire persistante** | Faits importants explicitement retenus | SQLite, survit aux redémarrages | `src/memory.py` |
+
+Le contexte **n'est jamais promu automatiquement en mémoire persistante** :
+seule l'extraction explicite existante (« souviens-toi que… ») écrit dans
+`memory.db`.
+
+### Ce que ça change concrètement
+
+```text
+— « Quelle est la capitale de l'Italie ? »   → « Rome. »
+— « Et sa population ? »                     → répond sur Rome
+— « Cherche Daft Punk »                      → 5 titres
+— « Lance le deuxième »                      → lance le bon titre
+```
+
+### Comment ça marche
+
+- Les transcriptions Gemini Live d'entrée et de sortie sont activées
+  (`input_audio_transcription`, `output_audio_transcription`) : c'est la
+  matière première du contexte.
+- Chaque tour est enregistré dans l'ordre **utilisateur → outils → assistant**,
+  sous forme de **messages structurés par rôle** (jamais de concaténation de
+  chaînes). Le reste du code ne manipule pas la liste interne : il appelle
+  `add_user_message()`, `add_assistant_message()`, `add_tool_interaction()`,
+  `get_messages()`, `snapshot()`…
+- Les appels d'outils sont conservés sous forme **compacte** : nom, arguments
+  résumés, résultat abrégé (5 éléments et 420 caractères max) — jamais le
+  payload JSON complet.
+- À chaque nouvelle session (démarrage, reconnexion, changement de voix), le
+  contexte local est **rejoué** dans la session neuve. Si le serveur reprend
+  lui-même la session (`session_resumption`), aucun rejeu n'est envoyé : pas de
+  doublon.
+- Un changement de mode (Blob ↔ Desktop, Focus, Jeu, Writing, Musique) **ne
+  vide pas** le contexte. Un **redémarrage de Jarvis, si** (le contexte vit en
+  mémoire vive, la mémoire persistante survit).
+- En cas de coupure réseau ou d'échec d'un outil, le comportement est
+  déterministe : la demande de l'utilisateur est **conservée** et le tour est
+  **marqué en échec** (`failed`) — jamais un demi-tour fantôme.
+
+### Fournisseurs (Gemini et Ollama)
+
+Le contexte est indépendant du fournisseur ; chaque adaptateur n'en produit
+qu'une projection dans le format natif :
+
+| Fournisseur | Format produit |
+| --- | --- |
+| `gemini` | `[{"role": "user"/"model", "parts": [{"text": …}]}]` |
+| `ollama` | `[{"role": "system"/"user"/"assistant"/"tool", "content": …}]`, appels d'outils dans `tool_calls` |
+
+`context.set_provider("ollama")` change l'adaptateur de sortie **sans perdre la
+conversation** : les mêmes tours sont simplement rendus autrement. *Jarvis
+v1.6.0 n'embarque pas de client Ollama* — l'adaptateur est fourni, testé et
+prêt à être branché.
+
+### Taille du contexte
+
+Le contexte est borné pour rester rapide et bon marché ; le rognage supprime
+des **tours entiers**, du plus ancien au plus récent, sans jamais descendre
+sous le tour courant.
+
+```env
+JARVIS_CONTEXT_MAX_TURNS=12     # tours conservés (défaut 12)
+JARVIS_CONTEXT_MAX_TOKENS=3000  # budget estimé (défaut 3000, ~4 car./token)
+JARVIS_CONTEXT_ENABLED=1        # 0 = comportement d'avant la 1.6.0
+```
+
+### Réinitialiser la conversation
+
+- **À la voix**, sans appel LLM supplémentaire : « nouvelle conversation »,
+  « efface le contexte », « réinitialise la conversation », « on repart de
+  zéro », « oublie ce qu'on vient de dire ». La détection est faite localement
+  (normalisation des accents, motifs explicites, garde anti-négation), puis la
+  session est recréée vierge et une notification confirme l'action.
+- **Par outil** : `reset_conversation` (et `get_conversation_state` pour le
+  diagnostic, sans exposer le contenu des échanges).
+
+Un reset **ne touche ni à la mémoire persistante, ni aux réglages, ni aux
+routines, ni aux rappels**.
+
+### Journalisation
+
+Le logger `jarvis.conversation` trace en **DEBUG** l'identifiant de
+conversation, le numéro de tour, le rôle, l'outil, la taille estimée, les
+rognages et les resets — **jamais le contenu** des échanges.
 
 ## Mémoire persistante locale
 
@@ -737,7 +855,7 @@ a été créé dans user_content. »
 
 ## Fonctions
 
-Jarvis dispose de **117 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **119 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **19 outils musique Deezer**
 (dont les 4 outils de playlists locales ajoutés en v1.5.2).
 
@@ -764,6 +882,7 @@ Jarvis dispose de **117 outils** déclarés dans `src/tools.py` (voir
 | **Calcul & divers** | `calculate`, `random_number`, `flip_coin`, `roll_dice`, `pick_random` |
 | **Protocoles** | `run_protocol`, `list_protocols`, `cancel_protocol` |
 | **Écriture** | `write_to_active_field`, `create_text_file` |
+| **Conversation (1.6.0)** | `reset_conversation`, `get_conversation_state` |
 
 Exemples de phrases : « ouvre YouTube », « quelle météo à Lyon ? », « mets un
 minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
@@ -972,6 +1091,15 @@ annulation, sonde ou outil en échec, refus des outils destructeurs, codes
 secrets (expiration, accents, non-collision avec les raccourcis `m`/`s`/`d`),
 geste des trois clics, et rendu offscreen de l'overlay à chaque étape sur
 trois résolutions.
+
+Le contexte conversationnel ajoute 108 tests (`tests/test_conversation_context.py`,
+`tests/test_conversation_providers.py`, `tests/test_conversation_pipeline.py`) :
+création et ordre des tours, traces d'outils compactes, rognage par tours
+entiers et budget de tokens, reset (API, outil et commande vocale), conversion
+Gemini/Ollama, changement de fournisseur, accès concurrents, échecs de session
+et d'outils, séparation stricte avec la mémoire persistante, et non-régression
+des changements de mode. Aucun accès réseau : la session Gemini Live est
+simulée.
 
 La distribution ajoute des tests ciblés : `test_version` (source unique de
 version, comparaison sémantique), `test_paths` (emplacements de données

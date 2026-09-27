@@ -17,9 +17,9 @@ Il ne fait confiance ni au nom du fichier, ni au tag, ni à GitHub.
 
 Usage
 -----
-    python scripts/verify_release_bundle.py --bundle dist/app --version 1.5.3
-    python scripts/verify_release_bundle.py --bundle C:/tmp/Jarvis --version 1.5.3 \
-        --expect-tools 117
+    python scripts/verify_release_bundle.py --bundle dist/app --version 1.6.0
+    python scripts/verify_release_bundle.py --bundle C:/tmp/Jarvis --version 1.6.0 \
+        --expect-tools 119
 
 ``--bundle`` : dossier onedir contenant ``Jarvis.exe`` (ou ``Jarvis``) et
 ``_internal/``. Code de sortie 0 si tout est conforme, 1 sinon.
@@ -61,6 +61,8 @@ REQUIRED_MODULES = [
     "src.music.providers",
     "src.music.providers.base",
     "src.music.providers.deezer",
+    # Contexte conversationnel (1.6.0)
+    "src.conversation",
     # Socle
     "src.tools",
     "src.version",
@@ -89,6 +91,14 @@ REQUIRED_SYMBOLS = {
     "src.writing.service": ["write_to_active_field", "create_text_file"],
     "src.music.providers.deezer": ["DeezerProvider", "DeezerHTTPClient"],
     "src.music.manager": ["MusicManager"],
+    "src.conversation": [
+        "ConversationContext",              # contexte multi-tour (1.6.0)
+        "start_new_conversation",
+        "is_new_conversation_command",      # reset vocal sans appel LLM
+        "to_gemini_contents",
+        "to_ollama_messages",
+    ],
+    "src.tools": ["reset_conversation", "get_conversation_state"],
 }
 
 
@@ -288,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
         "--expect-tools",
         type=int,
         default=None,
-        help="nombre d'outils Gemini attendu (ex. 117)",
+        help="nombre d'outils Gemini attendu (ex. 119)",
     )
     args = parser.parse_args(argv)
 

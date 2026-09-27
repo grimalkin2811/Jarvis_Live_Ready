@@ -179,6 +179,7 @@ async def run_headless():
 
     from .audio import AudioIO
     from .config import load_config
+    from .conversation import get_default_conversation_context
     from .gemini_live import AuthError, GeminiLive
     from .memory import MemoryManager, set_default_memory_manager
     from .scheduler import start_default_scheduler
@@ -224,6 +225,11 @@ async def run_headless():
         )
         set_default_memory_manager(memory_manager)
 
+        # Contexte conversationnel : volontairement vierge à chaque démarrage
+        # de Jarvis (la mémoire persistante, elle, reste disponible).
+        conversation = get_default_conversation_context()
+        conversation.start_new_conversation(reason="démarrage console")
+
         # Rappels persistants + routines planifiees (thread de fond).
         try:
             scheduler = start_default_scheduler()
@@ -264,6 +270,7 @@ async def run_headless():
             on_interrupted=audio.clear_output,
             on_speaking=audio.begin_speaking,
             memory_manager=memory_manager,
+            conversation=conversation,
             **voice_kwargs,
         )
 

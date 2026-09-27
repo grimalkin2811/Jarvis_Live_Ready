@@ -9,6 +9,61 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.6.0] — 2026-09-27
+
+**Contexte conversationnel multi-tour.** Jusqu'ici chaque demande était
+traitée isolément : Jarvis n'avait aucune représentation locale de ce qui
+venait d'être dit et perdait tout dès qu'une session Live était recréée.
+Cette version donne à Jarvis SA propre mémoire de conversation, indépendante
+du fournisseur LLM.
+
+### Ajouté
+
+- **`src/conversation.py`** : composant central `ConversationContext`
+  (messages structurés par rôle, tours ordonnés, limitation de taille,
+  réinitialisation, instrumentation). Le reste du code ne manipule jamais la
+  liste interne : il passe par `add_user_message`, `add_assistant_message`,
+  `add_tool_interaction`, `get_messages`, `snapshot`…
+- **Suivi réel des échanges** : les transcriptions d'entrée et de sortie de
+  l'API Gemini Live sont désormais activées (`input_audio_transcription`,
+  `output_audio_transcription`) et alimentent le contexte dans l'ordre
+  `utilisateur → outils → assistant`. « Et sa population ? », « Lance le
+  deuxième », « Non, l'autre » fonctionnent enfin.
+- **Adaptateurs par fournisseur** : `to_gemini_contents()` (rôles `user` /
+  `model`, `parts`) et `to_ollama_messages()` (rôles `system` / `user` /
+  `assistant` / `tool`, `tool_calls`). La conversation est la même des deux
+  côtés ; changer de fournisseur ne la perd pas.
+- **Rejeu du contexte** dans une session Live neuve (reconnexion, changement de
+  voix, expiration) : la continuité ne dépend plus d'un état implicite côté
+  serveur. Quand le serveur reprend lui-même la session (`session_resumption`),
+  aucun rejeu n'est envoyé — pas de doublon.
+- **Trace compacte des outils** dans le contexte : nom, arguments résumés et
+  résultat abrégé (5 éléments, 420 caractères max) — jamais le JSON complet.
+- **Réinitialisation** : commande vocale « nouvelle conversation », « efface le
+  contexte », « on repart de zéro »… reconnue **localement** (aucun appel LLM
+  supplémentaire) par `is_new_conversation_command()`, plus les outils Gemini
+  `reset_conversation` et `get_conversation_state` (117 → **119 outils**).
+- **Limitation de taille** documentée et configurable :
+  `JARVIS_CONTEXT_MAX_TURNS` (12), `JARVIS_CONTEXT_MAX_TOKENS` (3000),
+  `JARVIS_CONTEXT_ENABLED`. Le rognage supprime des **tours entiers**, du plus
+  ancien au plus récent, sans jamais descendre sous le tour courant.
+- **Journalisation DEBUG** dédiée (`jarvis.conversation`) : identifiant de
+  conversation, tours, nombre de messages, tokens estimés, fournisseur,
+  rognage, reset — sans jamais recopier le contenu des échanges.
+- **108 tests** supplémentaires : `tests/test_conversation_context.py`,
+  `tests/test_conversation_providers.py`, `tests/test_conversation_pipeline.py`.
+
+### Inchangé
+
+- **La mémoire persistante reste séparée** : le contexte conversationnel n'y
+  est jamais promu automatiquement. Seule l'extraction explicite existante
+  (« souviens-toi que… ») écrit dans `memory.db`, et un reset de conversation
+  ne supprime aucun souvenir, réglage, routine ni rappel.
+- Le prompt système (identité de Jarvis) reste un troisième espace distinct,
+  reconstruit à chaque connexion.
+- Les changements de mode (Blob ↔ Desktop, Focus, Jeu, Writing, Musique) ne
+  vident pas le contexte. Un redémarrage de Jarvis, si.
+
 ## [1.5.3] — 2026-09-27
 
 **Petit patch UX, sans refonte de l'interface.** Jarvis peut désormais passer

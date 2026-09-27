@@ -2112,6 +2112,52 @@ def set_interface_mode(mode):
 
 
 # ===========================================================================
+# CONTEXTE CONVERSATIONNEL
+# ===========================================================================
+
+
+def reset_conversation():
+    """Démarre une nouvelle conversation (contexte conversationnel vidé).
+
+    N'efface NI la mémoire persistante, NI la configuration, NI les routines,
+    NI les rappels : seuls les tours de la conversation en cours disparaissent.
+    """
+    from .conversation import get_default_conversation_context
+
+    context = get_default_conversation_context()
+    before = context.snapshot()
+    info = context.start_new_conversation(reason="outil reset_conversation")
+    try:
+        notify_user("Conversation réinitialisée. La mémoire persistante est conservée.")
+    except Exception:
+        pass
+    return _ok(
+        action="reset_conversation",
+        conversation_id=info["conversation_id"],
+        tours_effaces=before.get("turns", 0),
+        message="Nouvelle conversation. J'ai oublié les échanges précédents, "
+                "mais pas ce que tu m'as demandé de retenir.",
+    )
+
+
+def get_conversation_state():
+    """Etat du contexte conversationnel (diagnostic, sans contenu des echanges)."""
+    from .conversation import get_default_conversation_context
+
+    snapshot = get_default_conversation_context().snapshot()
+    return _ok(
+        action="get_conversation_state",
+        conversation_id=snapshot["conversation_id"],
+        tours=snapshot["turns"],
+        messages=snapshot["messages"],
+        tokens_estimes=snapshot["estimated_tokens"],
+        limite_tours=snapshot["max_turns"],
+        limite_tokens=snapshot["max_tokens"],
+        provider=snapshot["provider"],
+    )
+
+
+# ===========================================================================
 # RAPPELS PERSISTANTS
 # ===========================================================================
 
@@ -2319,6 +2365,9 @@ _RAW_TOOL_FUNCTIONS = {
     "hide_menu": hide_menu,
     "get_ui_state": get_ui_state,
     "set_interface_mode": set_interface_mode,
+    # Contexte conversationnel (v1.6.0)
+    "reset_conversation": reset_conversation,
+    "get_conversation_state": get_conversation_state,
     # Notifications et routines préconfigurées
     "notify_user": notify_user,
     "show_reminder_briefing": show_reminder_briefing,
@@ -2891,6 +2940,21 @@ TOOL_DECLARATIONS = [
             },
         },
         ["mode"],
+    ),
+    # --- Contexte conversationnel (v1.6.0) -------------------------------------------------
+    _decl(
+        "reset_conversation",
+        "Demarre une NOUVELLE conversation : le contexte des tours precedents est efface. "
+        "A utiliser quand l'utilisateur dit 'nouvelle conversation', 'efface le contexte', "
+        "'reinitialise la conversation', 'on repart de zero'. "
+        "N'efface NI la memoire persistante, NI les reglages, NI les routines : "
+        "dis-le clairement dans ta reponse, qui doit rester tres courte.",
+    ),
+    _decl(
+        "get_conversation_state",
+        "Indique l'etat du contexte conversationnel courant (identifiant, nombre de tours "
+        "conserves, budget). A utiliser si l'utilisateur demande si Jarvis se souvient de "
+        "la conversation en cours.",
     ),
     # --- Rappels persistants ---------------------------------------------------------------
     _decl(
