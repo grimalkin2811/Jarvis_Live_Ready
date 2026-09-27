@@ -61,7 +61,14 @@ Double-cliquer le raccourci **Jarvis** ouvre le launcher, une vraie fenêtre
 * un **journal** détaillant chaque opération ;
 * les boutons **Lancer Jarvis**, **Vérifier les mises à jour**,
   **Mettre à jour** et **Quitter** ;
-* le choix du mode : **Orbe** (recommandé), **Overlay bureau** ou **Console**.
+* le choix persistant du mode : **Blob Mode** (recommandé), **Desktop Mode**
+  ou **Console**.
+
+Le mode peut aussi être changé **sans redémarrer Jarvis** depuis le menu radial
+`System` → `Interface Mode`, depuis la zone de notification (`Interface`), ou
+à la voix (« Passe en mode Desktop » / « Passe en mode Blob »). Le choix est
+conservé dans le `config.json` existant ; Desktop Mode reste le cadre réactif
+autour de l'écran, pas une seconde interface complète.
 
 ### Mises à jour
 
@@ -730,7 +737,7 @@ a été créé dans user_content. »
 
 ## Fonctions
 
-Jarvis dispose de **112 outils** déclarés dans `src/tools.py` (voir
+Jarvis dispose de **113 outils** déclarés dans `src/tools.py` (voir
 `TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **15 outils musique Deezer**
 ajoutés en v1.5.0.
 
@@ -749,7 +756,7 @@ ajoutés en v1.5.0.
 | **Routines** | `create_routine`, `run_routine`, `list_routines`, `describe_routine`, `update_routine`, `delete_routine`, `list_routine_tools` |
 | **Modes focus/jeu** | `activate_focus_mode`, `activate_game_mode`, `disable_jarvis_mode`, `get_jarvis_mode` |
 | **Config des modes** | `list_mode_applications`, `set_mode_applications`, `toggle_mode_application`, `reset_mode_applications` |
-| **Affichage (orbe/menus)** | `show_blob`, `hide_blob`, `show_menu`, `hide_menu`, `get_ui_state` |
+| **Affichage (orbe/menus)** | `show_blob`, `hide_blob`, `show_menu`, `hide_menu`, `get_ui_state`, `set_interface_mode` |
 | **Notes** | `take_note`, `read_notes`, `delete_notes` |
 | **Mémoire** | `remember`, `recall`, `list_memories`, `search_memories`, `update_memory`, `delete_memory`, `forget`, `clear_memory` |
 | **Web** | `open_website`, `list_websites`, `open_url`, `web_search`, `search_youtube`, `search_wikipedia`, `open_maps`, `get_directions`, `translate_text`, `get_weather`, `check_internet` |
@@ -764,8 +771,8 @@ minuteur de 10 minutes pour les pâtes », « combien font racine de 144 fois
 PC », « cherche Iron Man sur Wikipédia », « itinéraire vers Lille », « lance le
 mode travail », « active le mode focus », « active le mode jeu », « désactive le
 mode Jarvis », « rappelle-moi d'appeler le dentiste demain à 9h », « affiche le
-blob », « cache le blob », « affiche le menu système », « dans le mode jeu, ne
-ferme pas Opera GX », « ajoute Spotify à la liste du mode focus »,
+blob », « cache le blob », « affiche le menu système », « passe en mode
+Desktop », « passe en mode Blob », « dans le mode jeu, ne ferme pas Opera GX », « ajoute Spotify à la liste du mode focus »,
 « réinitialise les applications du mode jeu », « écris-moi un mail au
 professeur », « crée-moi un fichier texte de présentation », « joue Daft Punk », « mets ma playlist Chill », « pause », « morceau suivant ».
 

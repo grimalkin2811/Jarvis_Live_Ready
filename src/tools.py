@@ -2061,6 +2061,32 @@ def get_ui_state():
     return _ok(**state)
 
 
+def set_interface_mode(mode):
+    """Passe immédiatement en Blob Mode ou Desktop Mode et persiste le choix."""
+    value = str(mode or "").strip().lower()
+    aliases = {
+        "blob": "blob",
+        "blob mode": "blob",
+        "orbe": "blob",
+        "orb": "blob",
+        "desktop": "desktop",
+        "desktop mode": "desktop",
+        "bureau": "desktop",
+        "overlay": "desktop",
+    }
+    target = aliases.get(value)
+    if target is None:
+        return _err("Mode inconnu. Choisissez 'blob' ou 'desktop'.")
+    try:
+        from UI.interface_mode_bridge import INTERFACE_MODE
+
+        selected = INTERFACE_MODE.request(target)
+    except Exception as exc:
+        return _err(f"Impossible de changer le mode d'interface : {exc}")
+    label = "Blob Mode" if selected == "blob" else "Desktop Mode"
+    return _ok(action="set_interface_mode", mode=selected, message=f"{label} activé.")
+
+
 # ===========================================================================
 # RAPPELS PERSISTANTS
 # ===========================================================================
@@ -2264,6 +2290,7 @@ _RAW_TOOL_FUNCTIONS = {
     "show_menu": show_menu,
     "hide_menu": hide_menu,
     "get_ui_state": get_ui_state,
+    "set_interface_mode": set_interface_mode,
     # Notifications et routines préconfigurées
     "notify_user": notify_user,
     "show_reminder_briefing": show_reminder_briefing,
@@ -2793,6 +2820,20 @@ TOOL_DECLARATIONS = [
         "get_ui_state",
         "Etat d'affichage reel de l'interface : blob_visible, menu_open, menu. "
         "A utiliser pour confirmer a l'utilisateur ce qui est affiche.",
+    ),
+    _decl(
+        "set_interface_mode",
+        "Passe immediatement et durablement entre Blob Mode et Desktop Mode. "
+        "Utilise mode='desktop' pour 'passe en mode Desktop' et mode='blob' "
+        "pour 'passe en mode Blob'.",
+        {
+            "mode": {
+                **_STR,
+                "enum": ["blob", "desktop"],
+                "description": "Mode d'interface cible : blob ou desktop.",
+            },
+        },
+        ["mode"],
     ),
     # --- Rappels persistants ---------------------------------------------------------------
     _decl(

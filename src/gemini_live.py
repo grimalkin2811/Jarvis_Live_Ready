@@ -211,6 +211,8 @@ class GeminiLive:
             "ils (ré)affichent l'élément demandé dans TOUS les cas, y compris si un mode jeu/focus ou un réglage le masque actuellement. "
             "Ne te contente jamais de dire que c'est caché ou refusé : exécute l'outil. "
             "Pour savoir ce qui est réellement affiché, get_ui_state. "
+            "Pour « passe en mode Desktop » ou « passe en mode Blob », appelle set_interface_mode avec mode='desktop' ou mode='blob' : "
+            "le changement est immédiat et persistant, sans redémarrage. "
             "Pour « active/désactive la routine hydratation », utilise update_routine avec name et enabled=true/false uniquement : "
             "ne la recrée pas, ne demande aucun horaire ni paramètre supplémentaire. En cas de nom ambigu, liste les routines. "
             "Une routine désactivée ne peut pas être lancée ; son activation ne lance pas immédiatement ses étapes, "

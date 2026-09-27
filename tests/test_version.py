@@ -16,6 +16,9 @@ from src.version import (  # noqa: E402
 
 
 class VersionTests(unittest.TestCase):
+    def test_release_version_is_1_5_3(self):
+        self.assertEqual(get_version(), "1.5.3")
+
     def test_version_format(self):
         parts = get_version().split(".")
         self.assertEqual(len(parts), 3)

@@ -393,7 +393,10 @@ def main(argv=None) -> int:
     if args.ui or args.desktop:
         from .ui import run_ui
 
-        mode = "ui" if args.ui else "desktop"
+        # Les drapeaux historiques restent compatibles, mais convergent
+        # immédiatement vers l'unique valeur persistante blob/desktop.
+        mode = settings.BLOB_MODE if args.ui else settings.DESKTOP_MODE
+        settings.set_interface_mode(mode)
 
         # Premier lancement (absence de config.json) : assistant de
         # configuration avant d'ouvrir l'orbe.

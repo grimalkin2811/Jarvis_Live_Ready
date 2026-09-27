@@ -241,6 +241,9 @@ MENU_SPECS = [
             MenuItemSpec("Always on Top", "toggle"),
             MenuItemSpec("Transparency", "slider"),
             MenuItemSpec("Response Mode", "meter"),
+            # Switch v1.5.3 : affiche le mode actif et bascule à chaud entre
+            # le Blob existant et le cadre Desktop existant.
+            MenuItemSpec("Interface Mode", "chips"),
             MenuItemSpec("Mode Apps", "action"),
             MenuItemSpec("Reset Settings", "pulse"),
             MenuItemSpec("Quit", "pulse"),
@@ -355,8 +358,14 @@ MENU_SPECS.append(build_routines_spec())
 
 class MorphingOrbWidget(QWidget):
 
-    def __init__(self) -> None:
+    def __init__(self, interface_mode_getter=None, interface_mode_setter=None) -> None:
         super().__init__()
+
+        # Injectés par ``src.ui.InterfaceModeController`` en production. Les
+        # fallbacks relisent/écrivent directement config.json pour conserver
+        # le widget testable et utilisable seul, sans état parallèle.
+        self._interface_mode_getter = interface_mode_getter
+        self._interface_mode_setter = interface_mode_setter
 
         self.setWindowTitle("Jarvis")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -1729,6 +1738,28 @@ class MorphingOrbWidget(QWidget):
             return "Stop"
         return ""
 
+    def _current_interface_mode(self) -> str:
+        try:
+            if self._interface_mode_getter is not None:
+                value = self._interface_mode_getter()
+            else:
+                from src import settings
+
+                value = settings.get_interface_mode()
+            from src import settings
+
+            return settings.normalize_interface_mode(value)
+        except Exception:
+            return "blob"
+
+    def _set_interface_mode(self, mode: str) -> str:
+        if self._interface_mode_setter is not None:
+            result = self._interface_mode_setter(mode)
+            return str(result or mode)
+        from src import settings
+
+        return settings.set_interface_mode(mode)
+
     def _system_value(self, label: str) -> str:
         st = self.menu_state
         if label == "Startup":
@@ -1741,6 +1772,8 @@ class MorphingOrbWidget(QWidget):
             return f"{st.transparency}%"
         if label == "Response Mode":
             return self.system_state.response_mode_label
+        if label == "Interface Mode":
+            return "Blob" if self._current_interface_mode() == "blob" else "Desktop"
         if label == "Reset Settings":
             return "↺"
         if label == "Quit":
@@ -1881,6 +1914,7 @@ class MorphingOrbWidget(QWidget):
     def _menu_is_option(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
         return (spec.name, item.label) in {
             ("Voice", "Voice Select"),
+            ("System", "Interface Mode"),
         }
 
     def _menu_toggle_value(self, spec: MenuSpec, item: MenuItemSpec) -> bool:
@@ -2041,7 +2075,11 @@ class MorphingOrbWidget(QWidget):
             # La nouvelle voix demande une reconnexion de la session Live :
             # le backend la détecte via LIVE.get_voice_version().
             menu_state.LIVE.set_voice_index(self.menu_state.voice_select)
-        self._save_menu_state()
+            self._save_menu_state()
+        elif name == "System" and label == "Interface Mode":
+            current = self._current_interface_mode()
+            target = "desktop" if current == "blob" else "blob"
+            self._set_interface_mode(target)
 
     # ------------------------------------------------------------------
     # Effets appliqués au widget

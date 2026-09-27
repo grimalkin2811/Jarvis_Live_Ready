@@ -221,8 +221,8 @@ class Worker(QThread):
 # ---------------------------------------------------------------------------
 
 LAUNCH_MODES = (
-    ("Orbe (recommandé)", "ui"),
-    ("Overlay bureau", "desktop"),
+    ("Blob Mode (recommandé)", "blob"),
+    ("Desktop Mode", "desktop"),
     ("Console (diagnostic)", "console"),
 )
 
@@ -333,7 +333,12 @@ class LauncherWindow(QWidget):
         self._mode_combo = QComboBox()
         for label, value in LAUNCH_MODES:
             self._mode_combo.addItem(label, value)
-        self._mode_combo.setToolTip("Choisissez comment Jarvis démarre.")
+        # Le launcher reflète directement le choix persistant de Jarvis.
+        current_mode = core.get_interface_mode()
+        current_index = self._mode_combo.findData(current_mode)
+        self._mode_combo.setCurrentIndex(max(0, current_index))
+        self._mode_combo.currentIndexChanged.connect(self._persist_mode_selection)
+        self._mode_combo.setToolTip("Choisissez Blob Mode ou Desktop Mode (choix persistant).")
         mode_row.addWidget(mode_label)
         mode_row.addWidget(self._mode_combo, 1)
         root.addLayout(mode_row)
@@ -394,6 +399,18 @@ class LauncherWindow(QWidget):
         self.append_log(f"Dossier : {status.install_path}")
 
     # -- helpers d'affichage ------------------------------------------------
+
+    def _persist_mode_selection(self, _index: int = -1) -> None:
+        """Enregistre immédiatement le choix Blob/Desktop du launcher."""
+        mode = str(self._mode_combo.currentData() or "blob")
+        if mode == "console":
+            return
+        try:
+            core.set_interface_mode(mode)
+        except Exception as exc:
+            self.append_log(f"Mode non enregistré : {exc}")
+            return
+        self.append_log(f"Mode d'interface : {self._mode_combo.currentText()}")
 
     def _set_status(self, level: str, text: str) -> None:
         colors = {"idle": MUTED, "busy": ACCENT, "ok": SUCCESS, "warn": WARNING, "error": ERROR}
@@ -561,7 +578,13 @@ class LauncherWindow(QWidget):
         """Lance Jarvis puis ferme le launcher en cas de succès."""
         if self._busy:
             return
-        mode = str(self._mode_combo.currentData() or "ui")
+        mode = str(self._mode_combo.currentData() or "blob")
+        if mode != "console":
+            try:
+                core.set_interface_mode(mode)
+            except Exception as exc:
+                QMessageBox.critical(self, "Mode non enregistré", str(exc))
+                return
         if mode == "console":
             answer = QMessageBox.question(
                 self,
