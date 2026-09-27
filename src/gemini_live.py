@@ -56,6 +56,10 @@ class GeminiLive:
         on_interrupted=None,
         on_speaking=None,
         on_thinking=None,
+        on_tool_start=None,
+        on_tool_end=None,
+        on_user_transcript=None,
+        on_assistant_transcript=None,
         response_mode_provider=None,
         voice_provider=None,
         voice_version_provider=None,
@@ -72,6 +76,15 @@ class GeminiLive:
         self.on_interrupted = on_interrupted
         self.on_speaking = on_speaking
         self.on_thinking = on_thinking
+        # v1.7.0 — évènements fins destinés au retour visuel (Desktop Mode).
+        # Tous optionnels : sans eux, le comportement est **identique** à la
+        # 1.6.0. Ils exposent des faits déjà connus du pipeline (un outil
+        # démarre, la transcription a avancé) plutôt que d'obliger l'interface
+        # à les deviner avec des minuteurs.
+        self.on_tool_start = on_tool_start
+        self.on_tool_end = on_tool_end
+        self.on_user_transcript = on_user_transcript
+        self.on_assistant_transcript = on_assistant_transcript
         # Fournit le mode de réponse courant (menu radial) pour le prompt système.
         self.response_mode_provider = response_mode_provider
         # Fournit la voix prébuilt Gemini (menu radial). La voix ne peut pas
@@ -144,6 +157,20 @@ class GeminiLive:
     def _clear_interrupt(self) -> None:
         self.interrupt_requested = False
         self._interrupt_until = 0.0
+
+    # ------------------------------------------------------------------
+    # Évènements d'interface (v1.7.0)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _notify(hook, *args) -> None:
+        """Appelle un callback d'interface sans jamais casser la boucle vocale."""
+        if hook is None:
+            return
+        try:
+            hook(*args)
+        except Exception as exc:  # pragma: no cover - défensif
+            log.debug("callback d'interface ignoré : %s", exc)
 
     # ------------------------------------------------------------------
     # Contexte conversationnel (v1.6.0)
@@ -632,6 +659,13 @@ class GeminiLive:
                     if text:
                         self._begin_turn_if_needed()
                         self._turn_user_text.append(str(text))
+                        # v1.7.0 : la MÊME transcription alimente l'interface.
+                        # Aucun second système de transcription n'est créé.
+                        self._notify(
+                            self.on_user_transcript,
+                            " ".join(self._turn_user_text).strip(),
+                            False,
+                        )
                         if self._maybe_handle_reset_command():
                             continue
                 except Exception:
@@ -646,6 +680,10 @@ class GeminiLive:
                     if out_text:
                         self._commit_user_text()
                         self._turn_model_text.append(str(out_text))
+                        self._notify(
+                            self.on_assistant_transcript,
+                            " ".join(self._turn_model_text).strip(),
+                        )
                 except Exception:
                     pass
 
@@ -784,6 +822,9 @@ class GeminiLive:
                                 "error": "Outil inconnu"
                             }
                         else:
+                            # v1.7.0 : début/fin d'outil explicites pour le
+                            # retour visuel (« Action : music_play »).
+                            self._notify(self.on_tool_start, c.name)
                             try:
                                 # Exécution dans un thread : un outil lent
                                 # (attente, réseau, PowerShell) ne bloque
@@ -798,6 +839,13 @@ class GeminiLive:
                                     "success": False,
                                     "error": str(e)
                                 }
+                            # ``result`` est toujours défini ici (le except
+                            # ci-dessus en fabrique un), donc pas de finally.
+                            self._notify(
+                                self.on_tool_end,
+                                c.name,
+                                bool(result.get("success", True)) if isinstance(result, dict) else True,
+                            )
 
                         # Trace compacte dans le contexte : l'appel et son
                         # résultat (jamais le payload JSON complet) pour que

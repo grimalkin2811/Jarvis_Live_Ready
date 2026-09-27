@@ -17,7 +17,7 @@ import sys
 import threading
 import traceback
 
-from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import QApplication
 
@@ -40,58 +40,22 @@ class PresenceBridge(QObject):
     presence_changed = Signal(str)
 
 
-class PresenceRouter(QObject):
-    """Relie l'état vocal au cadre Desktop.
+def __getattr__(name: str):
+    """Exports paresseux (PEP 562).
 
-    En écoute continue, AudioIO ne revient jamais en « hidden » : un
-    minuteur local masque alors le cadre après la fenêtre de follow-up,
-    pour qu'il ne reste pas affiché indéfiniment.
+    ``PresenceRouter`` est, depuis la 1.7.0, le contrôleur Desktop complet
+    (``UI.desktop.overlay.DesktopOverlayController``). Il garde son nom et son
+    contrat historiques — ``handle_presence``, ``_hide_if_listening`` et le
+    minuteur ``_listen_hide_timer`` — mais s'appuie désormais sur une vraie
+    machine d'états. L'import reste différé : ``src.ui`` doit rester léger au
+    démarrage (contrat 1.3.2).
     """
+    if name == "PresenceRouter":
+        from UI.desktop.overlay import DesktopOverlayController
 
-    def __init__(self, overlay) -> None:
-        super().__init__()
-        self._overlay = overlay
-        self._listen_hide_timer = QTimer(self)
-        self._listen_hide_timer.setSingleShot(True)
-        self._listen_hide_timer.timeout.connect(self._hide_if_listening)
-
-    def _hide_if_listening(self) -> None:
-        if getattr(self._overlay, "_presence_state", "") == "listening":
-            self._overlay.hide_overlay()
-
-    @Slot(str)
-    def handle_presence(self, state: str) -> None:
-        try:
-            from .modes import get_default_mode_manager
-
-            if get_default_mode_manager().should_suppress_visuals():
-                self._listen_hide_timer.stop()
-                self._overlay.hide_overlay()
-                return
-        except Exception:
-            pass
-        if state == "listening":
-            self._overlay.show_listening()
-            # Suivre la fenêtre de conversation AudioIO (8 s) + une courte
-            # marge : le cadre disparaît même si l'écoute continue reste active.
-            # AudioIO n'est pas importé au niveau module (démarrage 1.3.2).
-            delay_ms = 8400
-            try:
-                from .audio import AudioIO
-
-                delay_ms = int(AudioIO.FOLLOW_UP_SECONDS * 1000) + 400
-            except Exception:
-                pass
-            self._listen_hide_timer.start(delay_ms)
-        elif state == "thinking":
-            self._listen_hide_timer.stop()
-            self._overlay.show_thinking()
-        elif state == "speaking":
-            self._listen_hide_timer.stop()
-            self._overlay.show_speaking()
-        else:
-            self._listen_hide_timer.stop()
-            self._overlay.hide_overlay()
+        globals()["PresenceRouter"] = DesktopOverlayController
+        return DesktopOverlayController
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 class VoiceEnergyRouter(QObject):
@@ -117,6 +81,9 @@ class InterfaceModeController(QObject):
     mode_changed = Signal(str)
     mode_requested = Signal(str)
     presence_changed = Signal(str)
+    #: Évènements riches du Desktop Mode (1.7.0), réacheminés depuis les
+    #: threads du backend vers le thread Qt.
+    desktop_event = Signal(str, object)
 
     def __init__(
         self,
@@ -141,6 +108,7 @@ class InterfaceModeController(QObject):
         self._protocol_presenter = None
         self.presence_changed.connect(self._route_presence)
         self.mode_requested.connect(self.apply_persisted_mode)
+        self.desktop_event.connect(self._route_desktop_event)
 
     @property
     def blob(self):
@@ -170,11 +138,36 @@ class InterfaceModeController(QObject):
 
     def _ensure_overlay(self):
         if self._overlay is None:
-            from UI.screen_halo_overlay import ScreenHaloOverlay
+            from UI.desktop.overlay import DesktopOverlay, DesktopOverlayController
 
-            self._overlay = ScreenHaloOverlay(self._appearance_state)
-            self._presence_router = PresenceRouter(self._overlay)
+            self._overlay = DesktopOverlay(self._appearance_state)
+            self._presence_router = DesktopOverlayController(self._overlay)
+            # Les contrôles optionnels de l'overlay pilotent les mêmes actions
+            # que le menu radial : aucune logique dupliquée.
+            self._overlay.stopRequested.connect(self._stop_speaking)
+            self._overlay.muteToggled.connect(self._toggle_mic)
+            self._overlay.hideRequested.connect(self.hide_current)
         return self._overlay
+
+    def refresh_overlay_appearance(self) -> None:
+        """Réapplique les réglages Desktop (éditeur d'apparence, thème)."""
+        if self._overlay is not None:
+            self._overlay.apply_appearance()
+
+    def _stop_speaking(self) -> None:
+        try:
+            menu_state.LIVE.request_stop_speaking()
+        except Exception:
+            pass
+
+    def _toggle_mic(self) -> None:
+        try:
+            enabled = not menu_state.LIVE.get_mic_enabled()
+            menu_state.LIVE.set_mic_enabled(enabled)
+            if self._overlay is not None:
+                self._overlay.set_muted(not enabled)
+        except Exception:
+            pass
 
     def set_protocol_presenter(self, presenter) -> None:
         self._protocol_presenter = presenter
@@ -215,7 +208,10 @@ class InterfaceModeController(QObject):
     def _apply_mode(self, mode: str) -> None:
         if mode == settings.BLOB_MODE:
             if self._presence_router is not None:
-                self._presence_router._listen_hide_timer.stop()
+                # Remise à zéro complète : minuteurs arrêtés, textes effacés.
+                # Le backend vocal, lui, n'est jamais touché (contexte,
+                # mémoire, session Gemini et réglages restent intacts).
+                self._presence_router.reset()
             if self._overlay is not None:
                 self._overlay.hide_overlay()
             blob = self._ensure_blob()
@@ -246,7 +242,8 @@ class InterfaceModeController(QObject):
             except Exception:
                 pass
         overlay = self._ensure_overlay()
-        # Recharge les choix Appearance éventuellement modifiés dans le Blob.
+        # Recharge les choix Appearance éventuellement modifiés dans le Blob
+        # (thème, mais aussi tout le bloc « desktop » de la 1.7.0).
         overlay.appearance_state = appearance_actions.load_state(
             str(paths.appearance_state_file())
         )
@@ -265,9 +262,26 @@ class InterfaceModeController(QObject):
 
         jarvis_menu.set_presence_state(self._presence_state)
 
+    @Slot(str, object)
+    def _route_desktop_event(self, event: str, payload: object) -> None:
+        """Délivre un évènement backend au contrôleur Desktop (thread Qt).
+
+        En Blob Mode, rien n'est créé : le Blob a déjà son propre retour
+        visuel, et l'overlay n'existe même pas en mémoire.
+        """
+        if self._mode != settings.DESKTOP_MODE:
+            return
+        self._ensure_overlay()
+        if self._presence_router is not None:
+            self._presence_router.handle_event(str(event or ""), payload)
+
     def handle_presence(self, state: str) -> None:
         """Entrée thread-safe fournie à AudioIO."""
         self.presence_changed.emit(str(state or "hidden"))
+
+    def handle_desktop_event(self, event: str, payload: dict | None = None) -> None:
+        """Entrée thread-safe des évènements riches (backend → Desktop)."""
+        self.desktop_event.emit(str(event or ""), dict(payload or {}))
 
     def handle_voice_energy(self, level: float) -> None:
         self._voice_energy = float(level)
@@ -275,6 +289,9 @@ class InterfaceModeController(QObject):
             from UI import jarvis_menu
 
             jarvis_menu.set_voice_energy(self._voice_energy)
+        if self._mode == settings.DESKTOP_MODE:
+            # Le niveau réel du micro alimente le halo et le visualiseur.
+            self.handle_desktop_event("level", {"value": self._voice_energy, "source": "input"})
 
     def activate_current(self) -> None:
         if self._mode == settings.BLOB_MODE:
@@ -292,7 +309,15 @@ class InterfaceModeController(QObject):
                 return
         except Exception:
             pass
-        overlay.show_idle()
+        # « Afficher Jarvis » depuis l'icône de notification : on accuse
+        # réception par une présence discrète et **temporaire**. La faire
+        # durer indéfiniment (comportement 1.5.3, intensité 0.30 figée)
+        # contredirait la règle « en veille, Jarvis est invisible » : ici la
+        # fenêtre se referme d'elle-même comme après une réponse.
+        if self._presence_router is not None:
+            self._presence_router.handle_event("follow_up", {})
+        else:  # pragma: no cover - overlay toujours accompagné de son routeur
+            overlay.show_idle()
         self._visibility.show()
 
     def hide_current(self) -> None:
@@ -305,7 +330,7 @@ class InterfaceModeController(QObject):
 
     def close(self) -> None:
         if self._presence_router is not None:
-            self._presence_router._listen_hide_timer.stop()
+            self._presence_router.close()
         if self._blob is not None:
             self._blob.timer.stop()
             self._blob.close()
@@ -332,6 +357,7 @@ def _run_voice_loop(
     presence_hook,
     voice_hook,
     stop_event: threading.Event,
+    desktop_hook=None,
 ) -> None:
     """Boucle vocale, identique à src.main.main() mais exécutée dans un thread.
 
@@ -374,6 +400,22 @@ def _run_voice_loop(
         if audio is not None:
             audio.stop_speaking()
 
+    def desktop(event: str, **payload) -> None:
+        """Publie un évènement Desktop (no-op si le mode n'est pas actif)."""
+        if desktop_hook is None:
+            return
+        try:
+            desktop_hook(event, payload)
+        except Exception:
+            pass
+
+    def on_interrupted():
+        # L'évènement est publié AVANT ``clear_output()`` : ce dernier émet
+        # « listening » (réouverture du micro), et l'ordre visible doit être
+        # « interrompu » puis « à l'écoute », pas l'inverse.
+        desktop("interrupted")
+        audio.clear_output()
+
     async def _main():
         nonlocal gemini, audio
         # Tant que le modèle wake word n'est pas chargé, l'UI affiche un état
@@ -413,6 +455,7 @@ def _run_voice_loop(
             barge_in_provider=menu_state.LIVE.get_barge_in,
             post_response_provider=menu_state.LIVE.get_post_response_listen,
             on_barge_in=on_barge_in,
+            output_level_hook=lambda level: desktop("level", value=level, source="output"),
         )
         # Le menu radial (thread Qt) peut désormais couper la réponse en
         # cours ; le pont est retiré à l'arrêt pour ne pas garder de
@@ -424,9 +467,18 @@ def _run_voice_loop(
             config.user,
             on_audio=audio.play,
             on_turn_complete=audio.extend_listening,
-            on_interrupted=audio.clear_output,
+            on_interrupted=on_interrupted,
             on_speaking=lambda: _on_speaking(audio, presence_hook),
             on_thinking=lambda: _on_thinking(presence_hook),
+            # v1.7.0 — évènements réels du pipeline pour le Desktop Mode.
+            # La transcription est celle du contexte conversationnel 1.6.0 :
+            # aucun second système n'est introduit.
+            on_tool_start=lambda name: desktop("tool_start", name=name),
+            on_tool_end=lambda name, ok=True: desktop("tool_end", name=name, success=ok),
+            on_user_transcript=lambda text, final=False: desktop(
+                "transcript", text=text, final=final
+            ),
+            on_assistant_transcript=lambda text: desktop("response", text=text),
             memory_manager=memory_manager,
             conversation=conversation,
             **menu_state.voice_backend_kwargs(),
@@ -456,6 +508,9 @@ def _run_voice_loop(
                     print("\n[Jarvis] Connexion perdue ou erreur:")
                     traceback.print_exc()
                     audio.awake = False
+                    # Le Desktop Mode a un état ERROR explicite : l'utilisateur
+                    # voit qu'il s'est passé quelque chose, sans pop-up.
+                    desktop("error", reason="connexion")
                     if presence_hook is not None:
                         presence_hook("hidden")
                     try:
@@ -492,10 +547,10 @@ def _run_voice_loop(
         loop.close()
 
 
-def _start_voice(config, presence_hook, voice_hook, stop_event) -> threading.Thread:
+def _start_voice(config, presence_hook, voice_hook, stop_event, desktop_hook=None) -> threading.Thread:
     thread = threading.Thread(
         target=_run_voice_loop,
-        args=(config, presence_hook, voice_hook, stop_event),
+        args=(config, presence_hook, voice_hook, stop_event, desktop_hook),
         daemon=True,
     )
     thread.start()
@@ -627,6 +682,29 @@ def _build_tray_icon(
         routines_action = menu.addAction("Routines…")
         routines_action.triggered.connect(_show_routines_if_allowed)
 
+        def _show_desktop_appearance() -> None:
+            """Éditeur d'apparence Desktop — accessible SANS menu radial.
+
+            C'est le seul chemin disponible en Desktop Mode, où l'orbe est
+            volontairement masqué.
+            """
+            try:
+                from .modes import get_default_mode_manager
+
+                if get_default_mode_manager().should_suppress_visuals():
+                    return
+            except Exception:
+                pass
+            try:
+                from UI.desktop_appearance_dialog import show_desktop_appearance_dialog
+
+                show_desktop_appearance_dialog(path=str(paths.appearance_state_file()))
+            except Exception as exc:
+                print(f"[Desktop] Éditeur d'apparence indisponible : {exc}")
+
+        desktop_action = menu.addAction("Apparence Desktop…")
+        desktop_action.triggered.connect(_show_desktop_appearance)
+
         def _start_protocol_if_allowed(protocol_id: str) -> None:
             try:
                 from .modes import get_default_mode_manager
@@ -727,6 +805,11 @@ def run_ui(mode: str | None = None) -> int:
 
     INTERFACE_MODE.set_handler(controller.request_mode)
 
+    # L'éditeur d'apparence applique ses changements à l'overlay en cours.
+    from UI import desktop_appearance_dialog
+
+    desktop_appearance_dialog.register_apply_hook(controller.refresh_overlay_appearance)
+
     tray = _build_tray_icon(
         controller.activate_current,
         _quit,
@@ -761,11 +844,17 @@ def run_ui(mode: str | None = None) -> int:
     # Brancher les notifications AVANT de démarrer le planificateur vocal :
     # les rappels échus au lancement sont visibles même si l'orbe est en veille.
     notification_bridge = NotificationBridge(tray)
+    # Le pont Desktop reste ouvert quel que soit le mode : c'est le
+    # contrôleur qui ignore les évènements quand le Blob est actif.
+    from UI.desktop.events import DESKTOP_EVENTS
+
+    DESKTOP_EVENTS.set_handler(controller.handle_desktop_event)
     voice_thread = _start_voice(
         config,
         controller.handle_presence,
         controller.handle_voice_energy,
         stop_event,
+        controller.handle_desktop_event,
     )
     shutdown_done = False
 
@@ -778,6 +867,8 @@ def run_ui(mode: str | None = None) -> int:
         voice_thread.join(timeout=3.0)
         notification_bridge.close()
         INTERFACE_MODE.set_handler(None)
+        DESKTOP_EVENTS.set_handler(None)
+        desktop_appearance_dialog.unregister_apply_hook(controller.refresh_overlay_appearance)
         controller.close()
         if protocol_presenter is not None:
             try:
