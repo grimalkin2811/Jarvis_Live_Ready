@@ -9,6 +9,30 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.5.3] — 2026-09-27
+
+**Petit patch UX, sans refonte de l'interface.** Jarvis peut désormais passer
+rapidement entre son Blob existant et son cadre Desktop existant.
+
+### Ajouté
+
+- **Switch Blob Mode / Desktop Mode à chaud** dans le menu radial `System`,
+  dans la zone de notification et dans le launcher. Le contrôle affiche le
+  mode actif et applique la transition sans redémarrer le backend vocal.
+- **Commande vocale** « Passe en mode Desktop » / « Passe en mode Blob », via
+  le mécanisme d'outils Gemini existant (`set_interface_mode`).
+- **Persistance centralisée** dans le `config.json` existant (`interface_mode`,
+  défaut `blob`) : launcher, menu et runtime lisent et écrivent la même valeur.
+- Tests ciblés du défaut, des sélections, de la persistance, des transitions,
+  du rendu du contrôle, du tray et de la réutilisation des widgets Blob/halo.
+
+### Inchangé
+
+- Le Blob, le cadre Desktop, leurs animations, les fonds et layouts des menus,
+  le Writing Mode, Deezer, la mémoire et le moteur vocal conservent leurs
+  mécanismes existants. Desktop Mode reste le cadre réactif autour de l'écran,
+  et non une nouvelle interface complète.
+
 ## [1.5.1] — 2026-09-26
 
 **Release de correction de provenance.** `v1.5.1` est la première release

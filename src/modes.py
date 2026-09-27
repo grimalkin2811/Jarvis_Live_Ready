@@ -56,6 +56,7 @@ MODE_CONTROL_TOOLS = {
     "show_menu",
     "hide_menu",
     "get_ui_state",
+    "set_interface_mode",
 }
 
 AUDIO_TOOLS = {

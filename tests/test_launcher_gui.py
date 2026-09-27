@@ -72,6 +72,12 @@ class LauncherGuiTests(unittest.TestCase):
         patcher = mock.patch("launcher.gui.core.get_status", return_value=status)
         patcher.start()
         self.addCleanup(patcher.stop)
+        mode_getter = mock.patch("launcher.gui.core.get_interface_mode", return_value="blob")
+        mode_getter.start()
+        self.addCleanup(mode_getter.stop)
+        mode_setter = mock.patch("launcher.gui.core.set_interface_mode", side_effect=lambda mode: mode)
+        mode_setter.start()
+        self.addCleanup(mode_setter.stop)
         kwargs.setdefault("auto_check", False)
         self.window = gui.LauncherWindow(**kwargs)
         self.window.show()
@@ -84,7 +90,7 @@ class LauncherGuiTests(unittest.TestCase):
         self.assertIn("1.1.1", window._status_text.text())
         self.assertTrue(window._launch_button.isEnabled())
         self.assertFalse(window._update_button.isEnabled())
-        self.assertIn("Orbe", window._mode_combo.currentText())
+        self.assertIn("Blob Mode", window._mode_combo.currentText())
 
     def test_invalid_install_disables_launch(self):
         status = core.LauncherStatus(

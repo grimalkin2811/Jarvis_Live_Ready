@@ -25,6 +25,13 @@ CONFIG_FILENAME = "config.json"
 #: Clé API Gemini (masquée dans les journaux).
 API_KEY = "GEMINI_API_KEY"
 
+#: Modes d'interface persistants. ``blob`` remplace le nom technique historique
+#: ``ui`` dans la configuration ; l'alias reste accepté sur la ligne de commande.
+BLOB_MODE = "blob"
+DESKTOP_MODE = "desktop"
+DEFAULT_INTERFACE_MODE = BLOB_MODE
+INTERFACE_MODES = (BLOB_MODE, DESKTOP_MODE)
+
 
 @dataclass
 class AppConfig:
@@ -39,6 +46,9 @@ class AppConfig:
     routines_enabled: bool = True
     reminders_enabled: bool = True
     modes_enabled: bool = True
+    #: Interface principale : Blob morphing ou cadre Desktop. Cette valeur est
+    #: l'unique source de vérité partagée par le launcher et le runtime.
+    interface_mode: str = DEFAULT_INTERFACE_MODE
 
     def is_configured(self) -> bool:
         """Vrai quand la configuration est utilisable (nom + clé API)."""
@@ -60,6 +70,28 @@ def _safe_bool(value, default: bool = True) -> bool:
     return str(value).strip().lower() not in {"0", "false", "no", "off", "non"}
 
 
+def normalize_interface_mode(value, default: str = DEFAULT_INTERFACE_MODE) -> str:
+    """Normalise les noms historiques/conviviaux vers ``blob`` ou ``desktop``.
+
+    Les fichiers existants n'ont pas encore la clé : ils retombent donc sur
+    Blob Mode, qui était déjà le choix recommandé et le défaut du launcher.
+    Une valeur corrompue est traitée de la même manière.
+    """
+    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "blob": BLOB_MODE,
+        "blob_mode": BLOB_MODE,
+        "orb": BLOB_MODE,
+        "orbe": BLOB_MODE,
+        "ui": BLOB_MODE,
+        "desktop": DESKTOP_MODE,
+        "desktop_mode": DESKTOP_MODE,
+        "overlay": DESKTOP_MODE,
+    }
+    fallback = default if default in INTERFACE_MODES else DEFAULT_INTERFACE_MODE
+    return aliases.get(text, fallback)
+
+
 def _parse_env_config() -> dict:
     """Lit une configuration depuis l'environnement / ``.env`` (dev)."""
     env = {
@@ -72,6 +104,9 @@ def _parse_env_config() -> dict:
         "routines_enabled": _safe_bool(os.getenv("JARVIS_ROUTINES_ENABLED"), True),
         "reminders_enabled": _safe_bool(os.getenv("JARVIS_REMINDERS_ENABLED"), True),
         "modes_enabled": _safe_bool(os.getenv("JARVIS_MODES_ENABLED"), True),
+        "interface_mode": normalize_interface_mode(
+            os.getenv("JARVIS_INTERFACE_MODE"), DEFAULT_INTERFACE_MODE
+        ),
     }
     return {k: v for k, v in env.items() if v not in (None, "")}
 
@@ -137,7 +172,37 @@ def load_app_config(path: str | os.PathLike | None = None) -> AppConfig:
     cfg.routines_enabled = _safe_bool(data.get("routines_enabled"), True)
     cfg.reminders_enabled = _safe_bool(data.get("reminders_enabled"), True)
     cfg.modes_enabled = _safe_bool(data.get("modes_enabled"), True)
+    cfg.interface_mode = normalize_interface_mode(data.get("interface_mode"))
     return cfg
+
+
+def get_interface_mode(path: str | os.PathLike | None = None) -> str:
+    """Retourne le mode d'interface persistant effectif.
+
+    Cette fonction est utilisée telle quelle par le launcher, le menu radial
+    et le runtime afin qu'aucune copie d'état ne puisse diverger.
+    """
+    return normalize_interface_mode(load_config_dict(path).get("interface_mode"))
+
+
+def set_interface_mode(mode: str, path: str | os.PathLike | None = None) -> str:
+    """Persiste ``blob`` ou ``desktop`` dans le ``config.json`` existant.
+
+    Le payload est mis à jour en place plutôt que reconstruit : les clés de
+    configuration actuelles (et celles ajoutées par de futures versions)
+    restent inchangées.
+    """
+    raw = str(mode or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw not in {
+        "blob", "blob_mode", "orb", "orbe", "ui",
+        "desktop", "desktop_mode", "overlay",
+    }:
+        raise ValueError(f"Mode d'interface inconnu : {mode!r}")
+    normalized = normalize_interface_mode(raw)
+    payload = load_file_config(path)
+    payload["interface_mode"] = normalized
+    save_file_config(payload, path)
+    return normalized
 
 
 def save_app_config(cfg: AppConfig, path: str | os.PathLike | None = None) -> Path:

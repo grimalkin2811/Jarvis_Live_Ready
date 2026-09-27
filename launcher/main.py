@@ -109,8 +109,11 @@ def _launch(args: argparse.Namespace) -> int:
         mode, wait = "console", True
     elif getattr(args, "desktop", False):
         mode, wait = "desktop", False
+        core.set_interface_mode(mode)
     else:
-        mode, wait = "ui", False
+        # Sans choix explicite, le launcher relit le même état persistant que
+        # l'application (Blob par défaut sur une installation existante).
+        mode, wait = core.get_interface_mode(), False
     validation = core.validate_installation()
     if core.is_frozen() and not validation.ok:
         print(f"[Launcher] ERREUR : {validation.message}", file=sys.stderr)

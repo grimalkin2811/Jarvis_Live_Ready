@@ -27,7 +27,7 @@ from pathlib import Path
 # Les modules src sont réutilisés (stdlib uniquement pour le launcher).
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from src import updater  # noqa: E402
+from src import settings, updater  # noqa: E402
 from src.version import CHANNEL, get_version  # noqa: E402
 
 # Validation centralisée (avec fallback si module manquant)
@@ -173,6 +173,16 @@ def local_version() -> str:
 def repo_slug() -> str:
     """Dépôt GitHub utilisé pour les mises à jour (surchargé par JARVIS_REPO)."""
     return os.getenv("JARVIS_REPO", updater.REPO_SLUG)
+
+
+def get_interface_mode() -> str:
+    """Mode Blob/Desktop partagé avec Jarvis (même ``config.json``)."""
+    return settings.get_interface_mode()
+
+
+def set_interface_mode(mode: str) -> str:
+    """Persiste le mode choisi dans le launcher, sans configuration parallèle."""
+    return settings.set_interface_mode(mode)
 
 
 def get_status() -> LauncherStatus:
@@ -337,18 +347,22 @@ def _creationflags(mode: str) -> int:
     return int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
 
 
-def launch_jarvis(mode: str = "ui", *, wait: bool = False) -> LaunchResult:
-    """Lance Jarvis.
+def launch_jarvis(mode: str | None = None, *, wait: bool = False) -> LaunchResult:
+    """Lance Jarvis dans le mode persistant sélectionné.
 
     Args:
-        mode: ``"ui"`` (orbe, défaut), ``"desktop"`` (overlay) ou
-            ``"console"`` (headless, sortie visible).
+        mode: ``"blob"`` (ou alias historique ``"ui"``), ``"desktop"`` ou
+            ``"console"``. ``None`` relit la source de vérité persistante.
         wait: si Vrai, attend la fin du processus et retourne son code
             (mode console) ; sinon, Jarvis tourne en processus détaché et le
             launcher peut se fermer.
     """
-    if mode not in ("ui", "desktop", "console"):
+    requested_mode = get_interface_mode() if mode is None else str(mode).strip().lower()
+    if requested_mode == "ui":
+        requested_mode = settings.BLOB_MODE
+    if requested_mode not in (*settings.INTERFACE_MODES, "console"):
         return LaunchResult(False, f"Mode de lancement inconnu : {mode!r}")
+    mode = requested_mode
     validation = validate_installation()
     if not validation.ok:
         return LaunchResult(False, validation.message)
@@ -374,16 +388,16 @@ def launch_jarvis(mode: str = "ui", *, wait: bool = False) -> LaunchResult:
                 "Réinstallez Jarvis via JarvisSetup.exe",
             )
         cmd = [str(exe)]
-        if mode == "desktop":
+        if mode == settings.DESKTOP_MODE:
             cmd.append("--desktop")
-        elif mode == "ui":
+        elif mode == settings.BLOB_MODE:
             cmd.append("--ui")
         # mode console : Jarvis.exe sans argument (headless).
     else:
         cmd = [sys.executable, "-m", "src.main"]
-        if mode == "desktop":
+        if mode == settings.DESKTOP_MODE:
             cmd.append("--desktop")
-        elif mode == "ui":
+        elif mode == settings.BLOB_MODE:
             cmd.append("--ui")
     creationflags = _creationflags(mode)
     try:

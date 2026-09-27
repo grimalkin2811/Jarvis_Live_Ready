@@ -32,6 +32,7 @@ class Config:
     memory_database_path: str = DEFAULT_MEMORY_DB
     memory_max_results: int = 5
     memory_min_importance: int = 1
+    interface_mode: str = settings.DEFAULT_INTERFACE_MODE
 
 
 def _env_bool(name: str, default: bool = True) -> bool:
@@ -97,6 +98,7 @@ def load_config() -> Config:
         memory_database_path=memory_path,
         memory_max_results=_env_int("JARVIS_MEMORY_MAX_RESULTS", cfg.memory_max_results, 1, 20),
         memory_min_importance=_env_int("JARVIS_MEMORY_MIN_IMPORTANCE", cfg.memory_min_importance, 1, 5),
+        interface_mode=cfg.interface_mode,
     )
 
 
@@ -113,6 +115,7 @@ def save_config(config: Config) -> None:
         memory_enabled=config.memory_enabled,
         memory_max_results=config.memory_max_results,
         memory_min_importance=config.memory_min_importance,
+        interface_mode=config.interface_mode,
     )
     settings.save_app_config(app_cfg)
 
