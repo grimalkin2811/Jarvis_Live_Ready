@@ -76,6 +76,11 @@ GAME_ALLOWED_TOOLS = MODE_CONTROL_TOOLS | AUDIO_TOOLS | {
     "get_local_date",
     "get_datetime",
     "get_battery_status",
+    # Contexte conversationnel (v1.6.0) : purement local, sans écran ni
+    # réseau. Repartir d'une conversation vierge doit rester possible même
+    # en mode jeu ou focus.
+    "reset_conversation",
+    "get_conversation_state",
 }
 
 # Pendant les révisions : pas de jeux, streaming, réseaux sociaux, achats,

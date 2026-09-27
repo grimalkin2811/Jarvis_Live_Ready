@@ -346,6 +346,7 @@ def _run_voice_loop(
 
     try:
         from .audio import AudioIO
+        from .conversation import get_default_conversation_context
         from .gemini_live import AuthError, GeminiLive
         from .memory import MemoryManager, set_default_memory_manager
         from .scheduler import start_default_scheduler
@@ -389,6 +390,12 @@ def _run_voice_loop(
         )
         set_default_memory_manager(memory_manager)
 
+        # Contexte conversationnel partagé par Blob Mode et Desktop Mode : il
+        # appartient au backend vocal, pas à l'interface. Basculer d'un mode à
+        # l'autre ne le touche donc jamais ; seul un (re)démarrage le vide.
+        conversation = get_default_conversation_context()
+        conversation.start_new_conversation(reason="démarrage interface")
+
         # Rappels persistants + routines planifiees (thread de fond).
         try:
             start_default_scheduler()
@@ -421,6 +428,7 @@ def _run_voice_loop(
             on_speaking=lambda: _on_speaking(audio, presence_hook),
             on_thinking=lambda: _on_thinking(presence_hook),
             memory_manager=memory_manager,
+            conversation=conversation,
             **menu_state.voice_backend_kwargs(),
         )
 

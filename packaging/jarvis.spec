@@ -38,6 +38,8 @@ hiddenimports += [
     "src.writing.settings",
     "src.writing.text",
 ]
+# Contexte conversationnel (v1.6.0) — importé paresseusement par tools.py
+hiddenimports += ["src.conversation"]
 # Musique Deezer (v1.5.2) — sous-modules chargés à la demande par tools.py
 hiddenimports += [
     "src.music",
