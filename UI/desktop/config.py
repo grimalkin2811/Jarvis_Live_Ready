@@ -184,32 +184,32 @@ def _default_slots() -> dict[str, WidgetSlot]:
     )
     return {
         HALO: WidgetSlot(enabled=True, x=0.5, y=0.5, scale=1.0, states=active),
-        STATUS: WidgetSlot(enabled=True, x=0.5, y=0.958, scale=1.0, states=active),
+        STATUS: WidgetSlot(enabled=True, x=0.5, y=0.952, scale=1.0, states=active),
         TRANSCRIPT: WidgetSlot(
             enabled=True,
             x=0.5,
-            y=0.845,
+            y=0.838,
             scale=1.0,
             states=(DesktopState.LISTENING, DesktopState.FOLLOW_UP, DesktopState.THINKING),
         ),
         RESPONSE: WidgetSlot(
             enabled=False,
             x=0.5,
-            y=0.845,
+            y=0.838,
             scale=1.0,
             states=(DesktopState.SPEAKING,),
         ),
         TOOL: WidgetSlot(
             enabled=True,
             x=0.5,
-            y=0.845,
+            y=0.838,
             scale=1.0,
             states=(DesktopState.TOOL_USE,),
         ),
         AUDIO: WidgetSlot(
             enabled=True,
             x=0.5,
-            y=0.905,
+            y=0.888,
             scale=1.0,
             states=(DesktopState.LISTENING, DesktopState.SPEAKING, DesktopState.FOLLOW_UP),
         ),

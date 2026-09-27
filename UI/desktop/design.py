@@ -92,7 +92,7 @@ class Metrics:
     BUTTON_RADIUS = 10.0
 
     #: Marge minimale entre un widget et le bord de l'écran.
-    SCREEN_MARGIN = 24.0
+    SCREEN_MARGIN = 18.0
 
     FONT_FAMILY = "Segoe UI"
     FONT_SIZE_CHIP = 11

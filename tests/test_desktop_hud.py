@@ -270,20 +270,30 @@ class OverlayLayoutTests(unittest.TestCase):
         self.assertAlmostEqual(second.center().x() / self.overlay.width(), ratio_x, places=1)
 
     def test_default_widgets_do_not_overlap(self) -> None:
-        """Les défauts doivent être propres, sans réglage manuel."""
+        """Les défauts doivent être propres sur tous les écrans courants.
+
+        Testé de 1280x720 (portable d'entrée de gamme) à 3840x2160 : les
+        éléments affichés par défaut dans un même état ne doivent jamais se
+        superposer, sans que l'utilisateur ait à les déplacer.
+        """
         self.overlay.set_transcript("météo à Paris")
-        self.overlay.set_state(DesktopState.LISTENING)
-        self.overlay._layout_widgets()
-        rects = [
-            self.overlay.widget_rect(name)
-            for name in (cfg.STATUS, cfg.TRANSCRIPT, cfg.AUDIO)
-        ]
-        for index, first in enumerate(rects):
-            for second in rects[index + 1:]:
-                self.assertFalse(
-                    first.intersects(second),
-                    f"chevauchement {first} / {second}",
-                )
+        for width, height in ((1280, 720), (1366, 768), (1600, 900),
+                              (1920, 1080), (2560, 1440), (3840, 2160)):
+            self.overlay.resize(width, height)
+            for state, names in (
+                (DesktopState.LISTENING, (cfg.STATUS, cfg.TRANSCRIPT, cfg.AUDIO)),
+                (DesktopState.SPEAKING, (cfg.STATUS, cfg.AUDIO)),
+                (DesktopState.TOOL_USE, (cfg.STATUS, cfg.TOOL)),
+            ):
+                self.overlay.set_state(state)
+                self.overlay._layout_widgets()
+                rects = [self.overlay.widget_rect(name) for name in names]
+                for index, first in enumerate(rects):
+                    for second in rects[index + 1:]:
+                        self.assertFalse(
+                            first.intersects(second),
+                            f"{width}x{height} {state} : chevauchement {first} / {second}",
+                        )
 
     def test_scale_changes_widget_size(self) -> None:
         self.overlay.set_transcript("bonjour Jarvis")
