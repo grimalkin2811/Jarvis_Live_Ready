@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from PySide6.QtGui import QColor
 
+from .desktop.config import DesktopAppearanceConfig
+
 
 #: Opacité par défaut (0..1) des fonds d'items des menus radiaux, telle que
 #: définie en 1.3.1 (constante ``ITEM_BG_REST``). Depuis la 1.3.2 c'est la
@@ -43,6 +45,12 @@ class AppearanceState:
     #: État de SESSION uniquement (1.3.2) : il n'est jamais relu ni réécrit
     #: dans ``appearance_state.json`` — voir ``state_to_dict``.
     blob_hidden: bool = False
+    #: Apparence du Desktop Mode (1.7.0). Rangée ICI, dans les réglages
+    #: d'apparence existants : l'apparence du cadre Desktop est de
+    #: l'apparence, elle n'a pas besoin d'un second fichier de configuration.
+    #: Un ``appearance_state.json`` écrit par la 1.6.0 n'a pas ce bloc : les
+    #: valeurs par défaut s'appliquent et l'overlay reste soigné d'emblée.
+    desktop: DesktopAppearanceConfig = field(default_factory=DesktopAppearanceConfig)
 
 
 THEME_ORDER = ["white", "yellow", "red", "purple", "pink", "green", "blue"]
@@ -79,7 +87,24 @@ def state_to_dict(state: AppearanceState) -> dict:
         "minimal_mode": state.minimal_mode,
         "cinematic_mode": state.cinematic_mode,
         "item_bg_opacity": _clamp01(state.item_bg_opacity),
+        # 1.7.0 : bloc Desktop Mode. Toujours écrit, même aux valeurs par
+        # défaut, pour que le fichier soit auto-descriptif.
+        "desktop": _desktop_config(state).to_dict(),
     }
+
+
+def _desktop_config(state: AppearanceState) -> DesktopAppearanceConfig:
+    """Bloc Desktop de l'état, créé à la volée s'il manque (états anciens)."""
+    config = getattr(state, "desktop", None)
+    if not isinstance(config, DesktopAppearanceConfig):
+        config = DesktopAppearanceConfig()
+        state.desktop = config
+    return config
+
+
+def desktop_config(state: AppearanceState) -> DesktopAppearanceConfig:
+    """Accès public au bloc Desktop (éditeur d'apparence, overlay)."""
+    return _desktop_config(state)
 
 
 def apply_state_dict(state: AppearanceState, payload: dict) -> None:
@@ -96,6 +121,8 @@ def apply_state_dict(state: AppearanceState, payload: dict) -> None:
     # réglages Appearance ; valeur absente (fichier d'avant 1.3.2) → défaut
     # identique au comportement 1.3.1.
     state.item_bg_opacity = _clamp01(payload.get("item_bg_opacity", state.item_bg_opacity))
+    # 1.7.0 : bloc Desktop. Absent (fichier 1.6.0 ou antérieur) → défauts.
+    state.desktop = DesktopAppearanceConfig.from_dict(payload.get("desktop"))
     # 1.3.2 : l'état « masqué » est volontairement IGNORÉ au chargement,
     # même s'il figure encore dans un fichier écrit par la 1.2.0–1.3.1 :
     # masqué → fermeture → relancement doit démarrer VISIBLE. Le réglage
