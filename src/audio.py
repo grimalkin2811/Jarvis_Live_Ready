@@ -73,6 +73,7 @@ class AudioIO:
                  volume_provider=None, listen_mode_provider=None,
                  barge_in_provider=None, on_barge_in=None,
                  post_response_provider=None,
+                 output_level_hook=None,
                  wakeword_download=None):
         self.on_input = on_input
 
@@ -98,6 +99,12 @@ class AudioIO:
         self.barge_in_provider = barge_in_provider
         self.on_barge_in = on_barge_in
         self.post_response_provider = post_response_provider
+        # output_level_hook(level) : 0.0 .. 1.0 — niveau de la voix de Jarvis
+        # (v1.7.0, utilisé par le halo du Desktop Mode). Calculé dans
+        # ``play()``, c'est-à-dire dans le thread asyncio et JAMAIS dans le
+        # callback temps réel de la carte son.
+        self.output_level_hook = output_level_hook
+        self._last_output_emit = 0.0
         self._last_voice_emit = 0.0
 
         self.running = False
@@ -635,6 +642,27 @@ class AudioIO:
         except Exception:
             pass
 
+    def _emit_output_level(self, pcm) -> None:
+        """Niveau de la voix de Jarvis (v1.7.0), throttlé à ~20 Hz.
+
+        Appelé depuis ``play()`` (thread asyncio), jamais depuis le callback
+        de la carte son : le chemin temps réel reste intact.
+        """
+        if self.output_level_hook is None:
+            return
+        now = time.monotonic()
+        if now - self._last_output_emit < 0.05:
+            return
+        self._last_output_emit = now
+        try:
+            samples = np.frombuffer(pcm, dtype=np.int16)
+            if samples.size == 0:
+                return
+            rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
+            self.output_level_hook(min(1.0, rms / 6000.0))
+        except Exception:
+            pass
+
     # =========================================================
     # RÉVEIL DE JARVIS
     # =========================================================
@@ -873,6 +901,8 @@ class AudioIO:
         data = bytes(pcm)
         if gain < 0.995:
             data = self._apply_gain(data, gain)
+
+        self._emit_output_level(data)
 
         with self.lock:
             # Plafonner l'avance audio : si la file dépasse quelques secondes

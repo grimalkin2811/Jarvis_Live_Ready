@@ -40,6 +40,20 @@ hiddenimports += [
 ]
 # Contexte conversationnel (v1.6.0) — importé paresseusement par tools.py
 hiddenimports += ["src.conversation"]
+# Desktop Mode (v1.7.0) — UI/__init__ et UI/desktop/__init__ exposent leurs
+# symboles par PEP 562 : modulegraph ne peut pas les voir statiquement.
+hiddenimports += [
+    "UI.desktop",
+    "UI.desktop.config",
+    "UI.desktop.design",
+    "UI.desktop.events",
+    "UI.desktop.halo",
+    "UI.desktop.overlay",
+    "UI.desktop.state",
+    "UI.desktop.widgets",
+    "UI.desktop_appearance_dialog",
+    "UI.screen_halo_overlay",
+]
 # Musique Deezer (v1.5.2) — sous-modules chargés à la demande par tools.py
 hiddenimports += [
     "src.music",

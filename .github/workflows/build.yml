@@ -98,6 +98,30 @@ jobs:
       - name: "diag: test_tool_declarations"
         if: always()
         run: python -m unittest tests.test_tool_declarations -v
+      - name: "diag: test_desktop_overlay"
+        if: always()
+        run: python -m unittest tests.test_desktop_overlay -v
+      - name: "diag: test_desktop_state_machine"
+        if: always()
+        run: python -m unittest tests.test_desktop_state_machine -v
+      - name: "diag: test_desktop_config"
+        if: always()
+        run: python -m unittest tests.test_desktop_config -v
+      - name: "diag: test_desktop_hud"
+        if: always()
+        run: python -m unittest tests.test_desktop_hud -v
+      - name: "diag: test_desktop_appearance_dialog"
+        if: always()
+        run: python -m unittest tests.test_desktop_appearance_dialog -v
+      - name: "diag: test_desktop_events"
+        if: always()
+        run: python -m unittest tests.test_desktop_events -v
+      - name: "diag: test_desktop_integration"
+        if: always()
+        run: python -m unittest tests.test_desktop_integration -v
+      - name: "diag: test_interface_mode"
+        if: always()
+        run: python -m unittest tests.test_interface_mode -v
 
   lint:
     name: Lint

@@ -288,6 +288,10 @@ MENU_SPECS = [
             # rectangles derrière les libellés des 5 menus. « Blob Visible »
             # reste le dernier item du menu (contrat de position).
             MenuItemSpec("Item BG Opacity", "slider"),
+            # 1.7.0 : éditeur d'apparence du Desktop Mode. Inséré AVANT
+            # « Blob Visible » pour respecter le contrat de position (le
+            # toggle de visibilité reste le dernier item du menu).
+            MenuItemSpec("Desktop HUD", "buttonless"),
             MenuItemSpec("Blob Visible", "toggle"),
         ],
         reveal_scale=0.98,
@@ -1706,6 +1710,14 @@ class MorphingOrbWidget(QWidget):
             return "Off" if self.appearance_state.blob_hidden else "On"
         if label == "Item BG Opacity":
             return f"{round(clamp(self.appearance_state.item_bg_opacity, 0.0, 1.0) * 100):d}%"
+        if label == "Desktop HUD":
+            # Combien d'éléments seront visibles sur le bureau : la valeur
+            # renseigne sans ouvrir la fenêtre.
+            try:
+                config = appearance_actions.desktop_config(self.appearance_state)
+                return f"{len(config.enabled_widgets())} élém."
+            except Exception:
+                return "…"
         if label.startswith("Glow"):
             return f"{self.appearance_state.glow_intensity:.2f}"
         if label.startswith("Blob Size"):
@@ -2203,6 +2215,33 @@ class MorphingOrbWidget(QWidget):
         except Exception as exc:
             self._flash(f"Réglage indisponible : {exc}")
 
+    def _open_desktop_appearance_dialog(self) -> None:
+        """Ouvre l'éditeur d'apparence du Desktop Mode (1.7.0).
+
+        La fenêtre partage l'objet ``AppearanceState`` de l'orbe : un
+        changement de thème effectué dans le Blob est immédiatement reflété
+        dans l'aperçu, et inversement. Elle écrit dans le même
+        ``appearance_state.json`` — aucun second fichier de configuration.
+        """
+        try:
+            from src.modes import get_default_mode_manager
+
+            if get_default_mode_manager().should_suppress_visuals():
+                self._flash("Mode jeu actif : sans affichage")
+                return
+        except Exception:
+            pass
+        try:
+            from .desktop_appearance_dialog import show_desktop_appearance_dialog
+
+            show_desktop_appearance_dialog(
+                self,
+                state=self.appearance_state,
+                path=self._appearance_state_path,
+            )
+        except Exception as exc:
+            self._flash(f"Apparence Desktop indisponible : {exc}")
+
     def _save_menu_state(self, force: bool = False) -> None:
         """Sauvegarde l'état du menu, débouncée pendant les interactions.
 
@@ -2323,6 +2362,14 @@ class MorphingOrbWidget(QWidget):
             def _flash_value() -> None:
                 self._flash(f"{item.label}: {self._appearance_value(item.label)}")
             return _flash_value
+        if item.label == "Desktop HUD":
+            # Ouvre l'éditeur d'apparence du Desktop Mode (même schéma que
+            # « Catalogue » des routines ou « Mode Apps » : on ferme le menu
+            # radial puis on affiche la fenêtre partagée).
+            def _open_desktop_appearance() -> None:
+                self._close_radial_menu()
+                self._open_desktop_appearance_dialog()
+            return _open_desktop_appearance
         action_map = {
             "Color": appearance_actions.cycle_theme,
             "Glow +": appearance_actions.increase_glow,

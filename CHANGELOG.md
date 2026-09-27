@@ -9,6 +9,87 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.0] — 2026-09-27
+
+**Desktop Mode : une vraie présence sur le bureau.** Jusqu'ici le cadre
+Desktop savait faire une chose — s'allumer plus ou moins fort. « Écoute »,
+« réflexion » et « réponse » n'étaient que trois intensités du même dessin, le
+halo repeignait tout l'écran soixante fois par seconde, et le retour en veille
+reposait sur un minuteur. Cette version reprend le sujet à la base : Jarvis est
+là, visible d'un coup d'œil, et jamais dans le chemin.
+
+### Ajouté
+
+- **Machine d'états visuelle explicite** (`UI/desktop/state.py`, sans Qt) :
+  `hidden`, `loading`, `listening`, `thinking`, `tool_use`, `speaking`,
+  `follow_up`, `interrupted`, `error`. Chaque état a **sa couleur ET sa
+  forme** : la lumière monte du bas quand Jarvis écoute, deux accents
+  circulent le long du périmètre quand il réfléchit, des segments s'allument
+  en séquence quand il exécute un outil, la pulsation part des côtés quand il
+  répond, et une ligne de compte à rebours montre la fenêtre d'écoute se
+  refermer. On reconnaît l'état sans lire.
+- **Pilotage par évènements réels**, plus par supposition : `on_tool_start`,
+  `on_tool_end`, `on_user_transcript`, `on_assistant_transcript` sur
+  `GeminiLive`, `output_level_hook` sur `AudioIO`, et un pont thread-safe sans
+  Qt (`UI/desktop/events.py`). Le minuteur de 8,4 s de la 1.5.3 n'est plus la
+  source de l'état : c'est un simple filet de sécurité.
+- **Widgets optionnels** : pastille d'état, transcription, réponse, nom de
+  l'outil, visualiseur audio, contrôles Stop/Micro/Masquer. Tous facultatifs,
+  tous positionnables, tous configurables par état.
+- **Éditeur d'apparence Desktop** (`UI/desktop_appearance_dialog.py`),
+  accessible depuis **Appearance → Desktop HUD** et depuis l'icône de
+  notification : activation, **glisser-déposer** avec aimantation, taille,
+  visibilité par état, aperçu de chaque état, force et épaisseur du halo,
+  taille du texte, animations réduites, réinitialisation. Enregistrement
+  immédiat, appliqué à chaud.
+- **Politique de clic explicite** : « Toujours traversable », « Widgets
+  interactifs uniquement » (défaut) et « Overlay interactif ». Les boutons
+  cliquables vivent dans une fenêtre outil séparée, ce qui permet d'avoir des
+  contrôles **sans** rendre l'écran entier interceptant.
+- **Design system centralisé** (`UI/desktop/design.py`) : toutes les durées,
+  courbes, opacités, épaisseurs et marges en un seul endroit.
+- **Documentation** : `docs/DESKTOP_MODE.md`.
+- **158 tests** supplémentaires : `tests/test_desktop_state_machine.py`,
+  `test_desktop_config.py`, `test_desktop_hud.py`,
+  `test_desktop_appearance_dialog.py`, `test_desktop_events.py`,
+  `test_desktop_integration.py`.
+
+### Modifié
+
+- **Rendu du halo réécrit** : bandes pré-rendues dans des `QPixmap` mis en
+  cache, repaint **limité aux quatre bords** (jamais le centre de l'écran),
+  accents animés par un unique sprite. Mesuré en repaint plein écran (pire
+  cas) : **18,9 ms → 1,6 ms** en 1080p, **36,9 ms → 9,8 ms** en 4K. À l'état
+  `hidden`, le minuteur est arrêté : coût CPU **nul**.
+- Les réglages Desktop sont rangés dans le fichier d'apparence **existant**
+  (`appearance_state.json`, bloc `desktop`) : aucun second fichier de
+  configuration.
+- `UI/screen_halo_overlay.py` devient une **façade** : `ScreenHaloOverlay` et
+  `build_presence_hook` gardent exactement leur contrat 1.6.0, et
+  `src.ui.PresenceRouter` est désormais le contrôleur Desktop complet (même
+  nom, même API, `_listen_hide_timer` compris).
+
+### Non-régression
+
+- Aucun test existant n'a été supprimé ni affaibli : les tests Desktop 1.5.3
+  (`tests/test_desktop_overlay.py`) et les tests de bascule
+  (`tests/test_interface_mode.py`) s'exécutent tels quels sur la nouvelle
+  implémentation. Le contrat de position du menu Appearance est préservé
+  (« Blob Visible » reste le dernier item ; « Desktop HUD » s'insère avant).
+- Un `appearance_state.json` écrit par la 1.6.0 continue de fonctionner : le
+  bloc `desktop` absent applique les valeurs par défaut sans toucher au thème
+  ni à l'opacité des fonds d'items.
+- Blob ↔ Desktop : toujours à chaud, sans redémarrage, sans perte de contexte
+  conversationnel, de mémoire ni de réglages.
+- Le mode jeu supprime toujours intégralement l'affichage.
+
+### Journalisation
+
+- Logger `jarvis.desktop` : états, écran cible (nom, taille, DPI), politique
+  d'interaction, configuration. Les transcriptions et les réponses ne sont
+  journalisées **que par leur taille** — jamais leur contenu, ce qu'un test
+  vérifie.
+
 ## [1.6.0] — 2026-09-27
 
 **Contexte conversationnel multi-tour.** Jusqu'ici chaque demande était
