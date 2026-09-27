@@ -53,6 +53,13 @@ du fournisseur LLM.
 - **108 tests** supplémentaires : `tests/test_conversation_context.py`,
   `tests/test_conversation_providers.py`, `tests/test_conversation_pipeline.py`.
 
+### Outillage (après publication)
+
+- La vérification post-publication (`Verify Release`) ne code plus en dur le
+  nombre d'outils attendu : il est **compté dans la source du tag vérifié**.
+  Une valeur figée devenait fausse à chaque release et faisait échouer la
+  vérification d'une release pourtant conforme.
+
 ### Inchangé
 
 - **La mémoire persistante reste séparée** : le contexte conversationnel n'y

@@ -28,9 +28,9 @@ on:
         required: false
         default: ""
       expected_tools:
-        description: "Nombre d'outils Gemini attendu"
+        description: "Nombre d'outils Gemini attendu (défaut : compté dans la source du tag)"
         required: false
-        default: "119"
+        default: ""
       report_pr:
         description: "Numéro de PR où publier le rapport (0 = aucun)"
         required: false
@@ -66,8 +66,11 @@ jobs:
           fi
           VERSION="${{ inputs.expected_version }}"
           if [ -z "$VERSION" ]; then VERSION="${TAG#v}"; fi
+          # Le nombre d'outils n'est PAS codé en dur : une valeur figée ici
+          # devient fausse à la release suivante et fait échouer la
+          # vérification d'une release pourtant conforme. Vide = il sera
+          # compté dans la source du tag vérifié (étape suivante).
           TOOLS="${{ inputs.expected_tools }}"
-          if [ -z "$TOOLS" ]; then TOOLS="119"; fi
           PR="${{ inputs.report_pr }}"
           if [ -z "$PR" ] || [ "$PR" = "0" ]; then
             # Déclenchement par push : on rattache le rapport à la PR qui a
@@ -105,6 +108,31 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: "Nombre d'outils attendu (source du tag)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${TOOLS:-}" ]; then
+            echo "nombre d'outils fourni en entrée : $TOOLS"
+            exit 0
+          fi
+          COUNT=$(python - <<'PY'
+          import ast, sys
+
+          with open("src/tools.py", encoding="utf-8") as handle:
+              tree = ast.parse(handle.read())
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Assign) and isinstance(node.value, ast.List):
+                  for target in node.targets:
+                      if getattr(target, "id", "") == "TOOL_DECLARATIONS":
+                          print(len(node.value.elts))
+                          sys.exit(0)
+          sys.exit("TOOL_DECLARATIONS introuvable dans src/tools.py")
+          PY
+          )
+          echo "outils déclarés dans la source du tag : $COUNT"
+          echo "TOOLS=$COUNT" >> "$GITHUB_ENV"
 
       - name: Installer les dépendances
         run: |
