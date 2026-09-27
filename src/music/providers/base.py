@@ -66,6 +66,23 @@ class MusicProvider(Protocol):
     def get_playlists(self, *, personal: bool = True, limit: int = 30) -> dict[str, Any]:
         ...
 
+    def save_local_playlist(
+        self,
+        name: str,
+        playlist_id: str | int | None = None,
+        url: str | None = None,
+    ) -> dict[str, Any]:
+        ...
+
+    def import_local_playlist(self, name: str) -> dict[str, Any]:
+        ...
+
+    def remove_local_playlist(self, name: str) -> dict[str, Any]:
+        ...
+
+    def get_local_playlists(self) -> dict[str, Any]:
+        ...
+
     def auth_status(self) -> dict[str, Any]:
         ...
 

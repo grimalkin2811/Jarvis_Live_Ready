@@ -16,9 +16,13 @@ data/
 *.db-shm
 *.db-wal
 
-# Auth Deezer locale (token OAuth — ne jamais committer)
+# Données Deezer locales (token OAuth et associations — ne jamais committer)
 deezer_auth.json
 **/deezer_auth.json
+deezer_playlists.json
+**/deezer_playlists.json
+deezer_playlists.json.bak
+**/deezer_playlists.json.bak
 
 # Routines, rappels et modes locaux (hors du depot par defaut : ~/.jarvis)
 routines.json

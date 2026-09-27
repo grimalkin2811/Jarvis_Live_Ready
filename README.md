@@ -172,9 +172,10 @@ JARVIS_REMINDERS_ENABLED=1
 
 Au premier lancement, Jarvis migre ce `.env` vers `config.json`.
 
-> **Deezer (v1.5.0)** : le catalogue public (recherche + lecture via app/web)
-> fonctionne **sans token**. Les playlists personnelles nécessitent
-> `DEEZER_ACCESS_TOKEN` (voir section Musique Deezer).
+> **Deezer (v1.5.2)** : le catalogue public (recherche + lecture via app/web)
+> fonctionne **sans token**. Une playlist personnelle enregistrée localement peut
+> aussi être lancée sans OAuth ; OAuth reste disponible pour découvrir/importer
+> les playlists personnelles (voir section Musique Deezer).
 
 ### Lancer les tests
 
@@ -225,7 +226,8 @@ parties (Jarvis, launcher, updater, build, CI) la lisent.
 ├── routines.json
 ├── schedule.db
 ├── mode.json
-├── deezer_auth.json          # jeton Deezer optionnel (v1.5.0, jamais commité)
+├── deezer_auth.json          # jeton Deezer optionnel (OAuth, jamais commité)
+├── deezer_playlists.json     # associations locales nom → ID (jamais commité)
 ├── ui\                       # préférences de l'interface
 ├── logs\jarvis.log           # logs (rotation)
 ├── models\openwakeword\      # modèles wake word
@@ -730,9 +732,9 @@ a été créé dans user_content. »
 
 ## Fonctions
 
-Jarvis dispose de **112 outils** déclarés dans `src/tools.py` (voir
-`TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **15 outils musique Deezer**
-ajoutés en v1.5.0.
+Jarvis dispose de **116 outils** déclarés dans `src/tools.py` (voir
+`TOOL_FUNCTIONS` / `TOOL_DECLARATIONS`), dont **19 outils musique Deezer**
+(dont les 4 outils de playlists locales ajoutés en v1.5.2).
 
 | Catégorie | Outils |
 |---|---|
@@ -769,7 +771,7 @@ ferme pas Opera GX », « ajoute Spotify à la liste du mode focus »,
 « réinitialise les applications du mode jeu », « écris-moi un mail au
 professeur », « crée-moi un fichier texte de présentation », « joue Daft Punk », « mets ma playlist Chill », « pause », « morceau suivant ».
 
-## Musique Deezer (v1.5.0)
+## Musique Deezer (v1.5.2)
 
 Première intégration musicale native de Jarvis. La voix pilote Deezer via une
 architecture dédiée :
@@ -782,6 +784,8 @@ Gemini Live (intent) + parseur local (src/music/intents.py)
 MusicManager (src/music/manager.py)
       ↓
 DeezerProvider (src/music/providers/deezer.py)
+      ├── API catalogue / OAuth optionnel
+      └── LocalPlaylistStore (nom → ID, sans OAuth)
       ↓
 API catalogue Deezer  +  app desktop / navigateur par défaut  +  touches média
 ```
@@ -796,7 +800,28 @@ API catalogue Deezer  +  app desktop / navigateur par défaut  +  touches média
 | « Mets de la musique » | Tops / chart Deezer (Flow si token présent) |
 | Pause / reprise / suivant / précédent | Touches multimédia Windows (`VK_MEDIA_*`) |
 | « Quel morceau joue ? » | État **local** de la dernière lecture lancée par Jarvis |
-| Playlists personnelles | API `/user/me/playlists` **si** `DEEZER_ACCESS_TOKEN` valide |
+| Playlists personnelles découvertes | API `/user/me/playlists` **si** `DEEZER_ACCESS_TOKEN` valide |
+| Playlists personnelles enregistrées | Association locale nom → ID, lancement sans OAuth |
+
+### Playlists personnelles sans OAuth
+
+Deezer ayant restreint la création de nouvelles applications API, Jarvis ne
+contourne pas cette restriction. Pour conserver un usage fiable :
+
+1. Copie le lien de ta playlist Deezer.
+2. Demande à Jarvis de l'enregistrer avec `music_playlist_save` (URL ou ID).
+3. Jarvis conserve seulement l'ID dans `%LOCALAPPDATA%\\Jarvis\\deezer_playlists.json`
+   (`~/.jarvis/deezer_playlists.json` en développement).
+4. Dis « Joue ma playlist Cyberpunk » : Jarvis ouvre
+   `deezer://www.deezer.com/playlist/<ID>?autoplay=true`, puis utilise l'URL web
+   avec le navigateur par défaut si l'application Deezer ne s'ouvre pas.
+
+Les noms ignorent casse, accents, ponctuation et les espaces raisonnablement.
+`music_playlist_list` liste ces associations et `music_playlist_remove` retire
+uniquement l'association de Jarvis ; cela ne supprime jamais la playlist Deezer.
+OAuth reste utile pour la découverte/import explicite (`music_playlist_import`),
+mais n'est pas nécessaire pour une playlist locale déjà enregistrée. Jarvis ne
+stocke ni mot de passe, ni cookie, ni session Deezer.
 
 ### Commandes vocales (exemples)
 
@@ -825,12 +850,13 @@ laquelle choisir au lieu de trancher arbitrairement.
 
 > **Limitation Deezer (2025+)** : Deezer a restreint la création de nouvelles
 > applications API pour les particuliers. Jarvis n'essaie **pas** de contourner
-> cette restriction. Si vous disposez d'un token existant encore valide, il est
-> supporté ; sinon les fonctions perso annoncent honnêtement qu'elles ne sont
-> pas disponibles.
+> cette restriction. Un token existant encore valide est supporté pour la
+> découverte/import ; après enregistrement d'une playlist, son lancement local
+> fonctionne sans token.
 
-Ne placez **jamais** un mot de passe Deezer dans le code. Le token n'est pas
-affiché dans les logs et `deezer_auth.json` est gitignoré.
+Ne placez **jamais** un mot de passe Deezer dans le code. Les tokens ne sont pas
+affichés dans les logs, et `deezer_auth.json` comme `deezer_playlists.json` sont
+gitignorés. Le second fichier ne contient aucun token, cookie ou session.
 
 ### Ouverture de Deezer
 

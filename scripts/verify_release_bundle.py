@@ -17,9 +17,9 @@ Il ne fait confiance ni au nom du fichier, ni au tag, ni à GitHub.
 
 Usage
 -----
-    python scripts/verify_release_bundle.py --bundle dist/app --version 1.5.1
-    python scripts/verify_release_bundle.py --bundle C:/tmp/Jarvis --version 1.5.1 \
-        --expect-tools 112
+    python scripts/verify_release_bundle.py --bundle dist/app --version 1.5.2
+    python scripts/verify_release_bundle.py --bundle C:/tmp/Jarvis --version 1.5.2 \
+        --expect-tools 116
 
 ``--bundle`` : dossier onedir contenant ``Jarvis.exe`` (ou ``Jarvis``) et
 ``_internal/``. Code de sortie 0 si tout est conforme, 1 sinon.
@@ -283,12 +283,12 @@ def verify(bundle: str, version: str, expect_tools: int | None) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bundle", required=True, help="dossier onedir du build")
-    parser.add_argument("--version", required=True, help="version attendue (1.5.1)")
+    parser.add_argument("--version", required=True, help="version attendue (1.5.2)")
     parser.add_argument(
         "--expect-tools",
         type=int,
         default=None,
-        help="nombre d'outils Gemini attendu (ex. 112)",
+        help="nombre d'outils Gemini attendu (ex. 116)",
     )
     args = parser.parse_args(argv)
 

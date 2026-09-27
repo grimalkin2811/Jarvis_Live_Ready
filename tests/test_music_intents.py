@@ -11,6 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.music.intents import (  # noqa: E402
     CURRENT_TRACK,
     LIST_PLAYLISTS,
+    LIST_LOCAL_PLAYLISTS,
+    REMOVE_LOCAL_PLAYLIST,
+    SAVE_LOCAL_PLAYLIST,
     NEXT,
     PAUSE,
     PLAY_ALBUM,
@@ -97,6 +100,16 @@ class TestMusicIntents(unittest.TestCase):
         intent = parse_music_intent("cherche Daft Punk")
         self.assertEqual(intent.intent, SEARCH)
         self.assertIn("daft punk", intent.query.lower())
+
+    def test_local_playlist_commands(self):
+        saved = parse_music_intent("enregistre ma playlist Cyberpunk dans Jarvis")
+        self.assertEqual(saved.intent, SAVE_LOCAL_PLAYLIST)
+        self.assertEqual(saved.playlist, "Cyberpunk")
+        removed = parse_music_intent("supprime ma playlist Cyberpunk de Jarvis")
+        self.assertEqual(removed.intent, REMOVE_LOCAL_PLAYLIST)
+        self.assertEqual(removed.playlist, "Cyberpunk")
+        listed = parse_music_intent("quelles sont mes playlists enregistrées")
+        self.assertEqual(listed.intent, LIST_LOCAL_PLAYLISTS)
 
     def test_accents_and_case(self):
         intent = parse_music_intent("JOUE ma PLAYLIST Cyberpünk")

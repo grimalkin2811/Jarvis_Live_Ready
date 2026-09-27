@@ -38,7 +38,7 @@ hiddenimports += [
     "src.writing.settings",
     "src.writing.text",
 ]
-# Musique Deezer (v1.5.0) — sous-modules chargés à la demande par tools.py
+# Musique Deezer (v1.5.2) — sous-modules chargés à la demande par tools.py
 hiddenimports += [
     "src.music",
     "src.music.manager",
