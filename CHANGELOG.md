@@ -9,6 +9,67 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.1] — 2026-09-28
+
+**Correctif : le contexte conversationnel survit réellement aux reconnexions.**
+Jarvis comptait bien les tours, mais le modèle oubliait tout dès que la session
+Live était recréée : l'historique était envoyé au serveur en `clientContent`
+**jamais clôturé** (`turn_complete=False`) — un contenu en attente que les
+tours audio suivants ne rappellent pas (limite documentée des modèles audio
+2.x, reproduite et confirmée). « Mon prénom est Simon » → reconnexion →
+« Quel est mon prénom ? » échouait. Rapport complet :
+`docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md`.
+
+### Corrigé
+
+- **Rejeu du contexte en un `clientContent` clôturé** (`turn_complete=True`)
+  se terminant par un tour utilisateur (tour vide si l'historique finit par
+  une réponse) : l'historique devient **committé** et les tours audio suivants
+  le rappellent. La reprise de session par handle reste le chemin primaire
+  (aucun rejeu inutile, aucun doublon).
+- **Handle de reprise expiré** (erreur 1007) : le handle est abandonné et une
+  session neuve + rejeu rétablissent la conversation en une reconnexion
+  (auparavant : boucle de reconnexion infinie).
+- **Course audio/rejeu** : plus aucun audio n'est envoyé pendant la fenêtre de
+  rejeu (porte `_session_ready`).
+- **Changement de voix** : le handle est abandonné (la reprise conservait
+  l'ancienne voix) ; session neuve avec la nouvelle voix + rejeu du contexte.
+- **`GoAway`** : reconnexion silencieuse immédiate avec handle conservé
+  (auparavant : traceback + 5 s d'attente).
+- **Seed dupliqué** : un seul rejeu par session, avant tout audio, sans
+  duplication des tours.
+
+### Ajouté
+
+- **Compression de fenêtre glissante** (`sliding_window`) par défaut : les
+  sessions audio ne sont plus terminées à 15 min côté serveur.
+- **`HistoryConfig.initial_history_in_client_content`** pour les modèles 3.x
+  (commit silencieux du seed, sans inférence de reprise).
+- **Instrumentation structurée** du pipeline (SESSION CREATED/RESUMED, CONTEXT
+  REPLAY START/END, TURN START/COMPLETE…) sans jamais journaliser de contenu
+  ni de secret.
+- **Kill-switchs** : `JARVIS_LIVE_SEED_MODE` (`commit` par défaut, `pending`
+  = ancien protocole), `JARVIS_LIVE_HISTORY_CONFIG`, `JARVIS_LIVE_COMPRESSION`.
+- **29 tests sémantiques** (`tests/test_live_context_harness.py`) sur le
+  chemin vocal complet avec assertions sur le câble (rappel, anaphores,
+  outils, interruption, reconnexion, resumption, modes/voix, providers,
+  arêtes sémantiques), plus un faux serveur Live fidèle au protocole
+  (`tests/live_harness.py`) et un harness vocal (`tests/voice_harness.py`).
+- **Diagnostics** : `scripts/diag_conversation_context.py` (scénarios
+  rejouables) et `scripts/perf_context_replay.py` (coût du rejeu : ~0,07 ms
+  et 6 Ko pour 20 tours).
+
+### Modifié
+
+- Contexte conversationnel : **20 tours / 4096 tokens** par défaut (12/3000
+  avant) — une conversation longue reste restituable après reconnexion
+  (`JARVIS_CONTEXT_MAX_TURNS` / `JARVIS_CONTEXT_MAX_TOKENS` inchangés).
+
+### Inchangé
+
+- Desktop Mode v1.7, mémoire persistante (toujours distincte du contexte),
+  providers, outils, audio, UI. Aucun test supprimé ni affaibli.
+
 ## [1.7.0] — 2026-09-27
 
 **Desktop Mode : une vraie présence sur le bureau.** Jusqu'ici le cadre
