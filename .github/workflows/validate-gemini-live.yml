@@ -9,7 +9,13 @@ name: Validate Gemini Live (reel)
 # celui-ci exécute le vrai pipeline vocal (audio reel, VAD serveur,
 # reconnexions, outils) contre l'API reelle.
 
+# Declenchement : chaque push sur la branche de la PR (le jeton de ce
+# sandbox ne peut pas utiliser workflow_dispatch), + manuel pour plus tard.
+# APRES la phase de validation, retirer le trigger pull_request pour ne pas
+# consommer de quota API a chaque push.
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       model:
