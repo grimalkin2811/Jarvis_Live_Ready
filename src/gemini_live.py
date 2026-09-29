@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 
 from google import genai
@@ -43,6 +44,52 @@ def _is_auth_error(exc: BaseException) -> bool:
         "403",
     )
     return any(marker in text for marker in markers)
+
+
+def _is_invalid_handle_error(exc: BaseException) -> bool:
+    """Vrai si l'erreur signifie « handle de reprise refusé/expiré ».
+
+    Constat googleapis/python-genai#2197 : un handle invalide produit une
+    ``APIError 1007 … Invalid session handle`` À LA CONNEXION (pas de session
+    vide silencieuse). Le repli correct est alors une session neuve + rejeu
+    du contexte local, jamais une boucle de reconnexions avec le même handle.
+    """
+    if getattr(exc, "code", None) == 1007:
+        return True
+    text = str(exc).lower()
+    return "1007" in text or "invalid session handle" in text
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    """Lit un drapeau booléen d'environnement (kill-switch de secours)."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", "non"}
+
+
+#: Mode de rejeu du contexte dans une session Gemini neuve.
+#: * ``commit`` (défaut) : l'historique est envoyé en ``clientContent``
+#:   clôturé (``turn_complete=True``) et se termine par un tour user —
+#:   protocole validé en production (pipecat) : sur les modèles audio 2.x le
+#:   modèle produit une brève reprise puis RAPPELLE l'historique aux tours
+#:   audio suivants ; sur 3.x avec ``historyConfig`` le commit est silencieux.
+#: * ``pending`` : ancien comportage v1.6/1.7 (``turn_complete=False``),
+#:   conservé uniquement pour comparaison — le premier tour audio suivant
+#:   « ignore » l'historique (régression documentée).
+#: * ``off`` : aucun rejeu (le contexte ne survit qu'à la reprise de session).
+SEED_MODE = os.getenv("JARVIS_LIVE_SEED_MODE", "commit").strip().lower() or "commit"
+
+#: ``historyConfig.initialHistoryInClientContent`` : protocole documenté de
+#: l'historique initial (requis pour seeder les modèles 3.x, inoffensif sur
+#: 2.x où le commit explicite reste nécessaire). Kill-switch :
+#: ``JARVIS_LIVE_HISTORY_CONFIG=0``.
+HISTORY_CONFIG_ENABLED = _env_flag("JARVIS_LIVE_HISTORY_CONFIG", True)
+
+#: Compression de fenêtre de contexte (sliding window) : sans elle, une
+#: session AUDIO est terminée au bout de ~15 minutes (documentation Live API),
+#: ce qui détruit le contexte serveur. Kill-switch : ``JARVIS_LIVE_COMPRESSION=0``.
+CONTEXT_COMPRESSION_ENABLED = _env_flag("JARVIS_LIVE_COMPRESSION", True)
 
 
 class GeminiLive:
@@ -107,6 +154,22 @@ class GeminiLive:
         self.speaking = False
         self.tool_active = False
         self.resumption_handle = None
+        # Traçabilité de session (instrumentation du contexte conversationnel) :
+        # ``session_generation`` distingue chaque session Gemini successive,
+        # ``session_id`` est l'identifiant serveur (setupComplete), et
+        # ``context_seeded`` dit si le contexte local a été rejoué dans la
+        # session courante (faux quand le serveur a repris la session lui-même).
+        self.session_id: str | None = None
+        self.session_generation = 0
+        self.context_seeded = False
+        # Porte d'entrée audio : aucune donnée temps réel n'est envoyée avant
+        # que la session soit prête (reprise confirmée OU rejeu du contexte
+        # terminé). Vraie par défaut pour une session branchée directement
+        # (tests, outillage) ; ``connect()`` la ferme le temps du setup puis
+        # la rouvre — ça supprime la course « audio envoyé pendant le rejeu »,
+        # c'est-à-dire l'audio arrivant AVANT l'historique sur le WebSocket.
+        self._session_ready = True
+        self._resumable = False
         self._turn_user_text = []
         # Transcription de la réponse de Jarvis pour le tour en cours, et
         # portion de la demande utilisateur déjà versée au contexte (la
@@ -190,6 +253,10 @@ class GeminiLive:
         committed = self._user_text_committed
         if not committed:
             self.conversation.add_user_message(full)
+            log.debug(
+                "INPUT FINALIZED gen=%s turn=%s (versé au contexte)",
+                self.session_generation, full and len(self.conversation.get_messages()),
+            )
         elif full == committed:
             return
         elif full.startswith(committed):
@@ -219,6 +286,10 @@ class GeminiLive:
         self._turn_user_text.clear()
         self._turn_model_text.clear()
         self._user_text_committed = ""
+        log.debug(
+            "TURN START gen=%s conversation=%s",
+            self.session_generation, self.conversation.conversation_id,
+        )
 
     def _finish_turn(self) -> None:
         """Clôt proprement le tour courant (fin de tour ou interruption).
@@ -231,6 +302,11 @@ class GeminiLive:
         self._commit_assistant_text()
         self.conversation.close_turn("fin de tour")
         self._turn_closed = True
+        log.debug(
+            "TURN COMPLETE gen=%s conversation=%s messages=%s",
+            self.session_generation, self.conversation.conversation_id,
+            self.conversation.size(),
+        )
 
     def _handle_context_reset(self, info) -> None:
         """Le contexte a été réinitialisé : la session Gemini doit repartir.
@@ -245,6 +321,7 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_closed = False
+        self._session_ready = False
         if self.session is None and self.ctx is None:
             return
         self.reconnect_requested = True
@@ -262,34 +339,79 @@ class GeminiLive:
         except Exception as exc:  # pragma: no cover - défensif
             log.debug("redémarrage de session impossible : %s", exc)
 
-    async def _replay_context(self) -> None:
+    async def _seed_context(self) -> bool:
         """Rejoue le contexte local dans une session Gemini neuve.
 
         Si un handle de reprise existe, le serveur restaure lui-même la
         conversation : rejouer ferait doublon. Sinon (démarrage à froid,
-        reprise expirée, reset), Jarvis réinjecte SON contexte — c'est ce qui
-        rend la continuité indépendante d'un état implicite côté serveur.
+        reprise expirée ou refusée, handle jamais reçu), Jarvis réinjecte SON
+        contexte — c'est ce qui rend la continuité indépendante d'un état
+        implicite côté serveur.
+
+        Protocole (v1.7.1 — correctif de la régression « le modèle ne se
+        souvient de rien après reconnexion ») :
+
+        * l'historique est envoyé en UN ``clientContent`` **clôturé**
+          (``turn_complete=True``) : un envoi non clôturé reste « en attente »
+          et, sur les modèles audio 2.x, N'EST PAS rappelé par le tour audio
+          suivant (thread Google AI 111617 ; pipecat : « *without this, the
+          model ignores the context it's been seeded with* ») ;
+        * le seed se termine par un tour **user** (tour vide ajouté si
+          l'historique se termine par une réponse assistant) : exigence des
+          modèles 2.x documentée par pipecat (« *we append a blank user turn
+          to satisfy the server* ») ;
+        * sur les modèles 2.x, la clôture déclenche une brève inférence de
+          reprise (le modèle confirme qu'il a le contexte) — comportement de
+          production assumé ; sur 3.x avec ``historyConfig``, le commit est
+          silencieux (aucun appel modèle).
+
+        Retourne True si un rejeu a effectivement été envoyé.
         """
         if self.session is None:
-            return
+            return False
         if self.resumption_handle:
-            log.debug("contexte : reprise de session serveur (pas de rejeu local)")
-            return
+            # Le serveur a restauré la conversation lui-même : rejouer
+            # créerait un doublon. C'est le chemin nominal de reconnexion.
+            log.debug(
+                "SESSION RESUMED gen=%s handle=present conversation=%s (pas de rejeu)",
+                self.session_generation, self.conversation.conversation_id,
+            )
+            return False
+        if SEED_MODE == "off":
+            return False
         messages = self.conversation.get_messages()
         if not messages:
-            return
+            return False
         turns = to_gemini_contents(messages)
         if not turns:
-            return
-        try:
-            await self.session.send_client_content(turns=turns, turn_complete=False)
-        except Exception as exc:
-            log.warning("rejeu du contexte conversationnel impossible : %s", exc)
-            return
-        log.debug(
-            "contexte rejoué id=%s messages=%s contents=%s",
-            self.conversation.conversation_id, len(messages), len(turns),
+            return False
+        # Exigence 2.x : le seed doit se terminer par un tour user. L'historique
+        # de Jarvis se termine normalement par une réponse assistant.
+        if turns and turns[-1].get("role") != "user":
+            turns = [*turns, {"role": "user", "parts": [{"text": " "}]}]
+        turn_complete = SEED_MODE != "pending"
+        log.info(
+            "CONTEXT REPLAY START gen=%s conversation=%s messages=%s contents=%s "
+            "turn_complete=%s mode=%s",
+            self.session_generation, self.conversation.conversation_id,
+            len(messages), len(turns), turn_complete, SEED_MODE,
         )
+        try:
+            await self.session.send_client_content(turns=turns, turn_complete=turn_complete)
+        except Exception as exc:
+            log.warning(
+                "CONTEXT REPLAY END gen=%s resultat=echec erreur=%s", self.session_generation, exc
+            )
+            return False
+        roles = "/".join(str(turn.get("role", "?")) for turn in turns)
+        log.info(
+            "CONTEXT REPLAY END gen=%s resultat=ok roles=%s contents=%s turn_complete=%s",
+            self.session_generation, roles, len(turns), turn_complete,
+        )
+        return True
+
+    #: Compat v1.7.0 : l'ancien nom reste disponible pour les diagnostics.
+    _replay_context = _seed_context
 
     def _maybe_handle_reset_command(self) -> bool:
         """Commande vocale « nouvelle conversation », traitée localement.
@@ -324,11 +446,42 @@ class GeminiLive:
     def can_send(self):
         # Pendant une interruption, le micro doit passer : c'est ainsi que
         # Gemini entend « stop » et arrête réellement son tour.
-        if self.session is None or self.tool_active:
+        if self.session is None or self.tool_active or not self._session_ready:
             return False
         return not self.speaking or self.interrupt_active()
 
     async def connect(self):
+        """Ouvre la session Live, avec repli automatique sur handle refusé.
+
+        Un handle de reprise peut être refusé par le serveur (expiration
+        ~2 h, session terminée…) : l'erreur est levée À LA CONNEXION
+        (APIError 1007). On efface alors le handle et on retente UNE fois en
+        session neuve — le contexte local est rejoué par ``_seed_context``.
+        Sans ce repli, Jarvis bouclerait indéfiniment sur le handle mort.
+        """
+        attempts = 2
+        while True:
+            resumed = bool(self.resumption_handle)
+            try:
+                await self._connect_once()
+                return
+            except AuthError:
+                raise
+            except Exception as exc:
+                if attempts > 1 and self.resumption_handle and _is_invalid_handle_error(exc):
+                    log.warning(
+                        "handle de reprise refusé par le serveur (%s) : "
+                        "nouvelle session vierge + rejeu du contexte local",
+                        exc,
+                    )
+                    self.resumption_handle = None
+                    attempts -= 1
+                    continue
+                if resumed:
+                    log.warning("reprise de session impossible (%s) : tentative abandonnée", exc)
+                raise
+
+    async def _connect_once(self):
         decl = [
             types.FunctionDeclaration(
                 name=t["name"],
@@ -512,18 +665,55 @@ class GeminiLive:
 
         # Transcriptions d'entrée et de sortie : c'est la matière première du
         # contexte conversationnel local (avant la v1.6.0, Jarvis ne savait
-        # littéralement pas ce qui avait été dit au tour précédent). L'option
-        # est appliquée de façon défensive : une version plus ancienne du SDK
-        # ne doit pas empêcher Jarvis de démarrer.
+        # littéralement pas ce qui avait été dit au tour précédent).
+        #
+        # Compression de fenêtre de contexte : sans elle, une session AUDIO est
+        # terminée au bout de ~15 minutes (documentation Live API) et le
+        # contexte serveur disparaît avec elle.
+        #
+        # historyConfig.initialHistoryInClientContent : protocole documenté de
+        # l'historique initial (sur 3.x, le clientContent de seed est committé
+        # sans appel modèle ; sur 2.x le champ est sans effet et le commit
+        # explicite turn_complete=True reste nécessaire).
+        #
+        # Ces options sont appliquées de façon défensive : une version plus
+        # ancienne du SDK ne doit pas empêcher Jarvis de démarrer.
+        config = None
         try:
             transcription = types.AudioTranscriptionConfig()
-            config = types.LiveConnectConfig(
-                input_audio_transcription=transcription,
-                output_audio_transcription=transcription,
-                **config_kwargs,
-            )
-        except Exception as exc:  # pragma: no cover - dépend de la version du SDK
-            log.warning("transcriptions Live indisponibles (%s) : contexte limité", exc)
+        except Exception:  # pragma: no cover - dépend de la version du SDK
+            transcription = None
+        compression = None
+        if CONTEXT_COMPRESSION_ENABLED:
+            try:
+                compression = types.ContextWindowCompressionConfig(
+                    sliding_window=types.SlidingWindow()
+                )
+            except Exception:  # pragma: no cover - SDK sans compression
+                compression = None
+        history = None
+        if HISTORY_CONFIG_ENABLED:
+            try:
+                history = types.HistoryConfig(initial_history_in_client_content=True)
+            except Exception:  # pragma: no cover - SDK sans historyConfig
+                history = None
+        # Dégradation progressive : transcriptions+compression+history, puis
+        # transcriptions seules, puis strict minimum.
+        layers = (
+            ("input_audio_transcription", transcription),
+            ("output_audio_transcription", transcription),
+            ("context_window_compression", compression),
+            ("history_config", history),
+        )
+        for depth in (len(layers), 2, 0):
+            extras = {name: value for name, value in layers[:depth]}
+            try:
+                config = types.LiveConnectConfig(**extras, **config_kwargs)
+                break
+            except Exception as exc:  # pragma: no cover - dépend de la version du SDK
+                log.warning("options Live indisponibles (%s) : configuration réduite", exc)
+                config = None
+        if config is None:  # pragma: no cover - tous les niveaux ont échoué
             config = types.LiveConnectConfig(**config_kwargs)
 
         try:
@@ -554,11 +744,31 @@ class GeminiLive:
             self._loop = None
         self.conversation.bind_session(self._handle_context_reset)
         self.conversation.set_provider("gemini")
-        log.debug(
-            "session Gemini ouverte — %s (reprise=%s)",
-            self.conversation.describe(), bool(self.resumption_handle),
-        )
-        await self._replay_context()
+
+        # Comptabilité de session : distingue chaque session Gemini et dit si
+        # le contexte a été repris par le serveur ou rejoué par Jarvis.
+        resumed = bool(self.resumption_handle)
+        self.session_generation += 1
+        self.session_id = getattr(
+            getattr(self.session, "setup_complete", None), "session_id", None
+        ) or getattr(self.session, "session_id", None)
+        self.context_seeded = False
+        self._session_ready = False
+        if resumed:
+            log.info(
+                "SESSION RESUMED gen=%s session_id=%s — %s (contexte restauré par le serveur)",
+                self.session_generation, self.session_id or "?", self.conversation.describe(),
+            )
+        else:
+            log.info(
+                "SESSION CREATED gen=%s session_id=%s — %s",
+                self.session_generation, self.session_id or "?", self.conversation.describe(),
+            )
+        # Rejeu du contexte local UNIQUEMENT si le serveur n'a pas repris la
+        # session. La porte audio reste fermée jusqu'à la fin du rejeu : aucun
+        # chunk ne peut précéder l'historique sur le WebSocket.
+        self.context_seeded = await self._seed_context()
+        self._session_ready = True
         self._start_voice_watcher()
 
     def _start_voice_watcher(self) -> None:
@@ -584,6 +794,12 @@ class GeminiLive:
                     and version != self._voice_version_used
                 ):
                     print("[Voix] Changement de voix : reconnexion de la session…")
+                    # La reprise de session conserve la configuration d'ORIGINE
+                    # (voix comprise) : pour appliquer la nouvelle voix, il
+                    # faut une session NEUVE. On abandonne donc le handle —
+                    # le contexte conversationnel est restauré par le rejeu
+                    # local (_seed_context), il n'est pas perdu.
+                    self.resumption_handle = None
                     self.reconnect_requested = True
                     await self._shutdown_session()
                     return
@@ -591,7 +807,10 @@ class GeminiLive:
             raise
 
     async def send_audio(self, pcm):
-        if not self.session:
+        if not self.session or not self._session_ready:
+            # Session absente ou pas encore prête (rejeu du contexte en cours) :
+            # l'audio est jeté — comme pendant toute reconnexion. On ne le
+            # met JAMAIS en file avant l'historique sur le WebSocket.
             return
 
         await self.session.send_realtime_input(
@@ -639,8 +858,33 @@ class GeminiLive:
                 "session_resumption_update",
                 None
             )
-            if sru and sru.new_handle:
-                self.resumption_handle = sru.new_handle
+            if sru is not None:
+                if sru.new_handle:
+                    self.resumption_handle = sru.new_handle
+                    self._resumable = True
+                elif getattr(sru, "resumable", None) is False:
+                    # Le serveur indique que la session n'est PAS reprenable à
+                    # cet instant (exécution d'outil en cours, génération…).
+                    # On garde le dernier handle valide (reprendre un état
+                    # légèrement antérieur vaut mieux que tout perdre), mais
+                    # l'état est tracé pour le diagnostic.
+                    self._resumable = False
+                    log.debug(
+                        "session gen=%s momentanément non reprenable (handle conservé)",
+                        self.session_generation,
+                    )
+
+            # GoAway : le serveur annoncera la fin de la connexion sous peu
+            # (ABORTED). On la devance proprement — reconnexion immédiate et
+            # silencieuse avec le handle de reprise, SANS passer par le chemin
+            # d'erreur (traceback + 5 secondes d'attente).
+            goaway = getattr(r, "go_away", None)
+            if goaway is not None:
+                log.info(
+                    "serveur : GoAway (fin de connexion dans %s) — reconnexion propre",
+                    getattr(goaway, "time_left", "?"),
+                )
+                self.reconnect_requested = True
 
             server_content = getattr(
                 r,
@@ -871,6 +1115,7 @@ class GeminiLive:
         self.tool_active = False
         self._clear_interrupt()
         self._interrupt_was_active = False
+        self._session_ready = False
         ctx, self.ctx = self.ctx, None
         self.session = None
         if ctx is not None:

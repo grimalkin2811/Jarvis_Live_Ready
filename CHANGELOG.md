@@ -9,6 +9,119 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.2] — 2026-09-29
+
+**Correctif critique : fin de la boucle d'écho « Je vous écoute ».**
+Après une requête, Jarvis pouvait répéter « Je vous écoute » toutes les ~2
+secondes sans aucune parole humaine, la fenêtre d'écoute de 8 secondes étant
+réarmée en boucle. Cause racine démontrée par harness dédié : à
+`turn_complete` (fin de *génération* serveur), le micro se rouvrait alors que
+la file de sortie contenait encore jusqu'à plusieurs secondes de voix de
+Jarvis — le serveur entendait l'écho des haut-parleurs, sa VAD commitait un
+tour « utilisateur » fantôme, le modèle répondait, et chaque `turn_complete`
+réarmait la fenêtre : boucle stable. Rapport complet :
+`docs/RAPPORT_BOUCLE_ECHO_v1.7.2.md`.
+
+### Corrigé
+
+- **Porte micro anti-écho** (`AudioIO._mic_gate_open`) : le micro n'est pas
+  transmis à Gemini tant que de la voix reste à jouer (nouvelles primitives
+  `output_pending_bytes/seconds`) ou que la traîne acoustique (0,25 s) n'est
+  pas écoulée. La détection d'interruption locale n'est pas concernée : elle
+  lit le micro brut et rouvre la porte en vidant la sortie.
+- **Interruption vocale pendant la traîne de lecture** : « stop » fonctionne
+  désormais tant que la voix est *audible* (génération ou lecture), plus
+  seulement pendant la génération — avant, seule la fenêtre entre les deux
+  laissait le micro ouvert, sans possibilité de couper la parole.
+- **Fenêtre de conversation suspendue tant que la voix est audible** : le
+  timeout ne compte plus pendant la traîne de lecture (le commentaire
+  historique « on ne retourne en veille que lorsque la réponse est finie »
+  est enfin implémenté à la lettre).
+- **Comptage de file corrigé** : `_queued_bytes` était décompté deux fois par
+  octet ; le plafond de 5 s d'avance audio fonctionne à nouveau.
+- **Callbacks résiduels neutralisés** : `clear_output`/`extend_listening`
+  sont ignorés quand Jarvis est endormi — un vieux callback ne peut plus
+  rouvrir l'écoute ni armer la fenêtre.
+- **Réveil anti-rebond en écoute continue** : un Jarvis rendu endormi (perte
+  de connexion) n'est plus réveilli à chaque bloc de 80 ms.
+- **Instrumentation pérenne** (`JARVIS_AUDIO_TRACE=1`) : chaque réarmement du
+  timer de 8 s est numéroté et journalisé avec sa raison, son thread, l'état,
+  l'énergie micro et l'audio restant en sortie — plus aucun réarmement
+  inexpliqué.
+
+### Tests
+
+- Nouveau harness `tests/echo_loop_harness.py` (vraie `AudioIO` + vraie
+  `GeminiLive` + carte son factice threadée + écho acoustique modélisé +
+  VAD serveur simulée) et 20 tests de régression `tests/test_echo_loop.py` :
+  silence 20 s → 0 redémarrage ; deux phrases ; TTS ≠ entrée ; interruption ;
+  follow-up ; sans follow-up ; reconnexion pendant la lecture ; stabilité
+  30/30/60 s à compteurs exacts ; performance de la porte.
+
+## [1.7.1] — 2026-09-28
+
+**Correctif : le contexte conversationnel survit réellement aux reconnexions.**
+Jarvis comptait bien les tours, mais le modèle oubliait tout dès que la session
+Live était recréée : l'historique était envoyé au serveur en `clientContent`
+**jamais clôturé** (`turn_complete=False`) — un contenu en attente que les
+tours audio suivants ne rappellent pas (limite documentée des modèles audio
+2.x, reproduite et confirmée). « Mon prénom est Simon » → reconnexion →
+« Quel est mon prénom ? » échouait. Rapport complet :
+`docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md`.
+
+### Corrigé
+
+- **Rejeu du contexte en un `clientContent` clôturé** (`turn_complete=True`)
+  se terminant par un tour utilisateur (tour vide si l'historique finit par
+  une réponse) : l'historique devient **committé** et les tours audio suivants
+  le rappellent. La reprise de session par handle reste le chemin primaire
+  (aucun rejeu inutile, aucun doublon).
+- **Handle de reprise expiré** (erreur 1007) : le handle est abandonné et une
+  session neuve + rejeu rétablissent la conversation en une reconnexion
+  (auparavant : boucle de reconnexion infinie).
+- **Course audio/rejeu** : plus aucun audio n'est envoyé pendant la fenêtre de
+  rejeu (porte `_session_ready`).
+- **Changement de voix** : le handle est abandonné (la reprise conservait
+  l'ancienne voix) ; session neuve avec la nouvelle voix + rejeu du contexte.
+- **`GoAway`** : reconnexion silencieuse immédiate avec handle conservé
+  (auparavant : traceback + 5 s d'attente).
+- **Seed dupliqué** : un seul rejeu par session, avant tout audio, sans
+  duplication des tours.
+
+### Ajouté
+
+- **Compression de fenêtre glissante** (`sliding_window`) par défaut : les
+  sessions audio ne sont plus terminées à 15 min côté serveur.
+- **`HistoryConfig.initial_history_in_client_content`** pour les modèles 3.x
+  (commit silencieux du seed, sans inférence de reprise).
+- **Instrumentation structurée** du pipeline (SESSION CREATED/RESUMED, CONTEXT
+  REPLAY START/END, TURN START/COMPLETE…) sans jamais journaliser de contenu
+  ni de secret.
+- **Kill-switchs** : `JARVIS_LIVE_SEED_MODE` (`commit` par défaut, `pending`
+  = ancien protocole), `JARVIS_LIVE_HISTORY_CONFIG`, `JARVIS_LIVE_COMPRESSION`.
+- **33 tests sémantiques** (`tests/test_live_context_harness.py`) sur le
+  chemin vocal complet avec assertions sur le câble (rappel, anaphores,
+  outils, interruption, reconnexion, resumption, modes/voix, providers,
+  arêtes sémantiques, protocole exact du seed re-sérialisé par le SDK),
+  plus un faux serveur Live fidèle au protocole (`tests/live_harness.py`)
+  et un harness vocal (`tests/voice_harness.py`).
+- **Diagnostics** : `scripts/diag_conversation_context.py` (scénarios
+  rejouables), `scripts/perf_context_replay.py` (coût du rejeu : ~0,07 ms
+  et 6 Ko pour 20 tours), `scripts/dump_wire_protocol.py` (dump exact du
+  câble sérialisé par le SDK) et `scripts/validate_real_gemini.py`
+  (validation Windows sur l'API réelle, clé requise — 5 verdicts).
+
+### Modifié
+
+- Contexte conversationnel : **20 tours / 4096 tokens** par défaut (12/3000
+  avant) — une conversation longue reste restituable après reconnexion
+  (`JARVIS_CONTEXT_MAX_TURNS` / `JARVIS_CONTEXT_MAX_TOKENS` inchangés).
+
+### Inchangé
+
+- Desktop Mode v1.7, mémoire persistante (toujours distincte du contexte),
+  providers, outils, audio, UI. Aucun test supprimé ni affaibli.
+
 ## [1.7.0] — 2026-09-27
 
 **Desktop Mode : une vraie présence sur le bureau.** Jusqu'ici le cadre

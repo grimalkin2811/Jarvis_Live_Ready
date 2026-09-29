@@ -85,10 +85,15 @@ PROVIDER_OLLAMA = "ollama"
 DEFAULT_PROVIDER = PROVIDER_GEMINI
 
 #: Nombre de tours conservés par défaut (un tour = une demande + sa réponse).
-DEFAULT_MAX_TURNS = 12
+#: 20 tours depuis la v1.7.1 (12 avant) : le rejeu du contexte après une
+#: reconnexion doit pouvoir restituer une conversation longue (« historique
+#: long ») sans amputer son début. Surchargeable par ``JARVIS_CONTEXT_MAX_TURNS``.
+DEFAULT_MAX_TURNS = 20
 
 #: Budget de contexte estimé, en tokens (heuristique 4 caractères = 1 token).
-DEFAULT_MAX_TOKENS = 3000
+#: 4096 depuis la v1.7.1 (3000 avant) : le rejeu est du texte seul, un budget
+#: raisonnable pour la fenêtre de 128k tokens des sessions Live.
+DEFAULT_MAX_TOKENS = 4096
 
 #: Longueur maximale d'un message texte conservé (une réponse très longue est
 #: tronquée : le contexte sert à référencer, pas à archiver).
@@ -774,7 +779,10 @@ class ConversationContext:
 
     def _log_state(self, event: str, message: Message) -> None:
         # DEBUG utile au diagnostic (« pourquoi Jarvis a-t-il oublié ? ») sans
-        # jamais recopier le contenu des échanges dans le journal.
+        # jamais recopier le contenu des échanges dans le journal. Les noms
+        # d'évènements sont stables et grepables : CONTEXT_APPEND_USER,
+        # CONTEXT_APPEND_ASSISTANT, CONTEXT_APPEND_TOOL_CALL,
+        # CONTEXT_APPEND_TOOL_RESULT.
         log.debug(
             "%s id=%s turn=%s role=%s kind=%s outil=%s chars=%s tokens~%s messages=%s",
             event, self._conversation_id, message.turn, message.role, message.kind,
