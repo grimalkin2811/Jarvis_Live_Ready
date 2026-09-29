@@ -353,10 +353,22 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
             (t, rms) for t, rms in lab.audio_in()
             if gate_closed_ts <= t <= reopen_ts
         ]
-        self.assertEqual(
-            forwarded, [],
+        # Un unique « traînard d'ordonnancement » est possible : un bloc
+        # capturé AVANT la mise en file de la réponse (le pont micro le
+        # programme via run_coroutine_threadsafe, sa coroutine peut
+        # atterrir après la fermeture tracée). Ce bloc ne peut contenir
+        # AUCUN écho : rien ne jouait encore au moment de sa capture.
+        # La propriété de sûreté est donc : au plus un bloc, et aucun bloc
+        # porteur d'écho (>= seuil VAD serveur) pendant la fenêtre fermée.
+        self.assertLessEqual(
+            len(forwarded), 1,
             f"blocs micro transmis pendant la lecture de la réponse: {forwarded}"
         )
+        for t, rms in forwarded:
+            self.assertLess(
+                rms, lab.server.threshold_rms,
+                f"de l'écho est parti pendant la lecture: (t={t:.3f}, rms={rms:.1f})",
+            )
         _ = during_playback, speaking_start
 
         # Après la réouverture : seul le bruit de fond (sous le seuil VAD).

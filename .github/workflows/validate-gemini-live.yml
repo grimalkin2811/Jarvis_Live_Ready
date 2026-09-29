@@ -73,6 +73,17 @@ jobs:
           if [ -z "$VERDICT" ]; then
             VERDICT="(bloc de verdict introuvable — voir le log complet du run)"
           fi
+          # Anti-doublon : si le dernier commentaire auto-posté porte deja
+          # exactement le meme verdict, on ne reposte pas (chaque push
+          # declenche ce workflow ; la PR resterait sinon polluee).
+          VERDICT_LINES=$(printf '%s\n' "$VERDICT" | grep -E '^(GEMINI|AUDIO|RECONNEXION|SESSION|OUTILS) ' || true)
+          LAST=$(gh pr view "$PR_NUMBER" --json comments \
+            --jq '[.comments[] | select(.author.login == "github-actions")][-1].body' 2>/dev/null || true)
+          LAST_LINES=$(printf '%s\n' "$LAST" | grep -E '^(GEMINI|AUDIO|RECONNEXION|SESSION|OUTILS) ' || true)
+          if [ -n "$VERDICT_LINES" ] && [ "$VERDICT_LINES" = "$LAST_LINES" ]; then
+            echo "Verdict identique au dernier commentaire auto-poste : pas de doublon."
+            exit 0
+          fi
           {
             echo "## Validation Gemini Live réelle — run ${GITHUB_RUN_ID}"
             echo ''
