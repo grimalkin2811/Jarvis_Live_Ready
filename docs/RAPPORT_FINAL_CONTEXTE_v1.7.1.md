@@ -198,7 +198,7 @@ harness) — jamais une vérité admise.
   environnement). **NON DISPONIBLE DANS L'ENVIRONNEMENT / RAISON : libGL** ;
   échecs pré-existants, sans lien avec le contexte (aucun test supprimé ni
   affaibli).
-* **Nouveaux** : `tests/test_live_context_harness.py` — **29 tests**
+* **Nouveaux** : `tests/test_live_context_harness.py` — **33 tests**
   sémantiques sur le chemin vocal réel (micro simulé → `send_realtime_input`
   → réception → contexte → réponse vocale), assertant câble ET réponses.
 * **Mis à jour avec le bump de version** : `tests/test_version.py` — l'épinglage
@@ -288,17 +288,166 @@ Gemini réelle** (cf. F et H).
 | `src/conversation.py` | modifié (+14) | défauts contexte 20 tours / 4096 tokens (env inchangé), noms d'évènements de log stabilisés |
 | `tests/live_harness.py` | **nouveau** | faux serveur Live (sémantiques 2.x/3.x, handles, 1007, GoAway), oracle sémantique, traçage du câble (`WireEvent`) |
 | `tests/voice_harness.py` | **nouveau** | pipeline vocal complet sur faux serveur (boucle de reconnexion calquée sur `src/main.py`/`src/ui.py`) |
-| `tests/test_live_context_harness.py` | **nouveau** | 29 tests sémantiques (scénarios A–H, arêtes, providers, 3.x, instrumentation) |
+| `tests/test_live_context_harness.py` | **nouveau** | 33 tests sémantiques (scénarios A–H, arêtes, providers, 3.x, instrumentation, protocole exact du câble) |
 | `tests/test_conversation_pipeline.py` | modifié | rejeu mis au nouveau protocole + test « pas de tour vide si l'historique finit par un user » |
 | `tests/test_version.py` | modifié | épingle de version 1.7.0 → 1.7.1 (processus de release standard) |
 | `scripts/diag_conversation_context.py` | **nouveau** | diagnostic rejouable A/F/G (+ mode `--real` prévu) |
 | `scripts/perf_context_replay.py` | **nouveau** | mesures §17 (build seed, rejeu pipeline, mémoire/CPU) |
+| `scripts/dump_wire_protocol.py` | **nouveau** | dump du câble sérialisé par les convertisseurs du SDK (setup, seed, audio, resumption) |
+| `scripts/validate_real_gemini.py` | **nouveau** | harness de validation Windows avec vraie clé (tts/mic/text, --selftest, verdicts imposés) |
 | `docs/AUDIT_CONTEXTE_CONVERSATIONNEL.md` | **nouveau** | audit pré-correction : carte de flux depuis le code, 9 questions par étape, bugs 1–7 |
 | `docs/JOURNAL_EXPERIENCES_CONTEXTE.md` | **nouveau** | journal E1–E15 |
 | `docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md` | **nouveau** | ce rapport |
 | `README.md` | modifié | section 1.7.1, valeurs par défaut du contexte, protocole de rejeu |
 | `CHANGELOG.md` | modifié | entrée 1.7.1 |
 | `src/version.py` | modifié | `1.7.0` → `1.7.1` |
+
+
+
+---
+
+# Annexe V — Validation finale du protocole (phase 2, 2026-09-29)
+
+Phase de validation dédiée au comportement réel Gemini Live, menée avant
+fusion. Les tests du faux serveur n'y sont JAMAIS considérés comme équivalents
+à un test réel.
+
+## V1. Ce que le code corrigé envoie exactement sur le câble
+
+Vérifié par `scripts/dump_wire_protocol.py`, qui ne lit PAS le faux serveur
+mais re-sérialise les objets réels de `GeminiLive` via les **convertisseurs
+internes du SDK google-genai 2.25.0** (chemin exact de `AsyncSession.connect`,
+`send_client_content` et `send_realtime_input`) :
+
+| Élément | JSON exact observé | Statut |
+|---|---|---|
+| setup (session 1, sans handle) | `{"setup": {"model": "models/gemini-2.5-flash-native-audio-preview-12-2025", "generationConfig": {"responseModalities": ["AUDIO"]}, "systemInstruction": …, "tools": […], "inputAudioTranscription": {}, "outputAudioTranscription": {}}}` | ✓ |
+| historyConfig | `"historyConfig": {"initial_history_in_client_content": true}` | ✓ présent (voir note ProtoJSON) |
+| initialHistoryInClientContent | `true` | ✓ |
+| contextWindowCompression | `"contextWindowCompression": {"sliding_window": {}}` | ✓ (même note) |
+| clientContent de seed | `{"client_content": {"turns": [user, model, user(\" \")], "turnComplete": true}}` | ✓ exactement le protocole voulu |
+| turnComplete | `true` (clôture du seed) | ✓ |
+| premier realtime_input | `{"realtime_input": {"audio": {"data": "<b64>", "mime_type": "audio/pcm;rate=16000"}}` — APRÈS le clientContent | ✓ |
+| sessionResumption (reprise) | setup session 2 : `"sessionResumption": {"handle": "…"}` ; AUCUN clientContent sur cette session | ✓ |
+
+**Note ProtoJSON (découverte de cette phase)** : le SDK 2.25.0 sérialise les
+champs INTERNES de `historyConfig` et `contextWindowCompression` en snake_case
+(`initial_history_in_client_content`, `sliding_window`) — les modèles pydantic
+possèdent pourtant les alias camelCase, mais le chemin `connect` fait un
+`model_dump()` sans `by_alias`. Ce n'est PAS une erreur de câble : la
+spécification ProtoJSON impose aux parseurs d'accepter **à la fois** le nom
+camelCase et le nom de champ proto original (snake_case) — comportement
+identique pour tous les utilisateurs de python-genai. Consigné ici parce que
+c'est exactement le genre de détail qu'un dump de câble devait révéler.
+
+## V2. Courses (races) — vérification exhaustive
+
+Analyse ligne à ligne de `src/gemini_live.py` + tests dédiés :
+
+| Couple | Verdict | Preuve |
+|---|---|---|
+| fin du seeding ↔ premier audio utilisateur | **aucune course** : la porte `_session_ready` n'est ouverte qu'APRÈS `await _seed_context()` ; `send_audio` la vérifie ; toutes les émissions partent de la même boucle asyncio (le micro passe par `run_coroutine_threadsafe`) | code + test `test_seed_setup_puis_premier_tour_audio_protocole_exact` |
+| seed ↔ turnComplete | le seed est émis avec `turn_complete=True` en UN message ; aucune autre émission `clientContent` n'existe dans tout le code (greppable : `_seed_context` est le seul appel de `send_client_content`) | dump câble + grep |
+| VAD ↔ génération | VAD côté serveur (contrat `send_realtime_input`) ; côté client, la seule valve est `can_send`/`send_audio` | doc SDK |
+| transcription ↔ génération | `_commit_user_text()` est appelé AVANT tout texte assistant ET avant l'exécution d'outil → l'ordre USER → OUTILS → ASSISTANT est structurellement garanti | code + `test_seed_outil_reponse_puis_follow_up_audio` |
+| interruption ↔ clôture de tour | `_finish_turn` est idempotent : `close_turn` est gardé par `_open_turn` (double clôture impossible) | code + `test_integrite_aucun_tour_duplique_perdu_fusionne_ou_clos_deux_fois` |
+| reconnexion ↔ tour ouvert | `receive_loop` en échec → `_fail_open_turn` : demande conservée, tour marqué échoué, jamais un demi-tour fantôme | tests existants (pipeline) |
+| fragments retardataires | un fragment arrivé après clôture ouvre un NOUVEAU tour (jamais fusionné au précédent) ; l'audio pendant le seed est JETÉ (jamais mis en file avant l'historique) — choix assumé, documenté | code + `test_seed_premier_tour_audio_tres_court` |
+
+## V3. Interleaving clientContent / realtimeInput — re-vérification externe
+
+* **SDK 2.25.0** (docstring `send_client_content`) : « *Prefilling a
+  conversation context … before starting a realtime conversation* » est un cas
+  d'usage officiel ; « *Interleaving send_client_content and
+  send_realtime_input in the same conversation is not recommended* » ; avec
+  `turn_complete=False` « *the model will wait … until you send
+  turn_complete=True* » — la cause racine E2, noir sur blanc dans le SDK.
+* **pipecat** (`main`, relu intégralement pendant cette phase) : pour une
+  RECONNEXION sur Gemini 2.5, pipecat force « *turn_complete=True on the seed
+  so the model generates an inference over the seeded history immediately …
+  Forcing a recap-style response up front avoids that jarring UX* » et « *we
+  append a blank user turn to satisfy the server* » — **exactement le
+  protocole de Jarvis v1.7.1**. Pipecat ferme aussi l'audio pendant le seed
+  (`_ready_for_realtime_input`), même design que `_session_ready`.
+* **Spécification ProtoJSON** : les parseurs doivent accepter camelCase ET le
+  nom proto original (snake_case) — cf. V1.
+* **Nuance 3.x à surveiller sur l'API réelle** : pipecat envoie
+  `send_realtime_input(text=" ")` après un seed clôturé sur 3.x QUAND il veut
+  déclencher une inférence immédiate. Jarvis vise le commit silencieux
+  (`historyConfig.initialHistoryInClientContent`) et n'a donc pas besoin du
+  nudge ; si le rappel 3.x échouait sur l'API réelle, ce serait le premier
+  suspect — noté dans le harness de validation.
+
+## V4. Nouveaux tests de protocole (faux serveur, 4)
+
+1. `test_seed_setup_puis_premier_tour_audio_protocole_exact` — historique
+   seedé → setup → seed `turnComplete` → premier tour audio : asserte le JSON
+   du seed **re-sérialisé par les convertisseurs du SDK** (rôles
+   `user/model/user`, textes exacts, `turnComplete: true`), l'unicité du seed,
+   sa précédence sur l'audio, les clés du setup, PUIS le rappel sémantique.
+2. `test_seed_premier_tour_audio_tres_court` — premier tour audio très court
+   (1 chunk) : se termine normalement, ni perdu, ni dupliqué, ni fusionné au
+   tour de clôture du seed, aucun re-seed.
+3. `test_seed_outil_reponse_puis_follow_up_audio` — seed → appel d'outil →
+   résultat → réponse → follow-up audio anaphorique : ordre du câble
+   `client_content → realtime_audio → tool_response → realtime_audio`, un
+   seul seed, contexte USER → OUTIL → ASSISTANT dans le même tour, rappel du
+   prénom intact.
+4. `test_integrite_aucun_tour_duplique_perdu_fusionne_ou_clos_deux_fois` —
+   séquence mêlée (tours, outil, interruption, coupure+seed, suite) : aucun
+   tour perdu / dupliqué (contexte ET seed) / fusionné (numéros de tour
+   distincts, croissants, sans trou) / clôturé deux fois (aucun tour ouvert au
+   repos, aucun message vide, une interruption comptée une fois).
+
+Suite complète : **33 passed** pour `test_live_context_harness.py`.
+
+## V5. Harness de validation réelle Windows — `scripts/validate_real_gemini.py`
+
+Exécute le VRAI pipeline Jarvis (reconnexions, seed, outils) contre l'API
+Gemini Live réelle avec de l'AUDIO RÉEL en entrée :
+
+* **entrée** : `--tts` (défaut — questions synthétisées par Gemini TTS puis
+  envoyées comme audio temps réel : VAD serveur, transcription, tout le chemin
+  réel sauf le micro), `--mic` (micro réel via sounddevice), `--text`
+  (diagnostic seul : le rappel texte fonctionne même sans correctif —
+  explicitement marqué non probant).
+* **sécurité clé** : jamais en argument CLI ; lue de `GEMINI_API_KEY` /
+  `GOOGLE_API_KEY` / `config.json` de l'application ; TOUT affichage passe par
+  `safe_print` qui masque tout motif `AIza…`.
+* **scénarios** : S1 connexion + premier tour audio ; S2 seed committé après
+  reconnexion sans handle (LE correctif) ; S3 reprise par handle (zéro
+  clientContent attendu sur le câble, vérifié par un tap des méthodes du SDK) ;
+  S4 outil réel déterministe (`validation_ping` → code `KILO-7`) + suivi.
+* **`--selftest`** : rejoue les scénarios contre le faux serveur pour valider
+  le HARNESS lui-même — **PASS sur les 5 scénarios** (la machinerie fonctionne ;
+  cela ne prouve rien sur l'API réelle).
+* `--record DIR` écrit les réponses audio en `.wav` pour écoute.
+
+## V6. Verdicts de la validation réelle
+
+```
+GEMINI LIVE RÉEL : NON TESTABLE
+AUDIO RÉEL : NON TESTABLE
+RECONNEXION RÉELLE : NON TESTABLE
+SESSION RESUMPTION RÉELLE : NON TESTABLE
+OUTILS RÉELS : NON TESTABLE
+```
+
+**RAISON : aucune clé API dans cet environnement de validation** (variables
+`GEMINI_API_KEY`/`GOOGLE_API_KEY` absentes, pas de `config.json`, pas d'accès
+sortant vers l'API). Le harness est prêt et auto-testé ; sur Windows :
+
+```bat
+set GEMINI_API_KEY=…
+py -3 scripts\validate_real_gemini.py
+py -3 scripts\validate_real_gemini.py --mic      REM chemin micro complet
+py -3 scripts\validate_real_gemini.py --record reponses
+```
+
+Les preuves disponibles dans CET environnement (dump du câble sérialisé par le
+SDK, 33 tests protocolaires/sémantiques, selftest du harness) valident le
+protocole côté client ; seul le comportement du serveur Gemini réel reste à
+confirmer avec une clé. **Fusion déconseillée avant cette confirmation.**
 
 **Desktop Mode v1.7 intact** : aucun fichier UI modifié ; les 664 tests
 collectables (dont Desktop HUD/overlay/états quand Qt est disponible) passent ;

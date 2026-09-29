@@ -537,16 +537,19 @@ class FakeLiveSession:
                 # La coupure se fait à une frontière de MOT (comme une vraie
                 # transcription partielle) pour que la fusion opérée par Jarvis
                 # (« frag1 + " " + frag2 ») redonne l'énoncé exact.  À défaut
-                # d'espace (mot unique), on retombe sur la coupure médiane.
+                # d'espace après la moitié, on coupe au milieu ET on nettoie
+                # les bords : une coupure adjacente à une espace doit quand
+                # même se reconstruire exactement (l'espace est celle de la
+                # fusion).  Une coupure en plein mot reste en plein mot — c'est
+                # le cas voulu pour exercer extend_user_message.
                 half = max(1, len(text) // 2)
-                cut = text.find(" ", half)
-                if cut == -1:
-                    cut = half
-                    second = text[cut:]
+                space = text.find(" ", half)
+                if space != -1:
+                    first, second = text[:space], text[space + 1 :]
                 else:
-                    second = text[cut + 1 :]
-                await self._emit(_Message(_ServerContent(user_text=text[:cut])))
-                await self._emit(_Message(_ServerContent(user_text=second)))
+                    first, second = text[:half], text[half:]
+                await self._emit(_Message(_ServerContent(user_text=first.rstrip())))
+                await self._emit(_Message(_ServerContent(user_text=second.lstrip())))
                 await self._finish_utterance(text)
             else:
                 self._active = (text, chunks_left)
@@ -681,6 +684,7 @@ class _FakeLive:
     def connect(self, model: str, config: Any) -> _FakeCtx:
         self.server.last_model = model
         self.server.last_config = config
+        self.server.configs[self.server.generation + 1] = config
         self.server.connect_count += 1
         handle = _resumption_handle(config)
         restored: list[dict[str, Any]] = []
@@ -739,6 +743,9 @@ class FakeLiveServer:
         self.resumed_count = 0
         self.last_model: str | None = None
         self.last_config: Any = None
+        #: Config de setup reçue À CHAQUE connexion, indexée par génération
+        #: (permet de vérifier le câble de chaque session séparément).
+        self.configs: dict[int, Any] = {}
         self.oracle = SemanticOracle()
         #: Script d'outil : (regex sur la demande, nom, args). Consommé une fois.
         self.next_tool_script: tuple[str, str, dict[str, Any]] | None = None

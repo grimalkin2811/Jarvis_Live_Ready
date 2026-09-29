@@ -635,5 +635,243 @@ class InstrumentationTests(_HarnessCase):
         self.assertIn("assistant", ctx_text)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Validation du protocole exact sur le câble (phase de validation finale).
+#
+# Ces tests ne se contentent pas du faux serveur : le seed est re-sérialisé
+# par les CONVERTISSEURS INTERNES du SDK google-genai (le chemin exact de
+# ``AsyncSession.send_client_content``), pour asserter le JSON réel qui
+# partirait sur le WebSocket. Cf. scripts/dump_wire_protocol.py.
+# ---------------------------------------------------------------------------
+
+
+def _client_content_wire_json(contents, turn_complete: bool) -> dict:
+    """Sérialise un clientContent EXACTEMENT comme le SDK le ferait."""
+    from google.genai import _common, _live_converters as lc, _transformers as t
+
+    client_content = t.t_client_content(contents, turn_complete).model_dump(
+        mode="json", exclude_none=True
+    )
+    return {
+        "client_content": lc._LiveClientContent_to_mldev(from_object=client_content)
+    }
+
+
+class ProtocolValidationTests(_HarnessCase):
+    """Scénario demandé : seed → setupComplete → seed turnComplete → 1er tour audio."""
+
+    async def test_seed_setup_puis_premier_tour_audio_protocole_exact(self) -> None:
+        server = self.make_server()
+        server.suppress_resumption_updates = True
+        harness = await self.make_harness(server)
+        await harness.speak("Mon prénom est Simon.")
+        server.drop_connection()
+        await harness.wait_sessions(2)
+
+        # Premier tour audio RÉEL de la session reseedée.
+        first = await harness.speak("Il fait beau.")
+        self.assertTrue(first, "le premier tour audio après le seed doit aboutir")
+
+        # (1) setup de la session 2 : les protections sont dans la config.
+        config = server.configs[2]
+        history = getattr(config, "history_config", None)
+        self.assertIsNotNone(history, "historyConfig doit être présent dans le setup")
+        self.assertTrue(getattr(history, "initial_history_in_client_content", False))
+        compression = getattr(config, "context_window_compression", None)
+        self.assertIsNotNone(compression, "contextWindowCompression doit être présent")
+        self.assertIsNotNone(getattr(compression, "sliding_window", None))
+        self.assertIsNotNone(getattr(config, "input_audio_transcription", None))
+        self.assertIsNotNone(getattr(config, "output_audio_transcription", None))
+
+        # (2) câble : le seed précède tout audio, et il est UNIQUE.
+        kinds = [e.kind for e in server.wire if e.generation == 2]
+        self.assertEqual(
+            kinds[0], "client_content", "le seed doit être le premier message de la session"
+        )
+        self.assertIn("realtime_audio", kinds, "le premier tour audio doit être sur le câble")
+        self.assertEqual(kinds.count("client_content"), 1, "un seul seed par session")
+
+        # (3) JSON exact du seed (sérialiseur du SDK, pas l'approximation locale).
+        seed = server.client_content_events(generation=2)[0]
+        wire = _client_content_wire_json(seed.contents, True)
+        content = wire["client_content"]
+        self.assertIs(content["turnComplete"], True, "le seed doit être clôturé")
+        roles = [turn["role"] for turn in content["turns"]]
+        self.assertEqual(roles, ["user", "model", "user"], "dernier rôle du seed : user")
+        texts = [turn["parts"][0]["text"] for turn in content["turns"]]
+        self.assertEqual(
+            texts,
+            ["Mon prénom est Simon.", "D'accord.", " "],
+            "le seed contient l'historique exact + le tour user de clôture",
+        )
+
+        # (4) le rappel fonctionne immédiatement après ce premier tour audio.
+        recall = await harness.speak("Quel est mon prénom ?")
+        self.assertIn("Simon", recall)
+
+    async def test_seed_premier_tour_audio_tres_court(self) -> None:
+        server = self.make_server()
+        server.suppress_resumption_updates = True
+        harness = await self.make_harness(server)
+        await harness.speak("Mon prénom est Simon.")
+        server.drop_connection()
+        await harness.wait_sessions(2)
+
+        # Un tour très court (un seul chunk audio) juste après le seed.
+        short = await harness.speak("Oui, vas-y.", chunks=1)
+        self.assertTrue(short, "un tour très court doit se terminer normalement")
+
+        # Aucun re-seed déclenché par le tour court, l'ordre du câble tient.
+        kinds = [e.kind for e in server.wire if e.generation == 2]
+        self.assertEqual(kinds[0], "client_content")
+        self.assertEqual(kinds.count("client_content"), 1)
+
+        # Ni perdu, ni dupliqué, ni fusionné avec le tour de clôture du seed.
+        user_texts = [t for r, t in harness.context_texts() if r == "user"]
+        self.assertIn("Oui, vas-y.", user_texts)
+        self.assertEqual(user_texts.count("Oui, vas-y."), 1)
+        simon_turn = next(
+            m.turn for m in harness.conversation.get_messages()
+            if m.role == "user" and "Simon" in m.text
+        )
+        short_turn = next(
+            m.turn for m in harness.conversation.get_messages()
+            if m.role == "user" and "vas-y" in m.text
+        )
+        self.assertGreater(short_turn, simon_turn, "le tour court doit ouvrir un NOUVEAU tour")
+        self.assertFalse(harness.conversation.snapshot()["open_turn"])
+
+    async def test_seed_outil_reponse_puis_follow_up_audio(self) -> None:
+        server = self.make_server()
+        server.suppress_resumption_updates = True
+        server.next_tool_script = (
+            r"cherche.*daft punk",
+            "music_search",
+            {"query": "Daft Punk"},
+        )
+        harness = await self.make_harness(server)
+        await harness.speak("Mon prénom est Simon.")
+        server.drop_connection()
+        await harness.wait_sessions(2)
+
+        # (1) tour outil APRÈS le seed.
+        search = await harness.speak("Cherche les morceaux de Daft Punk.")
+        self.assertIn("D'accord", search)
+        self.assertEqual(harness.last_turn.tools, ["music_search"])
+
+        # (2) follow-up audio anaphorique : « le deuxième » doit se résoudre.
+        second = await harness.speak("Lance le deuxième.")
+        self.assertIn("Get Lucky", second)
+
+        # (3) câble : seed → audio → tool_response → audio, jamais de re-seed.
+        kinds = [e.kind for e in server.wire if e.generation == 2]
+        self.assertEqual(kinds[0], "client_content")
+        self.assertEqual(kinds.count("client_content"), 1, "aucun re-seed après l'outil")
+        self.assertIn("tool_response", kinds)
+        self.assertLess(kinds.index("client_content"), kinds.index("realtime_audio"))
+        self.assertLess(kinds.index("realtime_audio"), kinds.index("tool_response"))
+
+        # (4) contexte : USER → TOOL CALL → TOOL RESULT → ASSISTANT, même tour.
+        texts = harness.context_texts()
+        roles = [r for r, _ in texts]
+        self.assertIn("tool", roles)
+        tool_index = roles.index("tool")
+        self.assertEqual(roles[tool_index - 1], "user", "la demande précède l'appel d'outil")
+        self.assertEqual(roles[tool_index + 1], "tool", "le résultat suit l'appel")
+        self.assertEqual(roles[tool_index + 2], "assistant")
+        tool_turns = {
+            m.turn for m in harness.conversation.get_messages() if m.role == "tool"
+        }
+        self.assertEqual(len(tool_turns), 1, "l'appel et le résultat partagent le même tour")
+
+        # (5) le rappel survit au cycle outil complet.
+        recall = await harness.speak("Quel est mon prénom ?")
+        self.assertIn("Simon", recall)
+
+    async def test_integrite_aucun_tour_duplique_perdu_fusionne_ou_clos_deux_fois(self) -> None:
+        server = self.make_server()
+        # Aucun handle : la reconnexion passe par le SEED (le chemin reprise
+        # par handle est couvert par les tests G dédiés).
+        server.suppress_resumption_updates = True
+        server.next_tool_script = (
+            r"cherche.*daft punk",
+            "music_search",
+            {"query": "Daft Punk"},
+        )
+        harness = await self.make_harness(server)
+        # Séquence mêlée : tours simples, tour outil, interruption, coupure
+        # réseau (seed), puis reprise de la conversation.
+        await harness.speak("Mon prénom est Simon.")
+        await harness.speak("J'habite à Tours.")
+        await harness.speak("Cherche les morceaux de Daft Punk.")
+        server.interrupt_next_turn = True
+        harness.gemini.request_interrupt()
+        await harness.speak("Raconte-moi l'histoire de Rome.")
+        server.drop_connection()
+        await harness.wait_sessions(2)
+        await harness.speak("Il fait beau.")
+        recall = await harness.speak("Quel est mon prénom ?")
+        self.assertIn("Simon", recall)
+
+        utterances = [
+            "Mon prénom est Simon.",
+            "J'habite à Tours.",
+            "Cherche les morceaux de Daft Punk.",
+            "Raconte-moi l'histoire de Rome.",
+            "Il fait beau.",
+            "Quel est mon prénom ?",
+        ]
+
+        # (a) AUCUN TOUR PERDU : chaque énoncé est dans le contexte final.
+        user_texts = [t for r, t in harness.context_texts() if r == "user"]
+        for utterance in utterances:
+            self.assertIn(utterance, user_texts, f"tour perdu : {utterance!r}")
+
+        # (b) AUCUN TOUR DUPLIQUÉ (le seed lui-même est vérifié à part).
+        for utterance in utterances:
+            self.assertEqual(
+                user_texts.count(utterance), 1, f"tour dupliqué : {utterance!r}"
+            )
+        seed = server.client_content_events(generation=2)
+        self.assertEqual(len(seed), 1, "un seul seed pour la session 2")
+        seed_text = " ".join(e.all_text() for e in seed)
+        for utterance in utterances[:4]:  # énoncés d'avant la coupure
+            self.assertEqual(
+                seed_text.count(utterance), 1, f"dupliqué dans le seed : {utterance!r}"
+            )
+        for utterance in utterances[4:]:  # énoncés d'après : PAS dans le seed
+            self.assertNotIn(utterance, seed_text, f"le seed contient un tour futur : {utterance!r}")
+
+        # (c) AUCUNE FUSION : un numéro de tour distinct et croissant par énoncé.
+        user_turns = [
+            m.turn for m in harness.conversation.get_messages() if m.role == "user"
+        ]
+        self.assertEqual(
+            user_turns, sorted(user_turns), "les numéros de tour doivent être croissants"
+        )
+        self.assertEqual(
+            len(set(user_turns)), len(user_turns),
+            "deux énoncés ne doivent jamais partager un numéro de tour",
+        )
+        self.assertEqual(user_turns, list(range(1, len(user_turns) + 1)), "aucun trou")
+
+        # (d) AUCUNE CLÔTURE DOUBLE / AUCUN TOUR FANTÔME.
+        snapshot = harness.conversation.snapshot()
+        self.assertFalse(snapshot["open_turn"], "aucun tour ne doit rester ouvert au repos")
+        self.assertEqual(snapshot["turns"], len(user_turns))
+        for role, text in harness.context_texts():
+            self.assertTrue(text.strip(), f"message vide ({role}) dans le contexte")
+        self.assertTrue(
+            all(turn.assistant_text or turn.tools for turn in harness.turns),
+            "aucun tour observé ne doit être vide",
+        )
+        self.assertEqual(
+            len([t for t in harness.turns if t.interrupted]), 1,
+            "exactement une interruption, comptée une seule fois",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

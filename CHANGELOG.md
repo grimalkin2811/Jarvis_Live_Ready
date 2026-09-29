@@ -50,14 +50,17 @@ tours audio suivants ne rappellent pas (limite documentée des modèles audio
   ni de secret.
 - **Kill-switchs** : `JARVIS_LIVE_SEED_MODE` (`commit` par défaut, `pending`
   = ancien protocole), `JARVIS_LIVE_HISTORY_CONFIG`, `JARVIS_LIVE_COMPRESSION`.
-- **29 tests sémantiques** (`tests/test_live_context_harness.py`) sur le
+- **33 tests sémantiques** (`tests/test_live_context_harness.py`) sur le
   chemin vocal complet avec assertions sur le câble (rappel, anaphores,
   outils, interruption, reconnexion, resumption, modes/voix, providers,
-  arêtes sémantiques), plus un faux serveur Live fidèle au protocole
-  (`tests/live_harness.py`) et un harness vocal (`tests/voice_harness.py`).
+  arêtes sémantiques, protocole exact du seed re-sérialisé par le SDK),
+  plus un faux serveur Live fidèle au protocole (`tests/live_harness.py`)
+  et un harness vocal (`tests/voice_harness.py`).
 - **Diagnostics** : `scripts/diag_conversation_context.py` (scénarios
-  rejouables) et `scripts/perf_context_replay.py` (coût du rejeu : ~0,07 ms
-  et 6 Ko pour 20 tours).
+  rejouables), `scripts/perf_context_replay.py` (coût du rejeu : ~0,07 ms
+  et 6 Ko pour 20 tours), `scripts/dump_wire_protocol.py` (dump exact du
+  câble sérialisé par le SDK) et `scripts/validate_real_gemini.py`
+  (validation Windows sur l'API réelle, clé requise — 5 verdicts).
 
 ### Modifié
 

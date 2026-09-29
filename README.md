@@ -22,7 +22,10 @@ les **GitHub Releases**, **sans jamais toucher à vos données**.
   boucle de reconnexion infinie.
 * Compression de fenêtre glissante par défaut (sessions longues), `HistoryConfig`
   pour les modèles 3.x, gestion de `GoAway`, changement de voix sans perte.
-* 29 tests sémantiques sur le chemin vocal avec assertions sur le câble.
+* 33 tests sémantiques sur le chemin vocal avec assertions sur le câble
+  (dont le protocole exact re-sérialisé par le SDK).
+* Validation réelle : `scripts/validate_real_gemini.py` (harness Windows avec
+  vraie clé, modes tts/mic/text, `--selftest` intégré).
 * Rapport complet : [`docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md`](docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md)
 
 ---
