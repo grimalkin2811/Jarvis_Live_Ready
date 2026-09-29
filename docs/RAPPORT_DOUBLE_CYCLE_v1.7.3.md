@@ -292,16 +292,24 @@ préexistant et confirmé indépendant du correctif).**
 
 ## 7. Windows CI
 
-**Non exécuté dans ce sandbox** (pas d'accès à un runner Windows ici). Le
-correctif ne modifie aucune primitive spécifique à une plateforme
+**Exécutée et verte** sur la PR de ce correctif
+(https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/42) :
+
+| Check | Résultat | Durée |
+|---|---|---|
+| Lint | ✅ pass | 10 s |
+| Tests (Windows) | ✅ pass | 8 m 51 s |
+| Validation réelle (audio, reconnexions, outils) | ✅ pass | 21 s |
+
+Le correctif ne modifie aucune primitive spécifique à une plateforme
 (`asyncio`, `threading`, comparaisons d'entiers) ; les tests ajoutés
 utilisent le même harness multi-thread que `test_echo_loop.py`, déjà validé
-sur CI Windows en v1.7.2. La CI GitHub Actions existante (déclenchée sur
-`pull_request`) doit être surveillée à l'ouverture de la PR issue de ce
-travail — c'est la seule vérification Windows réellement disponible pour ce
-correctif, conformément à la mise en garde de la section suivante : **une CI
-verte n'est pas, à elle seule, une preuve suffisante** (c'était déjà le cas
-pour v1.7.2).
+sur CI Windows en v1.7.2, et ont maintenant eux-mêmes tourné sur le runner
+Windows réel de la CI. **Cela reste toutefois, comme le rappelle la section
+suivante, une CI verte — pas une preuve suffisante à elle seule** : v1.7.2
+avait déjà une CI Windows verte et 20 tests verts, et le bug de ce rapport
+s'est pourtant manifesté sur matériel réel après coup. La vérification sur
+un vrai poste Windows (section 8) reste le seul juge de paix final.
 
 ## 8. Vrai microphone
 
