@@ -1,0 +1,60 @@
+name: Validate Gemini Live (reel)
+
+# Validation FINALE du contexte conversationnel sur l'API Gemini Live reelle.
+# Declenchee manuellement (workflow_dispatch) : la cle vient du secret
+# GEMINI_API_KEY — jamais d'entree CLI, jamais affichee (le harness masque de
+# toute facon tout motif AIza.../AQ.... dans ses sorties).
+#
+# Les tests du faux serveur (CI habituelle) ne sont PAS equivalents a ce run :
+# celui-ci exécute le vrai pipeline vocal (audio reel, VAD serveur,
+# reconnexions, outils) contre l'API reelle.
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Modele Live a tester"
+        required: false
+        default: "gemini-2.5-flash-native-audio-preview-12-2025"
+      mode:
+        description: "auto (TTS puis Live), tts, live-tts ou text"
+        required: false
+        default: "auto"
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONUTF8: "1"
+
+jobs:
+  validate:
+    name: Validation reelle (audio, reconnexions, outils)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Dependances
+        run: pip install google-genai numpy
+
+      - name: Validation Gemini Live reelle
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python scripts/validate_real_gemini.py \
+            --model "${{ inputs.model }}" \
+            --mode "${{ inputs.mode }}" \
+            --record reponses
+
+      - name: Reponses audio (a ecouter)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reponses-audio
+          path: reponses/
+          if-no-files-found: ignore

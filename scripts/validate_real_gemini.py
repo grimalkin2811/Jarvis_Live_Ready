@@ -61,8 +61,21 @@ TTS_TIMEOUT = 45.0
 CHUNK_MS = 100
 SAMPLE_RATE = 16000
 
-_KEY_RE = re.compile(r"AIza[A-Za-z0-9_\-]{10,}")
+_KEY_RE = re.compile(r"AIza[A-Za-z0-9_\-]{10,}|AQ\.[A-Za-z0-9_\-]+")
 VALIDATION_CODE = "KILO-7"
+
+#: Tous les énoncés joués pendant la validation (pré-synthétisés en mode
+#: tts/live-tts pour résister à l'expiration d'un jeton éphémère en cours de
+#: run : la partie « test » n'a plus besoin de faire appel au modèle TTS).
+ALL_PROMPTS = [
+    "Bonjour Jarvis, tu m'entends bien ?",
+    "Mon prénom est Simon.",
+    "Quel est mon prénom ?",
+    "J'habite à Tours.",
+    "Où est-ce que j'habite déjà ?",
+    "Utilise l'outil validation_ping et répète-moi exactement le code qu'il retourne.",
+    "Quel était le code retourné par l'outil, déjà ?",
+]
 
 WIRE: list[dict] = []  # traçage des envois (patch du SDK, voir _install_wire_tap)
 
@@ -186,6 +199,59 @@ async def synthesize_prompt(client, text: str, model: str) -> bytes:
     # Un soupçon de silence final : garantit que la VAD serveur clôt le tour.
     tail = np.zeros(int(SAMPLE_RATE * 0.4), dtype=np.int16)
     return (np.concatenate([samples, tail])).tobytes()
+
+
+def _resample_to_16k(data: bytes, rate: int) -> bytes:
+    """PCM s16le mono -> 16 kHz (+ silence final pour la VAD serveur)."""
+    import numpy as np
+
+    samples = np.frombuffer(data, dtype=np.int16)
+    if rate != SAMPLE_RATE:
+        count = int(len(samples) * SAMPLE_RATE / rate)
+        samples = np.interp(
+            np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples
+        ).astype(np.int16)
+    tail = np.zeros(int(SAMPLE_RATE * 0.4), dtype=np.int16)
+    return np.concatenate([samples, tail]).tobytes()
+
+
+async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dict[str, bytes]:
+    """Pré-synthétise les énoncés par une session Live (audio de sortie).
+
+    Nécessaire pour les jetons éphémères, qui n'ont souvent accès QU'au Live
+    API (pas à generateContent/TTS). La session de synthèse est distincte des
+    sessions de test ; son audio (24 kHz) est resamplé en 16 kHz puis rejoué
+    comme ENTRÉE UTILISATEUR dans les sessions de test — le chemin audio réel
+    (send_realtime_input, VAD serveur, transcription) reste celui de Jarvis.
+    """
+    from google.genai import types
+
+    config = types.LiveConnectConfig(
+        response_modalities=["AUDIO"],
+        system_instruction=(
+            "Tu es un synthétiseur vocal. Quand on t'envoie du texte, tu le "
+            "répètes EXACTEMENT mot pour mot en français, d'une voix naturelle, "
+            "sans rien ajouter, sans commenter, sans aucune remarque."
+        ),
+    )
+    cache: dict[str, bytes] = {}
+    async with client.aio.live.connect(model=model, config=config) as session:
+        for prompt in prompts:
+            await session.send_realtime_input(text=prompt)
+            chunks = bytearray()
+            async for message in session.receive():
+                content = message.server_content
+                if content and content.model_turn:
+                    for part in content.model_turn.parts:
+                        if part.inline_data and part.inline_data.data:
+                            chunks.extend(part.inline_data.data)
+                if content and content.turn_complete:
+                    break
+            if not chunks:
+                raise RuntimeError(f"la session Live n'a pas synthétisé : {prompt!r}")
+            cache[prompt] = _resample_to_16k(bytes(chunks), 24000)
+            safe_print(f"   [synthèse] {prompt[:60]}… ({len(cache[prompt])} octets)")
+    return cache
 
 
 async def record_microphone(seconds: float) -> bytes:
@@ -480,7 +546,13 @@ async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--model", default=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"))
     parser.add_argument("--tts-model", default="gemini-2.5-flash-preview-tts")
-    parser.add_argument("--mode", choices=["tts", "mic", "text"], default="tts")
+    parser.add_argument(
+        "--mode",
+        choices=["auto", "tts", "live-tts", "mic", "text"],
+        default="auto",
+        help="auto : TTS generateContent si disponible, sinon synthèse via "
+        "une session Live (jetons éphémères)",
+    )
     parser.add_argument("--record", default=None, help="dossier où écrire les réponses audio (.wav)")
     parser.add_argument(
         "--selftest",
@@ -515,17 +587,52 @@ async def main() -> int:
             "mode --text : le rappel en TEXTE fonctionne même sans correctif "
             "(thread 111617) — un PASS ne valide PAS le chemin audio."
         )
+    if args.mode not in ("auto", "tts", "live-tts", "mic", "text"):
+        raise SystemExit(f"mode inconnu : {args.mode}")
     if args.mode == "mic":
         notes.append("mode --mic : l'opérateur doit parler distinctement chaque question.")
 
+    # Préparation des entrées audio : TTS generateContent, ou synthèse via
+    # une session Live (jeton éphémère sans accès generateContent). Tout est
+    # synthétisé AVANT les scénarios : l'expiration du jeton en cours de run
+    # ne peut plus interrompre la partie test.
+    input_mode = args.mode
+    prompt_cache: dict[str, bytes] = {}
+    if input_mode in ("auto", "tts", "live-tts"):
+        try:
+            if input_mode in ("auto", "tts"):
+                for prompt in ALL_PROMPTS:
+                    prompt_cache[prompt] = await synthesize_prompt(
+                        client, prompt, args.tts_model
+                    )
+                input_mode = "tts"
+            else:
+                raise RuntimeError("mode live-tts demandé explicitement")
+        except Exception as exc:
+            if args.mode == "tts":
+                raise
+            safe_print(
+                f"[entrée] TTS generateContent indisponible "
+                f"({type(exc).__name__}) — synthèse des énoncés via une session Live."
+            )
+            prompt_cache = await synthesize_all_via_live(client, args.model, ALL_PROMPTS)
+            input_mode = "live-tts"
+        notes.append(
+            f"entrée : {input_mode} — les questions sont de l'AUDIO RÉEL envoyé par "
+            "send_realtime_input (VAD serveur, transcription) ; seule la source "
+            "de synthèse de la voix varie."
+        )
+
     runner = RealRunner(api_key, args.model, record_dir)
+    if prompt_cache:
+        runner.input_policy = lambda prompt: prompt_cache[prompt]
     patchers = _install_validation_tool()
     for patcher in patchers:
         patcher.start()
     try:
         await runner.start()
         verdicts, scenario_notes = await run_scenarios(
-            runner, args.mode, client, args.tts_model
+            runner, input_mode, client, args.tts_model
         )
         notes.extend(scenario_notes)
     finally:
