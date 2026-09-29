@@ -9,6 +9,63 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.3] — 2026-09-29
+
+**Correctif critique : double cycle superposé (« Dis-moi tout » en écho).**
+Après v1.7.2, une seule phrase pouvait déclencher DEUX tours logiques en
+parallèle : la réponse correcte ET une réponse générique (« Dis-moi tout »)
+superposée. Cause racine démontrée par reproduction déterministe et
+corroborée par l'historique Git (commit `1fd75ff`, qui avait déjà observé
+la même course sur CI Windows et l'avait tolérée au lieu de la corriger) :
+le pont micro (`mic()`) vérifie `can_send()` sur le THREAD AUDIO puis
+planifie `send_audio()` via `run_coroutine_threadsafe` SANS jamais la
+revérifier. Si la boucle asyncio met du temps à exécuter cette coroutine
+(callback de lecture audio synchrone, traitement d'un message serveur),
+Gemini peut avoir commencé à répondre entre-temps — le bloc, capturé
+alors que c'était encore permis, est quand même envoyé et ouvre un second
+tour fantôme dans la session déjà en train de répondre. Rapport complet :
+`docs/RAPPORT_DOUBLE_CYCLE_v1.7.3.md`.
+
+### Corrigé
+
+- **Revalidation à l'exécution** (`GeminiLive.send_audio`) : la décision
+  « puis-je envoyer ? » n'est plus figée au moment de la capture — elle est
+  ré-exécutée sur la boucle asyncio, juste avant l'écriture réseau, seul
+  endroit où l'état ne peut pas changer sous les pieds du code.
+- **`capture_generation`** : un bloc capturé pour une session qui a été
+  remplacée par une reconnexion avant son exécution est abandonné, même si
+  l'état local semble à nouveau cohérent.
+- **`capture_turn_epoch`** (le plus fin des trois garde-fous) : un bloc
+  capturé pendant un tour, mais exécuté après que ce tour a été clos, est
+  abandonné même quand Jarvis est redevenu totalement idle entre-temps — un
+  état indiscernable d'un vrai suivi pour un simple contrôle de `speaking`.
+  `turn_epoch` n'avance qu'aux fermetures de tour réelles, ce qui lève
+  l'ambiguïté sans jamais bloquer un follow-up authentique.
+- **Instrumentation du cycle de tour** (`JARVIS_AUDIO_TRACE=1`, partagée
+  avec celle d'`AudioIO`) : `TURN_OPEN`/`TURN_CLOSE`, `GEMINI_USER_
+  TRANSCRIPT`/`GEMINI_ASSISTANT_TRANSCRIPT`, `TTS_START`, `INTERRUPTION`,
+  `TURN_COMPLETE`, `AUDIO_SENT_TO_GEMINI`, `AUDIO_SEND_DROPPED_STALE`,
+  `SESSION_CONNECT`/`SESSION_RESUME` — chaque bloc micro envoyé ou
+  abandonné est désormais explicable après coup.
+
+### Résiduel (documenté, non corrigé par ce correctif)
+
+- Une fenêtre de latence réseau pure reste ouverte : de l'audio capturé
+  *avant même* que le serveur n'informe le client de la fin du tour (donc
+  sans qu'aucun état local n'ait encore changé) peut légitimement partir et
+  être interprété comme un second tour par la VAD serveur elle-même. Voir
+  « Risques restants » du rapport pour le détail et les pistes.
+
+### Tests
+
+- 10 nouveaux tests dédiés `tests/test_turn_race.py` (unitaires
+  déterministes sur `GeminiLive.send_audio` + intégration sur le vrai
+  pipeline `AudioIO`/pont micro/`GeminiLive`, Tests D/E/H du plan de
+  diagnostic) : aucun n'échoue sans le correctif, tous passent avec.
+- Suite `tests/test_echo_loop.py` (20 tests) et `tests/test_interruption.py`
+  (25 tests) toujours vertes après le correctif (hors un test connu instable
+  au chronométrage, déjà présent avant ce correctif — voir le rapport).
+
 ## [1.7.2] — 2026-09-29
 
 **Correctif critique : fin de la boucle d'écho « Je vous écoute ».**

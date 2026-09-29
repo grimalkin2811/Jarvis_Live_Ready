@@ -546,10 +546,22 @@ class EchoLab:
         self.gemini = gemini
 
         def mic(pcm):
-            # Pont micro IDENTIQUE à src/ui.py / src/main.py.
+            # Pont micro IDENTIQUE à src/ui.py / src/main.py (y compris
+            # capture_generation/capture_turn_epoch qui permettent à
+            # send_audio() de détecter un bloc devenu périmé entre la
+            # capture et l'exécution, v1.7.3).
             if gemini is not None and gemini.can_send():
                 self._mic_sent += 1
-                asyncio.run_coroutine_threadsafe(gemini.send_audio(pcm), self._loop)
+                capture_generation = gemini.session_generation
+                capture_turn_epoch = gemini.turn_epoch
+                asyncio.run_coroutine_threadsafe(
+                    gemini.send_audio(
+                        pcm,
+                        capture_generation=capture_generation,
+                        capture_turn_epoch=capture_turn_epoch,
+                    ),
+                    self._loop,
+                )
 
         audio = AudioIO(
             mic,

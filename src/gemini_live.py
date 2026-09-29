@@ -1,5 +1,7 @@
 import asyncio
+import collections
 import os
+import threading
 import time
 
 from google import genai
@@ -26,6 +28,19 @@ log = get_logger("gemini")
 #: s'arrête pas (fausse détection), la lecture reprend au bout de ce délai
 #: plutôt que de laisser Jarvis muet.
 INTERRUPT_WINDOW_SECONDS = 4.0
+
+
+#: Taille de l'historique de traçage (instrumentation du cycle de tour,
+#: v1.7.3) : chaque envoi micro, ouverture/fermeture de tour et abandon
+#: d'audio périmé doit pouvoir être expliqué a posteriori, exactement comme
+#: ``AudioIO._trace`` (v1.7.2). Les deux traces partagent le même
+#: interrupteur (``JARVIS_AUDIO_TRACE``) pour ne pas multiplier les
+#: variables d'environnement de diagnostic.
+GEMINI_TRACE_MAX_EVENTS = 512
+
+
+def _trace_enabled() -> bool:
+    return os.getenv("JARVIS_AUDIO_TRACE", "").strip() not in ("", "0", "false", "non")
 
 
 class AuthError(RuntimeError):
@@ -162,6 +177,37 @@ class GeminiLive:
         self.session_id: str | None = None
         self.session_generation = 0
         self.context_seeded = False
+        # =====================================================
+        # INSTRUMENTATION DU CYCLE DE TOUR (v1.7.3)
+        # -----------------------------------------------------
+        # ``turn_counter`` numérote chaque tour UTILISATEUR logique ouvert
+        # dans la session courante (remis à zéro à chaque nouvelle session) ;
+        # ``turn_id`` combine génération de session + numéro de tour pour un
+        # identifiant global unique, exigé par le diagnostic double-cycle
+        # (« pourquoi une seule phrase produit deux tours ? »). Le trace est
+        # partagé avec ``AudioIO`` via le même interrupteur d'environnement
+        # (``JARVIS_AUDIO_TRACE``) : une seule chronologie, deux sources.
+        self.turn_counter = 0
+        # ``turn_epoch`` compte les FERMETURES de tour (pas les ouvertures) :
+        # il n'avance qu'au moment précis où ``_finish_turn`` clôt un tour
+        # réellement ouvert. C'est le garde-fou qui détecte un bloc micro
+        # capturé PENDANT le tour N, mais exécuté APRÈS que le tour N a été
+        # clos — même si, entre-temps, ``speaking`` est redevenu False (ex.
+        # Jarvis a fini de répondre et attend un suivi) : un simple contrôle
+        # de ``speaking``/``session_generation`` ne peut pas voir cette
+        # course précise (cf. Test E, §10) puisque l'état « idle » ressemble
+        # exactement à une fenêtre d'écoute de suivi légitime. Comparer
+        # l'epoch capturé à l'epoch courant lève l'ambiguïté : un suivi réel
+        # est capturé APRÈS la fermeture (même epoch que l'état courant),
+        # un bloc périmé a été capturé AVANT (epoch inférieur à l'état
+        # courant).
+        self.turn_epoch = 0
+        self._trace = collections.deque(maxlen=GEMINI_TRACE_MAX_EVENTS)
+        self._trace_lock = threading.Lock()
+        #: Nombre de blocs micro rejetés car périmés (capturés alors que
+        #: ``can_send()`` valait True, exécutés après que l'état a changé) —
+        #: métrique directe de la course thread-audio / boucle-asyncio.
+        self.stale_audio_dropped = 0
         # Porte d'entrée audio : aucune donnée temps réel n'est envoyée avant
         # que la session soit prête (reprise confirmée OU rejeu du contexte
         # terminé). Vraie par défaut pour une session branchée directement
@@ -179,7 +225,10 @@ class GeminiLive:
         # Vrai quand le tour courant est clos côté contexte : la prochaine
         # transcription entrante ouvre un nouveau tour (et ne recopie pas la
         # demande précédente, cf. interruption suivie de turn_complete).
-        self._turn_closed = False
+        # Vrai à la construction : aucun tour n'est encore ouvert, la
+        # première transcription doit donc en ouvrir un explicitement (et
+        # être comptée par ``turn_counter``/tracée en ``TURN_OPEN``).
+        self._turn_closed = True
         self._loop = None
         self._watcher_task = None
         self._voice_version_used = None
@@ -236,6 +285,48 @@ class GeminiLive:
             log.debug("callback d'interface ignoré : %s", exc)
 
     # ------------------------------------------------------------------
+    # Traçage du cycle de tour (v1.7.3 — diagnostic du double-cycle)
+    # ------------------------------------------------------------------
+
+    @property
+    def turn_id(self) -> str:
+        """Identifiant global du tour courant : ``g<session>-t<tour>``."""
+        return f"g{self.session_generation}-t{self.turn_counter}"
+
+    def _record_trace(self, kind: str, **fields) -> None:
+        """Enregistre un événement du cycle de tour (borné, thread-safe).
+
+        Miroir de ``AudioIO._record_trace`` : ne doit jamais masquer une
+        erreur du pipeline vocal, et reste consultable après coup via
+        ``trace_events()`` même quand ``JARVIS_AUDIO_TRACE`` est désactivé
+        (l'affichage console est optionnel, la collecte ne l'est pas).
+        """
+        event = {
+            "ts": time.monotonic(),
+            "kind": kind,
+            "thread": threading.current_thread().name,
+            "turn_id": self.turn_id,
+            "session_id": self.session_id,
+            "session_generation": self.session_generation,
+            "speaking": self.speaking,
+            "tool_active": self.tool_active,
+            **fields,
+        }
+        with self._trace_lock:
+            self._trace.append(event)
+        if _trace_enabled():
+            details = " ".join(
+                f"{key}={value}" for key, value in event.items()
+                if key not in ("ts", "kind")
+            )
+            print(f"[GEMINI] {kind} {details}", flush=True)
+
+    def trace_events(self) -> list[dict]:
+        """Copie des événements du cycle de tour (tests et diagnostics)."""
+        with self._trace_lock:
+            return list(self._trace)
+
+    # ------------------------------------------------------------------
     # Contexte conversationnel (v1.6.0)
     # ------------------------------------------------------------------
 
@@ -286,10 +377,12 @@ class GeminiLive:
         self._turn_user_text.clear()
         self._turn_model_text.clear()
         self._user_text_committed = ""
+        self.turn_counter += 1
         log.debug(
             "TURN START gen=%s conversation=%s",
             self.session_generation, self.conversation.conversation_id,
         )
+        self._record_trace("TURN_OPEN", source="input_transcription")
 
     def _finish_turn(self) -> None:
         """Clôt proprement le tour courant (fin de tour ou interruption).
@@ -301,12 +394,16 @@ class GeminiLive:
         self._commit_user_text()
         self._commit_assistant_text()
         self.conversation.close_turn("fin de tour")
+        already_closed = self._turn_closed
         self._turn_closed = True
         log.debug(
             "TURN COMPLETE gen=%s conversation=%s messages=%s",
             self.session_generation, self.conversation.conversation_id,
             self.conversation.size(),
         )
+        if not already_closed:
+            self.turn_epoch += 1
+            self._record_trace("TURN_CLOSE")
 
     def _handle_context_reset(self, info) -> None:
         """Le contexte a été réinitialisé : la session Gemini doit repartir.
@@ -443,12 +540,30 @@ class GeminiLive:
             print(f"[Jarvis] {message}")
         log.info("conversation réinitialisée -> %s", info.get("conversation_id", "?"))
 
-    def can_send(self):
+    def _can_send_now(self) -> tuple[bool, str]:
+        """Condition d'envoi, évaluée à l'instant de l'appel.
+
+        Logique UNIQUE partagée par ``can_send()`` (pré-vérification rapide,
+        utilisée par le pont micro sur le thread audio pour éviter de
+        planifier une coroutine pour rien) et ``send_audio()`` (vérification
+        AUTORITAIRE, ré-exécutée sur la boucle asyncio juste avant l'envoi
+        réseau). Retourne ``(autorisé, raison_du_refus)``.
+        """
+        if self.session is None:
+            return False, "pas de session"
+        if self.tool_active:
+            return False, "outil en cours"
+        if not self._session_ready:
+            return False, "session pas prete"
         # Pendant une interruption, le micro doit passer : c'est ainsi que
         # Gemini entend « stop » et arrête réellement son tour.
-        if self.session is None or self.tool_active or not self._session_ready:
-            return False
-        return not self.speaking or self.interrupt_active()
+        if self.speaking and not self.interrupt_active():
+            return False, "jarvis parle"
+        return True, ""
+
+    def can_send(self):
+        allowed, _reason = self._can_send_now()
+        return allowed
 
     async def connect(self):
         """Ouvre la session Live, avec repli automatique sur handle refusé.
@@ -759,11 +874,13 @@ class GeminiLive:
                 "SESSION RESUMED gen=%s session_id=%s — %s (contexte restauré par le serveur)",
                 self.session_generation, self.session_id or "?", self.conversation.describe(),
             )
+            self._record_trace("SESSION_RESUME", session_id=self.session_id)
         else:
             log.info(
                 "SESSION CREATED gen=%s session_id=%s — %s",
                 self.session_generation, self.session_id or "?", self.conversation.describe(),
             )
+            self._record_trace("SESSION_CONNECT", session_id=self.session_id)
         # Rejeu du contexte local UNIQUEMENT si le serveur n'a pas repris la
         # session. La porte audio reste fermée jusqu'à la fin du rejeu : aucun
         # chunk ne peut précéder l'historique sur le WebSocket.
@@ -806,13 +923,96 @@ class GeminiLive:
         except asyncio.CancelledError:
             raise
 
-    async def send_audio(self, pcm):
-        if not self.session or not self._session_ready:
-            # Session absente ou pas encore prête (rejeu du contexte en cours) :
-            # l'audio est jeté — comme pendant toute reconnexion. On ne le
-            # met JAMAIS en file avant l'historique sur le WebSocket.
+    async def send_audio(self, pcm, *, capture_generation: int | None = None,
+                          capture_turn_epoch: int | None = None):
+        """Envoie un bloc micro à Gemini — SEUL point d'entrée autoritaire.
+
+        RACE CORRIGÉE (v1.7.3 — double-cycle / « Dis-moi tout » superposé) :
+        le pont micro (``mic()`` dans ``src/main.py``/``src/ui.py``) tourne
+        sur le THREAD AUDIO temps réel. Il vérifie ``can_send()`` puis
+        planifie cette coroutine via ``run_coroutine_threadsafe`` — mais il
+        ne l'attend jamais et ne la revérifie jamais. Entre cette
+        vérification et l'exécution RÉELLE de la coroutine sur la boucle
+        asyncio (qui peut être occupée par autre chose : traitement d'un
+        message serveur, callback audio synchrone), Gemini peut avoir
+        commencé sa réponse — le bloc capturé pendant que c'était encore
+        permis devient un bloc PÉRIMÉ. Le forwarder créerait un second tour
+        « utilisateur » fantôme dans la session déjà en train de répondre au
+        premier (démontré par ``tests/test_turn_race.py`` : capture avant
+        ``speaking=True``, exécution après, sur le vrai pont micro + la
+        vraie ``GeminiLive``).
+
+        La correction architecturale : la décision « puis-je envoyer ? »
+        n'est plus prise une fois pour toutes sur le thread audio — elle est
+        RE-VALIDÉE ICI, sur la boucle asyncio, juste avant l'écriture
+        réseau. Comme asyncio est mono-thread, aucune autre coroutine ne
+        peut modifier ``self.speaking``/``self.session`` entre cette
+        vérification et l'appel à ``send_realtime_input`` : c'est le SEUL
+        endroit où la fraîcheur de l'état est garantie.
+
+        ``capture_generation`` (optionnel, fourni par le pont micro) ajoute
+        une seconde ligne de défense : si une reconnexion a eu lieu entre la
+        capture et l'exécution (nouvelle session, VAD serveur vierge), le
+        bloc appartient à une conversation qui n'existe plus côté serveur —
+        il est abandonné même si, par coïncidence, ``speaking`` est de
+        nouveau False au même instant.
+
+        ``capture_turn_epoch`` (optionnel, fourni par le pont micro) est la
+        troisième ligne de défense, et la plus fine : elle détecte un bloc
+        capturé PENDANT un tour, mais exécuté APRÈS que ce tour a été clos
+        (``turn_complete``/interruption), y compris quand ``speaking`` est
+        redevenu False entre-temps — ce qui rend ce cas indiscernable d'un
+        suivi légitime pour un simple contrôle de ``speaking`` (Test E,
+        §10). ``turn_epoch`` n'avance qu'aux fermetures de tour : un bloc
+        dont l'epoch capturé est en retard sur l'epoch courant appartenait
+        forcément à un tour déjà clos avant même son exécution.
+        """
+        if (
+            capture_generation is not None
+            and capture_generation != self.session_generation
+        ):
+            self.stale_audio_dropped += 1
+            self._record_trace(
+                "AUDIO_SEND_DROPPED_STALE",
+                reason="generation perimee (reconnexion pendant le trajet)",
+                capture_generation=capture_generation,
+                bytes=len(pcm),
+            )
             return
 
+        if (
+            capture_turn_epoch is not None
+            and capture_turn_epoch != self.turn_epoch
+        ):
+            self.stale_audio_dropped += 1
+            self._record_trace(
+                "AUDIO_SEND_DROPPED_STALE",
+                reason="tour deja clos entre capture et execution",
+                capture_turn_epoch=capture_turn_epoch,
+                current_turn_epoch=self.turn_epoch,
+                bytes=len(pcm),
+            )
+            return
+
+        allowed, reason = self._can_send_now()
+        if not allowed:
+            if reason in ("jarvis parle", "outil en cours"):
+                # Ces deux raisons signifient que l'état a changé APRÈS la
+                # capture (sinon le pont micro n'aurait pas planifié cet
+                # envoi) : c'est la course décrite ci-dessus, pas un
+                # fonctionnement normal — on la compte et on la trace.
+                self.stale_audio_dropped += 1
+                self._record_trace(
+                    "AUDIO_SEND_DROPPED_STALE",
+                    reason=reason,
+                    capture_generation=capture_generation,
+                    bytes=len(pcm),
+                )
+            # Session absente/pas prête : chemin normal de reconnexion, déjà
+            # journalisé ailleurs (SESSION CREATED/RESUMED) — pas de bruit.
+            return
+
+        self._record_trace("AUDIO_SENT_TO_GEMINI", bytes=len(pcm))
         await self.session.send_realtime_input(
             audio=types.Blob(
                 data=pcm,
@@ -903,6 +1103,7 @@ class GeminiLive:
                     if text:
                         self._begin_turn_if_needed()
                         self._turn_user_text.append(str(text))
+                        self._record_trace("GEMINI_USER_TRANSCRIPT", text=str(text))
                         # v1.7.0 : la MÊME transcription alimente l'interface.
                         # Aucun second système de transcription n'est créé.
                         self._notify(
@@ -924,6 +1125,7 @@ class GeminiLive:
                     if out_text:
                         self._commit_user_text()
                         self._turn_model_text.append(str(out_text))
+                        self._record_trace("GEMINI_ASSISTANT_TRANSCRIPT", text=str(out_text))
                         self._notify(
                             self.on_assistant_transcript,
                             " ".join(self._turn_model_text).strip(),
@@ -957,6 +1159,7 @@ class GeminiLive:
                         # Reprise après une fausse détection : l'UI doit
                         # repasser en « réponse en cours ».
                         self.on_speaking()
+                        self._record_trace("TTS_START")
                     self._interrupt_was_active = False
 
                 self.speaking = True
@@ -984,6 +1187,7 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
+                self._record_trace("INTERRUPTION", source="serveur")
                 # Ce que Jarvis avait commencé à dire reste référencable
                 # (« non, l'autre », « redis ça plus court »).
                 self._finish_turn()
@@ -1001,6 +1205,7 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
+                self._record_trace("TURN_COMPLETE", source="serveur")
                 # Contexte conversationnel d'abord : le tour est clos avec
                 # l'ordre USER -> OUTILS -> ASSISTANT.
                 self._finish_turn()

@@ -388,7 +388,22 @@ def _run_voice_loop(
 
     def mic(pcm):
         if gemini is not None and gemini.can_send():
-            asyncio.run_coroutine_threadsafe(gemini.send_audio(pcm), loop)
+            # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
+            # thread audio, au moment exact de la capture : send_audio() les
+            # comparera à ses propres valeurs AU MOMENT DE L'EXÉCUTION (sur
+            # la boucle asyncio) pour détecter un bloc devenu périmé entre
+            # temps — reconnexion (generation) ou tour clos entre-temps
+            # (turn_epoch) (v1.7.3).
+            capture_generation = gemini.session_generation
+            capture_turn_epoch = gemini.turn_epoch
+            asyncio.run_coroutine_threadsafe(
+                gemini.send_audio(
+                    pcm,
+                    capture_generation=capture_generation,
+                    capture_turn_epoch=capture_turn_epoch,
+                ),
+                loop,
+            )
 
     def on_barge_in():
         """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
