@@ -16,10 +16,10 @@ from src.version import (  # noqa: E402
 
 
 class VersionTests(unittest.TestCase):
-    def test_release_version_is_1_7_1(self):
+    def test_release_version_is_1_7_2(self):
         # Épinglé à chaque version : un changement de version non voulu doit
         # faire échouer la CI, un bump voulu passe par ici (cf. CHANGELOG).
-        self.assertEqual(get_version(), "1.7.1")
+        self.assertEqual(get_version(), "1.7.2")
 
     def test_version_format(self):
         parts = get_version().split(".")

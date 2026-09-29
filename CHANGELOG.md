@@ -9,6 +9,55 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.2] — 2026-09-29
+
+**Correctif critique : fin de la boucle d'écho « Je vous écoute ».**
+Après une requête, Jarvis pouvait répéter « Je vous écoute » toutes les ~2
+secondes sans aucune parole humaine, la fenêtre d'écoute de 8 secondes étant
+réarmée en boucle. Cause racine démontrée par harness dédié : à
+`turn_complete` (fin de *génération* serveur), le micro se rouvrait alors que
+la file de sortie contenait encore jusqu'à plusieurs secondes de voix de
+Jarvis — le serveur entendait l'écho des haut-parleurs, sa VAD commitait un
+tour « utilisateur » fantôme, le modèle répondait, et chaque `turn_complete`
+réarmait la fenêtre : boucle stable. Rapport complet :
+`docs/RAPPORT_BOUCLE_ECHO_v1.7.2.md`.
+
+### Corrigé
+
+- **Porte micro anti-écho** (`AudioIO._mic_gate_open`) : le micro n'est pas
+  transmis à Gemini tant que de la voix reste à jouer (nouvelles primitives
+  `output_pending_bytes/seconds`) ou que la traîne acoustique (0,25 s) n'est
+  pas écoulée. La détection d'interruption locale n'est pas concernée : elle
+  lit le micro brut et rouvre la porte en vidant la sortie.
+- **Interruption vocale pendant la traîne de lecture** : « stop » fonctionne
+  désormais tant que la voix est *audible* (génération ou lecture), plus
+  seulement pendant la génération — avant, seule la fenêtre entre les deux
+  laissait le micro ouvert, sans possibilité de couper la parole.
+- **Fenêtre de conversation suspendue tant que la voix est audible** : le
+  timeout ne compte plus pendant la traîne de lecture (le commentaire
+  historique « on ne retourne en veille que lorsque la réponse est finie »
+  est enfin implémenté à la lettre).
+- **Comptage de file corrigé** : `_queued_bytes` était décompté deux fois par
+  octet ; le plafond de 5 s d'avance audio fonctionne à nouveau.
+- **Callbacks résiduels neutralisés** : `clear_output`/`extend_listening`
+  sont ignorés quand Jarvis est endormi — un vieux callback ne peut plus
+  rouvrir l'écoute ni armer la fenêtre.
+- **Réveil anti-rebond en écoute continue** : un Jarvis rendu endormi (perte
+  de connexion) n'est plus réveilli à chaque bloc de 80 ms.
+- **Instrumentation pérenne** (`JARVIS_AUDIO_TRACE=1`) : chaque réarmement du
+  timer de 8 s est numéroté et journalisé avec sa raison, son thread, l'état,
+  l'énergie micro et l'audio restant en sortie — plus aucun réarmement
+  inexpliqué.
+
+### Tests
+
+- Nouveau harness `tests/echo_loop_harness.py` (vraie `AudioIO` + vraie
+  `GeminiLive` + carte son factice threadée + écho acoustique modélisé +
+  VAD serveur simulée) et 20 tests de régression `tests/test_echo_loop.py` :
+  silence 20 s → 0 redémarrage ; deux phrases ; TTS ≠ entrée ; interruption ;
+  follow-up ; sans follow-up ; reconnexion pendant la lecture ; stabilité
+  30/30/60 s à compteurs exacts ; performance de la porte.
+
 ## [1.7.1] — 2026-09-28
 
 **Correctif : le contexte conversationnel survit réellement aux reconnexions.**

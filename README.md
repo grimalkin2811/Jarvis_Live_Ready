@@ -466,6 +466,7 @@ Il se tait immédiatement et vous rend la parole.
 
 | Garde-fou | Détail |
 |---|---|
+| **Porte micro anti-écho** (1.7.2) | Tant que la voix de Jarvis sort des haut-parleurs (ou que sa traîne de 0,25 s n'est pas écoulée), le micro n'est **pas transmis** à Gemini : l'écho ne peut plus être pris pour une prise de parole — c'est la fin de la boucle « Je vous écoute » toutes les 2 secondes. |
 | **Plancher de bruit adaptatif** | Le niveau de l'écho des enceintes est appris en continu ; il faut le dépasser d'un bon facteur (2,6×) pour interrompre. Avec un casque, le seuil devient naturellement très bas. |
 | **Période de grâce** | Les 0,6 première seconde d'une réponse ne peuvent pas être coupées (le temps d'apprendre l'écho, et pour ne pas se couper sur la fin de votre propre phrase). |
 | **3 blocs consécutifs** | Un claquement de porte ou un clic de souris ne suffit pas : il faut ~240 ms de parole. |
