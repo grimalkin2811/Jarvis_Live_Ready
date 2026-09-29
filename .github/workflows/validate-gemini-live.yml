@@ -38,6 +38,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
@@ -48,14 +49,39 @@ jobs:
       - name: Dependances
         run: pip install google-genai numpy
 
+      # Le jeton de ce depot ne peut pas dispatcher le workflow ni lire les
+      # logs depuis le sandbox : le bilan est donc PUBLIE en commentaire de
+      # la PR (lisible via l'API github.com).
       - name: Validation Gemini Live reelle
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          set -o pipefail
           python scripts/validate_real_gemini.py \
-            --model "${{ inputs.model }}" \
-            --mode "${{ inputs.mode }}" \
-            --record reponses
+            --model "${{ inputs.model || 'gemini-2.5-flash-native-audio-preview-12-2025' }}" \
+            --mode "${{ inputs.mode || 'auto' }}" \
+            --record reponses 2>&1 | tee validation.log
+        continue-on-error: true
+
+      - name: Bilan en commentaire de PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          VERDICT=$(awk '/^={60}$/{flag=1} flag' validation.log | head -80)
+          if [ -z "$VERDICT" ]; then
+            VERDICT="(bloc de verdict introuvable — voir le log complet du run)"
+          fi
+          {
+            echo "## Validation Gemini Live réelle — run ${GITHUB_RUN_ID}"
+            echo ''
+            echo '```'
+            echo "$VERDICT"
+            echo '```'
+            echo ''
+            echo '*Auto-posté par le workflow Validate Gemini Live (reel). Artefact* `reponses-audio` *: les réponses vocales à écouter.*'
+          } | gh pr comment "$PR_NUMBER" --body-file -
 
       - name: Reponses audio (a ecouter)
         if: always()
@@ -64,3 +90,13 @@ jobs:
           name: reponses-audio
           path: reponses/
           if-no-files-found: ignore
+
+      - name: Conclusion
+        if: always()
+        run: |
+          if [ ! -f validation.log ]; then echo "pas de log"; exit 1; fi
+          if grep -q ' : FAIL' validation.log; then
+            echo 'VALIDATION EN ECHEC (voir le commentaire de PR)'; exit 1
+          fi
+          echo 'Aucun FAIL — voir les verdicts dans le commentaire de PR.'
+
