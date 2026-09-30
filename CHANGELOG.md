@@ -9,6 +9,50 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.4] — 2026-09-30
+
+**Correctif critique : reconnexion après chaque tour normal (« Je vous
+écoute » périodique).** Après une interaction normale (réveil → phrase →
+réponse), et SANS aucune nouvelle parole, Jarvis répétait « Je vous
+écoute. »/« Je suis prêt... » à intervalles réguliers pendant (et au-delà
+de) la fenêtre de suivi de 8 secondes, avec une tempête de `SESSION
+CREATED` dans le journal. Cause racine démontrée et corroborée par Google
+(issue googleapis/python-genai#1224, résolue) : `session.receive()` du SDK
+Gemini Live se termine NATURELLEMENT à la fin de CHAQUE tour — ce n'est pas
+un signal que la connexion est morte. `src/main.py`/`src/ui.py`
+traitaient ce retour normal comme la fin de la session et rouvraient un
+WebSocket neuf après CHAQUE tour, ce qui déclenchait à tort le rejeu de
+contexte (`GeminiLive._seed_context`) : celui-ci clôt le rejeu par un tour
+« user » synthétique, provoquant une brève réponse du modèle persistée
+comme message assistant orphelin, qui réarmait elle-même la fenêtre de 8 s
+— boucle auto-entretenue. Rapport complet :
+`docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md`.
+
+### Corrigé
+
+- **`GeminiLive._receive_loop`** boucle maintenant en interne sur LA MÊME
+  session (`session.receive()` rappelé pour chaque tour suivant) tant
+  qu'aucune vraie raison de reconnecter n'est apparue (GoAway, erreur,
+  reset explicite du contexte, changement de voix). `src/main.py`/
+  `src/ui.py` ne changent pas : leur reconnexion ne se déclenche plus qu'aux
+  VRAIES fins de session.
+- **Instrumentation** : `_reconnect_reason` distingue désormais dans les
+  traces une reconnexion volontaire (`context_reset`, `voice_change`) d'une
+  reconnexion technique (`goaway`, `error`) ou du démarrage (`startup`) ;
+  toute reconnexion non attribuée à l'une de ces causes connues
+  (`unexpected_after_normal_turn`) signalerait une régression. Un nouvel
+  événement `SESSION_REUSED_NEXT_TURN` prouve qu'un tour suivant a été reçu
+  sur la session déjà ouverte, sans reconnexion.
+- **Fidélité des harnais de test** (`tests/live_harness.py` et plusieurs
+  faux serveurs locaux) : `receive()` se termine désormais après chaque
+  tour comme le SDK réel, au lieu de tourner indéfiniment jusqu'à `close()`
+  — cette différence masquait complètement la classe de bug corrigée ici,
+  malgré une suite de tests déjà verte.
+- Deux nouveaux tests de régression (`tests/test_session_lifecycle.py`)
+  reproduisent le scénario exact rapporté (réveil → phrase → réponse →
+  silence → fenêtre de 8 s) et vérifient qu'un VRAI enchaînement reste
+  traité normalement, sur la même session.
+
 ## [1.7.3] — 2026-09-29
 
 **Correctif critique : double cycle superposé (« Dis-moi tout » en écho).**

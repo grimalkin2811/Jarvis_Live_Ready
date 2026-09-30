@@ -281,12 +281,29 @@ class _Turn:
 
 
 class _Session:
+    """Fidélité au protocole réel (v1.7.4) : ``receive()`` consomme les
+    messages restants (pas de rejeu à chaque appel) et se termine à un
+    ``turn_complete``/``interrupted`` — comme le SDK réel (cf.
+    googleapis/python-genai#1224). Depuis le correctif reconnexion-par-tour,
+    ``GeminiLive`` rappelle ``receive()`` sur la MÊME session tant qu'elle
+    reste ouverte : un ancien générateur qui rejouait toute la liste à
+    chaque appel boucalit indéfiniment sur les scénarios sans
+    ``turn_complete`` explicite (ex. tests d'interruption).
+    """
+
     def __init__(self, messages):
-        self._messages = messages
+        self._messages = list(messages)
 
     async def receive(self):
-        for msg in self._messages:
+        while self._messages:
+            msg = self._messages.pop(0)
             yield msg
+            content = getattr(msg, "server_content", None)
+            if content is not None and (
+                getattr(content, "turn_complete", False)
+                or getattr(content, "interrupted", False)
+            ):
+                return
 
 
 def _run_loop(gemini, messages):
@@ -448,7 +465,18 @@ class EndToEndInterruptionTests(unittest.TestCase):
         checkpoints = {}
 
         class _ScriptedSession:
+            def __init__(self):
+                self._done = False
+
             async def receive(self):
+                # Depuis le correctif v1.7.4 (reconnexion-par-tour),
+                # receive_loop() rappelle receive() sur la MÊME session
+                # une fois le tour scripté terminé (turn_complete ci-dessous)
+                # : sans ce garde-fou, le scénario entier (audio + « stop »)
+                # serait rejoué indéfiniment à chaque appel.
+                if self._done:
+                    return
+                self._done = True
                 # 1. Jarvis se lance dans un long monologue.
                 yield _Msg(_Content(model_turn=_Turn(b"\x10" * 4800)))
                 checkpoints["speaking"] = audio.speaking

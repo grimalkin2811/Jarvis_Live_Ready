@@ -409,12 +409,45 @@ class FakeLiveSession:
     # -- réception côté Jarvis ------------------------------------------------
 
     def receive(self):
+        """Fidélité au protocole réel (v1.7.4) : ``receive()`` se termine
+        naturellement à la fin d'UN tour (``turn_complete``/``go_away``),
+        PAS seulement à la fermeture de la session.
+
+        Constat confirmé par Google — googleapis/python-genai#1224 (résolu) :
+        « the receive() method throws you out of the loop if turn is
+        complete. To keep receiving messages from the following turns you
+        need to put this part of the code under the while loop. » Avant ce
+        correctif, le faux serveur modélisait ``receive()`` comme un flux
+        infini qui ne s'arrêtait qu'à ``close()`` — ce qui masquait
+        complètement la classe de bug « reconnexion après chaque tour »
+        (v1.7.3 et antérieures) : aucun test ne pouvait la détecter puisque
+        le faux ``receive()`` ne rendait jamais la main entre deux tours.
+
+        Un appel sur une session déjà fermée échoue immédiatement (comme un
+        WebSocket réellement clos), plutôt que de bloquer indéfiniment sur
+        une file vide.
+        """
+
         async def gen():
+            if self._closed and self._queue.empty():
+                raise genai_errors.ClientError(
+                    1000, {"error": {"message": "session déjà fermée"}}
+                )
             while True:
                 message = await self._queue.get()
                 if message is None:
                     return
                 yield message
+                server_content = getattr(message, "server_content", None)
+                turn_complete = bool(getattr(server_content, "turn_complete", False))
+                go_away = getattr(message, "go_away", None)
+                if turn_complete or go_away is not None:
+                    # Fin naturelle d'UN tour : le générateur s'arrête ici,
+                    # exactement comme le SDK réel. La session reste ouverte
+                    # (``self._closed`` inchangé) — un appel ultérieur à
+                    # ``receive()`` doit reprendre où celui-ci s'est arrêté
+                    # pour le tour suivant, SANS reconnexion.
+                    return
 
         return gen()
 

@@ -135,9 +135,27 @@ class _FakeSession:
         self.audio_sent.append(audio)
 
     def receive(self):
+        """Fidélité au protocole réel (v1.7.4) : chaque appel à ``receive()``
+        consomme les messages restants (pas de rejeu) et se termine
+        naturellement à un ``turn_complete``/``interrupted`` — comme le SDK
+        réel (confirmé par Google, googleapis/python-genai#1224 : « the
+        receive() method throws you out of the loop if turn is complete »).
+        Depuis le correctif reconnexion-par-tour, ``GeminiLive`` rappelle
+        ``receive()`` sur la MÊME session pour le tour suivant : un ancien
+        générateur qui rejouait toute la liste à chaque appel bouclerait
+        indéfiniment.
+        """
+
         async def gen():
-            for message in self.messages:
+            while self.messages:
+                message = self.messages.pop(0)
                 yield message
+                server_content = getattr(message, "server_content", None)
+                if server_content is not None and (
+                    getattr(server_content, "turn_complete", False)
+                    or getattr(server_content, "interrupted", False)
+                ):
+                    return
 
         return gen()
 

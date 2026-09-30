@@ -155,14 +155,29 @@ class _FakeResponse:
 
 
 class _FakeSession:
+    """Fidélité au protocole réel (v1.7.4) : ``receive()`` consomme les
+    réponses restantes (pas de rejeu à chaque appel) et se termine à un
+    ``turn_complete``/``interrupted`` — comme le SDK réel (cf.
+    googleapis/python-genai#1224). Depuis le correctif reconnexion-par-tour,
+    ``GeminiLive`` rappelle ``receive()`` sur la MÊME session tant qu'elle
+    reste ouverte.
+    """
+
     def __init__(self, responses) -> None:
         self._responses = list(responses)
         self.tool_responses = []
 
     def receive(self):
         async def _gen():
-            for item in self._responses:
+            while self._responses:
+                item = self._responses.pop(0)
                 yield item
+                content = getattr(item, "server_content", None)
+                if content is not None and (
+                    getattr(content, "turn_complete", False)
+                    or getattr(content, "interrupted", False)
+                ):
+                    return
 
         return _gen()
 

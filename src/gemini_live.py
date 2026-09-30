@@ -177,6 +177,14 @@ class GeminiLive:
         self.session_id: str | None = None
         self.session_generation = 0
         self.context_seeded = False
+        # Diagnostic (v1.7.4 — correctif reconnexion-par-tour) : pourquoi le
+        # PROCHAIN appel à ``connect()`` a été jugé nécessaire. Positionné
+        # explicitement à chaque déclencheur légitime (GoAway, reset de
+        # contexte, changement de voix) ; laissé à "startup"/"error" sinon.
+        # Sert à distinguer dans les traces une reconnexion volontaire d'une
+        # reconnexion technique — et à détecter, en test, toute reconnexion
+        # qui ne serait due à AUCUNE de ces raisons connues (régression).
+        self._reconnect_reason: str = "startup"
         # =====================================================
         # INSTRUMENTATION DU CYCLE DE TOUR (v1.7.3)
         # -----------------------------------------------------
@@ -421,6 +429,7 @@ class GeminiLive:
         self._session_ready = False
         if self.session is None and self.ctx is None:
             return
+        self._reconnect_reason = "context_reset"
         self.reconnect_requested = True
         loop = self._loop
         if loop is None or loop.is_closed():
@@ -869,18 +878,32 @@ class GeminiLive:
         ) or getattr(self.session, "session_id", None)
         self.context_seeded = False
         self._session_ready = False
+        # Diagnostic (v1.7.4) : pourquoi CETTE reconnexion a eu lieu. Toute
+        # valeur autre que "startup"/"goaway"/"context_reset"/"voice_change"/
+        # "error" signale une reconnexion non attribuée à une cause connue —
+        # exactement la classe de bug corrigée ici (reconnexion après un
+        # simple tour normal). Réinitialisé après lecture pour ne pas
+        # « hériter » de la raison d'une reconnexion précédente.
+        reconnect_reason = self._reconnect_reason
+        self._reconnect_reason = "unexpected_after_normal_turn"
         if resumed:
             log.info(
-                "SESSION RESUMED gen=%s session_id=%s — %s (contexte restauré par le serveur)",
-                self.session_generation, self.session_id or "?", self.conversation.describe(),
+                "SESSION RESUMED gen=%s session_id=%s reason=%s — %s (contexte restauré par le serveur)",
+                self.session_generation, self.session_id or "?", reconnect_reason,
+                self.conversation.describe(),
             )
-            self._record_trace("SESSION_RESUME", session_id=self.session_id)
+            self._record_trace(
+                "SESSION_RESUME", session_id=self.session_id, reason=reconnect_reason
+            )
         else:
             log.info(
-                "SESSION CREATED gen=%s session_id=%s — %s",
-                self.session_generation, self.session_id or "?", self.conversation.describe(),
+                "SESSION CREATED gen=%s session_id=%s reason=%s — %s",
+                self.session_generation, self.session_id or "?", reconnect_reason,
+                self.conversation.describe(),
             )
-            self._record_trace("SESSION_CONNECT", session_id=self.session_id)
+            self._record_trace(
+                "SESSION_CONNECT", session_id=self.session_id, reason=reconnect_reason
+            )
         # Rejeu du contexte local UNIQUEMENT si le serveur n'a pas repris la
         # session. La porte audio reste fermée jusqu'à la fin du rejeu : aucun
         # chunk ne peut précéder l'historique sur le WebSocket.
@@ -917,6 +940,7 @@ class GeminiLive:
                     # le contexte conversationnel est restauré par le rejeu
                     # local (_seed_context), il n'est pas perdu.
                     self.resumption_handle = None
+                    self._reconnect_reason = "voice_change"
                     self.reconnect_requested = True
                     await self._shutdown_session()
                     return
@@ -1027,6 +1051,8 @@ class GeminiLive:
             # Tour interrompu par une erreur réseau/serveur : le message
             # utilisateur reste dans le contexte mais le tour est marqué en
             # échec (comportement déterministe, testé).
+            if not self.reconnect_requested:
+                self._reconnect_reason = "error"
             self._fail_open_turn("erreur de session")
             raise
         else:
@@ -1050,8 +1076,78 @@ class GeminiLive:
         self._turn_closed = False
 
     async def _receive_loop(self):
+        """Reçoit les messages Gemini pour TOUS les tours de la session.
 
+        CORRECTIF v1.7.4 (reconnexion-par-tour / « Je vous écoute »
+        périodique) : ``session.receive()`` est conçu par le SDK Gemini
+        Live pour se terminer naturellement dès qu'un tour est complet
+        (``turn_complete``) — ce n'est PAS un signal que la connexion
+        WebSocket est morte. Confirmé par Google (issue
+        googleapis/python-genai#1224, résolue) : « the receive() method
+        throws you out of the loop if turn is complete. To keep receiving
+        messages from the following turns you need to put this part of the
+        code under the while loop. »
+
+        Avant ce correctif, ``_receive_loop`` ne consommait qu'UN tour puis
+        rendait la main à l'appelant (``main.py``/``ui.py``), qui
+        interprétait ce retour normal comme « la session est terminée » et
+        rouvrait un WebSocket neuf (``connect()``) après CHAQUE tour — y
+        compris pendant la fenêtre de conversation de 8 secondes, sans
+        aucune parole de l'utilisateur. Chaque reconnexion à tort déclenchait
+        ``_seed_context`` (pas de handle de reprise encore reçu à ce
+        rythme), qui rejoue l'historique et clôt le rejeu par un tour
+        « user » synthétique (vide) — cela provoque une brève réponse du
+        modèle (« Je t'écoute. », « Je suis prêt... ») persistée comme un
+        message assistant orphelin, et RÉARME la fenêtre de 8 secondes via
+        ``on_turn_complete``. La boucle se perpétuait ainsi indéfiniment.
+
+        On boucle donc ICI, sur LA MÊME session, tant qu'aucune vraie raison
+        de reconnecter n'est apparue : GoAway serveur, erreur de session,
+        changement de voix ou reset explicite du contexte — toutes ces
+        conditions positionnent ``reconnect_requested`` à True et/ou libèrent
+        ``self.session`` (cf. ``_handle_context_reset``,
+        ``_watch_voice_changes``, le bloc GoAway ci-dessous). Un vrai suivi
+        de conversation (nouvelle parole réelle avant expiration du délai)
+        est ainsi traité par un simple tour supplémentaire sur le MÊME
+        WebSocket, sans aucune reconnexion ni rejeu de contexte.
+        """
+        turn_cycle = 0
+        while self.session is not None and not self.reconnect_requested:
+            if turn_cycle > 0:
+                # Tour suivant sur la session déjà ouverte : AUCUNE
+                # reconnexion, AUCUN rejeu de contexte. C'est la preuve
+                # instrumentée qu'un vrai enchaînement (ou un simple silence
+                # suivi d'expiration) ne recrée pas de session.
+                self._record_trace(
+                    "SESSION_REUSED_NEXT_TURN",
+                    turn_cycle=turn_cycle,
+                )
+            turn_cycle += 1
+            received_any = await self._receive_one_turn_cycle()
+            if not received_any:
+                # Un appel à ``receive()`` qui ne délivre STRICTEMENT rien
+                # n'arrive jamais sur une session réelle en vie (le SDK ne
+                # rend la main qu'après un tour complet — cf. docstring
+                # ci-dessus) : soit la connexion est réellement terminée sans
+                # que ``self.session``/``reconnect_requested`` l'aient encore
+                # reflété, soit un faux serveur de test n'a plus rien à
+                # fournir. Dans les deux cas, continuer à rappeler receive()
+                # en boucle serrée serait une attente active infinie : on
+                # arrête ici, sans lever d'erreur (comportement déterministe
+                # et sans risque de masquer un vrai échec, qui lève toujours
+                # une exception propagée normalement par le SDK).
+                return
+
+    async def _receive_one_turn_cycle(self) -> bool:
+        """Traite les messages d'UN appel à ``session.receive()``.
+
+        Retourne ``True`` si au moins un message a été reçu (cas normal :
+        une session réellement vivante représente toujours un tour complet),
+        ``False`` si l'appel n'a livré strictement rien.
+        """
+        received_any = False
         async for r in self.session.receive():
+            received_any = True
 
             sru = getattr(
                 r,
@@ -1084,6 +1180,7 @@ class GeminiLive:
                     "serveur : GoAway (fin de connexion dans %s) — reconnexion propre",
                     getattr(goaway, "time_left", "?"),
                 )
+                self._reconnect_reason = "goaway"
                 self.reconnect_requested = True
 
             server_content = getattr(
@@ -1314,6 +1411,7 @@ class GeminiLive:
                     )
                 finally:
                     self.tool_active = False
+        return received_any
 
     async def _shutdown_session(self) -> None:
         self.speaking = False
