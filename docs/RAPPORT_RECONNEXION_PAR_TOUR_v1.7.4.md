@@ -405,3 +405,140 @@ non introduit par ce correctif, non couvert par la mission.
   exécutée au moment de la rédaction de ce rapport (à vérifier après
   publication de la branche, comme pour v1.7.3).
 - Test flaky pré-existant documenté en §6.2, non lié à ce correctif.
+
+---
+
+## 9. Addendum v1.7.5 — Audit complet des points d'entrée + validation réelle
+
+Suite de mission explicitement demandée après le correctif v1.7.4 : audit
+exhaustif de tous les points qui peuvent créer/fermer/reconnecter une
+session, instrumentation supplémentaire, régressions prouvant que le bug est
+réel (et pas un artefact du mock), et mise en place de l'infrastructure de
+validation contre l'API Gemini Live **réelle**.
+
+### 9.1 Audit exhaustif des points d'entrée (avant toute modification)
+
+| Question | Réponse |
+|---|---|
+| Qui crée une session (`connect()`) ? | `GeminiLive.connect()` → `_connect_once()` (`src/gemini_live.py`). Appelé par **exactement 3 boucles**, toutes identiques dans leur structure : `src/main.py` (console), `src/ui.py` (Desktop Mode), et les harnesses de test (`tests/echo_loop_harness.py::EchoLab._voice_main`, `tests/real_gemini_harness.py::RealVoiceLab._voice_main`, `scripts/validate_real_gemini.py::RealRunner._run`). Aucun autre point d'entrée. |
+| Qui ferme une session ? | `GeminiLive._shutdown_session()` (vide `self.session`/`self.ctx`). Appelé par : `_watch_voice_changes()` (changement de voix), `_schedule_session_restart()` via `_handle_context_reset()` (commande « nouvelle conversation » / outil `reset_conversation`), `close()` (arrêt complet), et implicitement à chaque itération de la boucle externe (`finally: await gemini.close()`), que `receive_loop()` ait levé une exception ou soit sortie proprement (GoAway). |
+| Qui interprète `TURN_COMPLETE` ? | `GeminiLive._receive_one_turn_cycle()` : sur `server_content.turn_complete`, remet `speaking=False`, appelle `_finish_turn()` (commit USER → OUTILS → ASSISTANT dans `self.conversation`), puis déclenche `on_turn_complete` — câblé dans `main.py`/`ui.py` sur `AudioIO.extend_listening`. **`TURN_COMPLETE` ne déclenche JAMAIS, directement ou indirectement, un appel à `connect()`** depuis le correctif v1.7.4 (c'était exactement le bug : avant, `receive_loop()` *retournait* après chaque `TURN_COMPLETE`, et la boucle externe interprétait ce retour normal comme une session terminée). |
+| Qui démarre/arrête le timer de 8 s ? | `AudioIO._arm_follow_up()` (fixe `follow_up_until = now + FOLLOW_UP_SECONDS`), appelé depuis `_wake()` (mot de réveil) et depuis `extend_listening()` (à CHAQUE `on_turn_complete`, y compris sans parole utilisateur — c'est le réarmement légitime documenté). `AudioIO._check_timeout()` (appelé à chaque bloc micro, ~80 ms) compare au temps courant et appelle `_go_to_sleep()` à l'expiration — **sans toucher à `GeminiLive`** : la session reste ouverte, seul `awake` passe à `False`. |
+| Qui déclenche une reconnexion ? | La boucle EXTERNE uniquement, et seulement quand `receive_loop()` rend la main. Depuis v1.7.4, cela n'arrive que pour une cause RÉELLE : GoAway serveur (`reason="goaway"`), erreur réseau/protocole (`reason="error"`), reset de contexte explicite (`reason="context_reset"`), changement de voix (`reason="voice_change"`). Un sentinel `"unexpected_after_normal_turn"` est positionné par défaut sur CHAQUE connexion et doit être écrasé par l'une des raisons ci-dessus avant la connexion suivante — s'il apparaît dans les traces, c'est la preuve d'une régression de la classe de bug corrigée (testé explicitement, cf. §9.3). |
+| Qui transmet les blocs micro à `send_audio()` ? | La fermeture `mic(pcm)`, dupliquée à l'identique dans `src/main.py`, `src/ui.py` et les deux harnesses de test. Elle n'est appelée par `AudioIO` QUE si `self.awake is True` (`_handle_awake_block`) ; elle fait un pré-contrôle rapide (`gemini.can_send()`) sur le thread audio puis planifie `gemini.send_audio(pcm, capture_generation=…, capture_turn_epoch=…)` sur la boucle asyncio, où la revérification autoritaire (`_can_send_now()`, v1.7.3) a lieu juste avant l'écriture réseau — **chaîne inchangée par v1.7.4/v1.7.5**. |
+| Quelles tâches asyncio survivent à la fermeture d'une session ? | Uniquement `_watcher_task` (`_watch_voice_changes()`). Il est annulé par `close()` (appelé dans le `finally` de la boucle externe) et recréé par `_start_voice_watcher()` à chaque `connect()` réussi — aucune duplication possible (garde explicite), aucune fuite constatée. |
+
+**Conclusion de l'audit** : aucun autre composant que `GeminiLive`/`AudioIO`/la
+boucle externe ne participe au cycle de vie de session. Le correctif v1.7.4
+(modifier `_receive_loop` pour boucler en interne sur la même session) reste
+la correction correcte et suffisante : elle agit exactement au point où le
+bug se produisait (l'interprétation erronée du retour de `receive()`), sans
+toucher `AudioIO` ni la boucle externe.
+
+### 9.2 Nouvelle instrumentation (purement additive)
+
+Ajout d'un évènement de trace `SESSION_READY`, émis dans `_connect_once()`
+juste après que `_session_ready = True` (donc juste après la fin du rejeu de
+contexte). Il permet de prouver, trace à l'appui plutôt que par déduction,
+qu'aucun bloc audio n'atteint jamais une session avant la fin de son
+initialisation (item « E » de la mission). Aucun comportement existant n'est
+modifié ; aucun test existant n'a eu besoin d'être changé pour cet ajout.
+
+### 9.3 Nouveaux tests de non-régression (faux serveur, `tests/test_session_lifecycle.py`)
+
+En plus des deux tests déjà livrés en v1.7.4 (silence sans reconnexion ;
+vrai enchaînement sur la même session), quatre tests supplémentaires :
+
+- **Item D** — `TestRealReconnectionIsNotCausedByTurnComplete` : une coupure
+  réseau RÉELLE (pas une fin de tour) déclenche bien une nouvelle session,
+  avec une raison journalisée (`error`/`goaway`) jamais confondue avec le
+  sentinel de régression `unexpected_after_normal_turn`.
+- **Item E** — `TestNoAudioBeforeSessionReady` : après une reconnexion
+  forcée, aucun évènement `AUDIO_SENT_TO_GEMINI` de la nouvelle génération
+  n'apparaît avant son `SESSION_READY` — vérifié sur la trace, pas supposé.
+- **Item F** — `TestContextPreservedAcrossRealReconnection` : le contexte
+  local (2 messages) survit intact à une reconnexion réelle ET est
+  effectivement RENVOYÉ sur le câble lors du rejeu (vérifié via
+  `WireEvent.all_text()`, pas seulement « toujours en mémoire côté
+  client »). Note méthodologique explicite dans le test : le faux serveur
+  `VadLiveServer` (fidèle au temps réel, mais sans oracle sémantique)
+  prouve la partie CLIENT ; l'exploitation sémantique réelle par le modèle
+  est du ressort du scénario S6 contre l'API réelle (§9.4).
+- **Contrôle négatif** — `TestBugReproducesWithoutThePatch` : réintroduit
+  (via monkeypatch scopé au test) le comportement `_receive_loop`
+  PRÉ-v1.7.4 (un seul tour par appel) et vérifie que le scénario « silence
+  après réponse » reproduit bien une reconnexion et/ou un tour fantôme
+  pendant la fenêtre active. Sans ce contrôle, rien ne garantirait que
+  `TestNoSpuriousReconnectDuringActiveWindow` détecte un vrai bug plutôt que
+  de passer par construction (mock aligné sur l'implémentation).
+
+Les 6 tests passent (`pytest tests/test_session_lifecycle.py` : 6/6, ~80 s).
+La suite combinée (155 tests, fichiers listés en §6) et `test_echo_loop.py`
+(20/20) repassent intégralement sans régression. Lint (`ruff check src
+launcher run_jarvis.py version.py` et `ruff check UI tests`) : propre.
+
+### 9.4 Validation contre l'API Gemini Live RÉELLE — statut honnête
+
+Infrastructure livrée et prête à l'emploi :
+
+- **`tests/real_gemini_harness.py`** : `RealVoiceLab`, qui exécute le VRAI
+  pipeline (`AudioIO` + pont micro + `GeminiLive`, boucle
+  `connect()`/`receive_loop()` identique à `src/main.py`) contre un VRAI
+  `google.genai.Client`, alimenté par de la parole humaine synthétisée par
+  TTS (pas une tonalité) rejouée dans une fausse carte son (mêmes threads
+  temps réel qu'`EchoLab`, sans modèle d'écho — hors-scope ici).
+- **`scripts/validate_reconnect_v174_real.py`** : exécute les scénarios
+  S1+S4 (tour unique, silence ≥ 12 s, expiration normale), S2 (deux tours
+  rapides), S3 (trois tours), S5 (reconnexion réseau réelle forcée — raison
+  journalisée, vérification qu'aucun audio n'atteint la session avant
+  `SESSION_READY`), S6 (mémoire contextuelle réelle après cette
+  reconnexion : « Mon prénom est Simon » → coupure réelle → « Quel est mon
+  prénom ? »). Verdicts PASS/FAIL/NON TESTABLE imprimés, clé jamais
+  journalisée (filtrée par un masque regex sur tout motif `AIza…`/`AQ….`).
+- **`.github/workflows/validate-gemini-live.yml`** : nouvelle étape qui
+  exécute ce script en CI (GitHub Actions a un accès réseau réel aux
+  domaines Google) si le secret `GEMINI_API_KEY` est configuré, et publie
+  son verdict en commentaire de PR.
+
+**Ce qui n'a PAS pu être exécuté depuis ce sandbox, et pourquoi (honnêteté
+explicite, conformément à la consigne) :**
+
+1. **Appel direct à l'API depuis ce sandbox** : impossible. Le pare-feu
+   sortant de cet environnement bloque la poignée de main TLS vers TOUS les
+   domaines Google (`generativelanguage.googleapis.com`, `google.com`,
+   `googleapis.com`…) — `SSL_ERROR_SYSCALL` immédiat après le ClientHello,
+   alors que `github.com`/`pypi.org` fonctionnent normalement depuis le
+   même sandbox. Vérifié avec `curl -4 -v` sur 6 domaines Google distincts :
+   tous échouent de la même façon ; confirmé qu'il ne s'agit pas d'un
+   problème de clé ou de code.
+2. **Déclenchement du workflow CI avec un vrai secret** : impossible depuis
+   ce sandbox. Le jeton GitHub de la session n'a pas la permission de créer
+   le secret `GEMINI_API_KEY` du dépôt (`gh secret set` → `403 Forbidden :
+   Resource not accessible by integration`) — confirmé en vérifiant
+   l'historique des runs existants de ce workflow : tous affichent
+   `NON TESTABLE … aucune clé API disponible`, preuve que le secret n'a
+   jamais été configuré, y compris lors des sessions précédentes.
+3. **Décision explicitement validée avec l'utilisateur** : face à ces deux
+   blocages, l'utilisateur a choisi d'exécuter lui-même
+   `scripts/validate_reconnect_v174_real.py` en local (Windows), où Jarvis
+   tourne déjà normalement avec un accès réseau réel. **Les verdicts
+   S1/S2/S3/S5/S6 réels seront donc rapportés séparément, après cette
+   exécution locale — ils ne sont PAS présentés comme validés dans cette
+   session tant que ce résultat n'a pas été communiqué.**
+
+### 9.5 Ce qui reste donc non définitivement tranché
+
+- Le comportement exact du VRAI modèle Gemini lors du rejeu de contexte
+  (`_seed_context`, mode `commit`) — produit-il, comme documenté pour les
+  modèles « 2.x », une brève reprise orale après une reconnexion légitime
+  (un message assistant orphelin de plus, sans gravité en soi tant que ça
+  ne se reproduit pas en boucle) ou bien, comme documenté pour « 3.x »
+  avec `historyConfig`, un commit silencieux ? Les tests contre le faux
+  serveur (§9.3, item F) montrent les DEUX cas comme acceptables côté
+  client ; seul un run réel (scénario S5) peut trancher lequel s'applique
+  au modèle de production `gemini-2.5-flash-native-audio-preview-12-2025`.
+- La confirmation chiffrée que le bug « Je vous écoute » périodique du log
+  Windows original ne se reproduit PAS avec la vraie API (scénario
+  S1+S4) — fortement probable au vu de l'audit (§9.1) et des tests contre
+  le faux serveur, mais seule l'exécution réelle demandée à l'utilisateur
+  peut le confirmer formellement.

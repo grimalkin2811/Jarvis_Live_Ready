@@ -38,10 +38,12 @@ simulation isolée de ``receive_loop()``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import time
 import unittest
+import unittest.mock as mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
@@ -49,6 +51,7 @@ os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
 from tests.echo_loop_harness import EchoLab  # noqa: E402
 
 from src.conversation import ROLE_ASSISTANT, ROLE_USER  # noqa: E402
+from src.gemini_live import GeminiLive  # noqa: E402
 
 #: Durée totale d'observation du silence (mission #8 : la fenêtre de 8 s
 #: complète, avec marge). Réductible via JARVIS_ECHO_FAST=1 pour itérer.
@@ -229,6 +232,271 @@ class TestRealFollowUpStillHandledOnSameSession(_LifecycleTestCase):
             [m.role for m in messages],
             [ROLE_USER, ROLE_ASSISTANT, ROLE_USER, ROLE_ASSISTANT],
         )
+
+
+class TestRealReconnectionIsNotCausedByTurnComplete(_LifecycleTestCase):
+    """Item D (mission v1.7.4-réel) : une VRAIE condition de reconnexion
+    (coupure réseau — pas un ``turn_complete``) doit toujours déclencher une
+    nouvelle session, et la raison journalisée ne doit JAMAIS être confondue
+    avec une fin de tour normale.
+    """
+
+    def test_forced_disconnect_triggers_reconnect_not_attributed_to_turn_complete(self) -> None:
+        lab = self.make_lab()
+        gemini = lab.gemini
+        lab.server.next_user_transcripts = ["quelle heure est-il", "et demain"]
+
+        lab.user_speaks(1.5)
+        self.settle_response(lab)
+        generation_before = gemini.session_generation
+        mark = time.monotonic()
+
+        # Coupure réseau RÉELLE (pas une fin de tour) : équivalent d'une
+        # perte Wi-Fi ou d'un redémarrage TCP côté serveur.
+        asyncio.run_coroutine_threadsafe(
+            lab._drop_current_session(), lab._loop
+        ).result(timeout=5.0)
+
+        lab.wait_until(
+            lambda: gemini.session_generation > generation_before,
+            10.0,
+            "reconnexion après coupure réseau réelle",
+        )
+
+        connect_events = [
+            e for e in gemini.trace_events()
+            if e["kind"] in ("SESSION_CONNECT", "SESSION_RESUME") and e["ts"] > mark
+        ]
+        self.assertTrue(connect_events, "aucune reconnexion tracée après la coupure")
+        reasons = {e.get("reason") for e in connect_events}
+        # "unexpected_after_normal_turn" est le SENTINEL de régression : s'il
+        # apparaît ici, la reconnexion aurait été confondue avec une fin de
+        # tour normale (exactement le bug corrigé). "goaway"/"error" sont les
+        # deux raisons légitimes qu'une coupure réseau peut produire selon le
+        # point exact où le faux serveur l'interrompt.
+        self.assertNotIn("unexpected_after_normal_turn", reasons)
+        self.assertTrue(
+            reasons <= {"error", "goaway"},
+            f"raison de reconnexion inattendue : {reasons}",
+        )
+
+        # Le nouveau cycle de session fonctionne normalement.
+        lab.user_speaks(1.5)
+        self.settle_response(lab, min_turns=2)
+        self.assertEqual(len(lab.user_turns()), 2)
+        self.assertEqual(len(lab.ghost_turns()), 0)
+
+
+class TestNoAudioBeforeSessionReady(_LifecycleTestCase):
+    """Item E (mission v1.7.4-réel) : une session neuve ne doit recevoir
+    AUCUN audio avant la fin de son initialisation/rejeu de contexte
+    (``_session_ready``), même si le micro continue d'émettre en continu
+    pendant la reconnexion (bruit de fond capté par ``AudioIO``).
+    """
+
+    def test_no_audio_reaches_new_session_before_it_is_ready(self) -> None:
+        lab = self.make_lab()
+        gemini = lab.gemini
+        lab.server.next_user_transcripts = ["quelle heure est-il"]
+
+        lab.user_speaks(1.5)
+        self.settle_response(lab)
+        generation_before = gemini.session_generation
+
+        asyncio.run_coroutine_threadsafe(
+            lab._drop_current_session(), lab._loop
+        ).result(timeout=5.0)
+        lab.wait_until(
+            lambda: gemini.session_generation > generation_before,
+            10.0,
+            "reconnexion après coupure réseau réelle",
+        )
+        # Laisse le rejeu de contexte + quelques cycles micro se dérouler.
+        lab.wait(1.0)
+        generation_after = gemini.session_generation
+
+        ready_events = [
+            e for e in gemini.trace_events()
+            if e["kind"] == "SESSION_READY" and e["session_generation"] == generation_after
+        ]
+        self.assertEqual(
+            len(ready_events), 1,
+            f"marqueur SESSION_READY absent/dupliqué pour gen={generation_after}",
+        )
+        ready_ts = ready_events[0]["ts"]
+
+        early_audio = [
+            e for e in gemini.trace_events()
+            if e["kind"] == "AUDIO_SENT_TO_GEMINI"
+            and e["session_generation"] == generation_after
+            and e["ts"] < ready_ts
+        ]
+        self.assertEqual(
+            early_audio, [],
+            f"de l'audio a atteint la session neuve AVANT la fin de son "
+            f"initialisation : {early_audio}",
+        )
+
+
+class TestContextPreservedAcrossRealReconnection(_LifecycleTestCase):
+    """Item F (mission v1.7.4-réel) : le contexte conversationnel local doit
+    survivre intact à une VRAIE reconnexion (coupure réseau), et doit être
+    RÉELLEMENT renvoyé au serveur lors du rejeu (pas seulement conservé en
+    mémoire locale sans être exploitable).
+
+    Note méthodologique : ``VadLiveServer`` (utilisé par ``EchoLab`` pour
+    reproduire fidèlement la boucle temps réel micro/haut-parleurs) répond
+    toujours par une réplique fixe — il ne simule PAS la compréhension
+    sémantique d'un vrai modèle (contrairement à ``FakeLiveServer`` +
+    ``SemanticOracle`` utilisé par ``tests/test_live_context_harness.py``,
+    qui couvre déjà abondamment le rappel de contexte au niveau protocole).
+    Ce test vérifie donc la partie qui relève de CE harness : le contexte
+    local est intact après reconnexion ET il est effectivement REENVOYÉ sur
+    le câble lors du rejeu — l'exploitation sémantique réelle par le modèle
+    est validée séparément contre la vraie API (scénario 6 de la mission).
+    """
+
+    def test_context_survives_forced_reconnection_and_is_replayed_on_wire(self) -> None:
+        lab = self.make_lab()
+        gemini = lab.gemini
+        lab.server.next_user_transcripts = ["mon prénom est simon"]
+
+        lab.user_speaks(1.5)
+        self.settle_response(lab)
+        messages_before = gemini.conversation.get_messages()
+        self.assertEqual(len(messages_before), 2)
+        self.assertEqual([m.role for m in messages_before], [ROLE_USER, ROLE_ASSISTANT])
+
+        # Handle de reprise volontairement abandonné : force le VRAI chemin
+        # de rejeu local (``_seed_context``), celui qui a été modifié par le
+        # correctif v1.7.4 — sinon le serveur factice reprendrait la session
+        # lui-même (``SESSION_RESUME``) et aucun rejeu ne serait observable
+        # sur le câble depuis ce harness.
+        gemini.resumption_handle = None
+        asyncio.run_coroutine_threadsafe(
+            lab._drop_current_session(), lab._loop
+        ).result(timeout=5.0)
+        generation_before = gemini.session_generation
+        lab.wait_until(
+            lambda: gemini.session_generation > generation_before,
+            10.0,
+            "reconnexion après coupure réseau réelle",
+        )
+        lab.wait_until(lambda: gemini.can_send(), 10.0, "session prête après reconnexion")
+        generation_after = gemini.session_generation
+        self.assertTrue(
+            gemini.context_seeded,
+            "le contexte n'a pas été rejoué localement alors qu'aucun handle "
+            "de reprise n'était disponible",
+        )
+
+        # Le contexte local n'a pas été altéré par la reconnexion : les 2
+        # messages réels précédents sont intacts, dans l'ordre. Sur les
+        # modèles « 2.x » (dont ce faux serveur reproduit la sémantique),
+        # le protocole documenté (``_seed_context``, pipecat) veut que la
+        # clôture du rejeu déclenche une BRÈVE reprise du modèle — un 3e
+        # message assistant peut donc apparaître ici légitimement (ce n'est
+        # PAS le bug v1.7.4 : celui-ci ne se reproduit QUE si ce cycle se
+        # répète en boucle pendant la fenêtre active, cf.
+        # ``TestBugReproducesWithoutThePatch``). Si le VRAI modèle Gemini se
+        # comporte différemment (silencieux, comme documenté pour les
+        # modèles 3.x/historyConfig), seule la validation API réelle
+        # (scénario 6 de la mission) peut le confirmer — ce test ne porte
+        # que sur la fidélité du client, pas sur ce choix de protocole.
+        messages_after_reconnect = gemini.conversation.get_messages()
+        self.assertIn(len(messages_after_reconnect), (2, 3))
+        self.assertEqual(
+            messages_after_reconnect[0].role, ROLE_USER,
+        )
+        self.assertEqual(
+            messages_after_reconnect[1].role, ROLE_ASSISTANT,
+        )
+        if len(messages_after_reconnect) == 3:
+            self.assertEqual(messages_after_reconnect[2].role, ROLE_ASSISTANT)
+
+        # Le contexte a bien été RENVOYÉ au serveur lors du rejeu de LA
+        # NOUVELLE session (pas seulement conservé côté client sans jamais
+        # être exploitable) : preuve au niveau du câble.
+        replay_events = [
+            e for e in lab.server.client_content_events(generation=generation_after)
+        ]
+        self.assertTrue(
+            replay_events, "aucun rejeu de contexte envoyé à la session neuve"
+        )
+        replayed_text = " ".join(e.all_text() for e in replay_events).lower()
+        self.assertIn(
+            "simon", replayed_text,
+            f"le prénom donné avant la reconnexion n'a pas été rejoué : "
+            f"{replayed_text!r}",
+        )
+
+        # Un VRAI suivi après reconnexion reste traité normalement (aucun
+        # tour fantôme, session inchangée) — l'exploitation sémantique par
+        # le modèle réel est validée séparément (API réelle, scénario 6).
+        lab.server.next_user_transcripts = ["quel est mon prénom"]
+        lab.user_speaks(1.5)
+        self.settle_response(lab, min_turns=2)
+        self.assertEqual(gemini.session_generation, generation_after)
+        self.assertEqual(len(lab.user_turns()), 2)
+        self.assertEqual(len(lab.ghost_turns()), 0)
+
+
+# ---------------------------------------------------------------------------
+# Preuve que le bug est RÉEL (pas un artefact du mock)
+# ---------------------------------------------------------------------------
+
+
+async def _pre_v174_receive_loop(self) -> None:
+    """Reproduction FIDÈLE du comportement ANTÉRIEUR à v1.7.4.
+
+    Avant le correctif, ``_receive_loop`` consommait un seul appel à
+    ``session.receive()`` (donc un seul tour) puis rendait la main à
+    l'appelant (``main.py``/``ui.py``/``EchoLab._voice_main``), qui
+    interprétait ce retour normal comme une session terminée et rouvrait un
+    WebSocket neuf. Cette fonction est injectée à la place de
+    ``GeminiLive._receive_loop`` UNIQUEMENT pour prouver que les tests
+    ci-dessus détectent un vrai régression et ne passent pas par hasard.
+    """
+    await self._receive_one_turn_cycle()
+
+
+class TestBugReproducesWithoutThePatch(_LifecycleTestCase):
+    """Contrôle négatif : sans le correctif v1.7.4, le scénario « silence
+    après réponse » DOIT reproduire le bug (reconnexion et/ou tour fantôme
+    pendant la fenêtre active). Si ce test ne détectait rien, cela voudrait
+    dire que ``TestNoSpuriousReconnectDuringActiveWindow`` passe pour de
+    mauvaises raisons (mock aligné sur l'implémentation plutôt que sur le
+    protocole réel du SDK).
+    """
+
+    def test_old_receive_loop_reproduces_the_ghost_turn_storm(self) -> None:
+        with mock.patch.object(GeminiLive, "_receive_loop", _pre_v174_receive_loop):
+            lab = self.make_lab()
+            lab.server.next_user_transcripts = ["quelle heure est-il"]
+
+            lab.user_speaks(1.5)
+            # NE PAS utiliser ``settle_response`` ici : sa notion de
+            # « quiétude » (aucun évènement/tour depuis 3 s) ne peut
+            # structurellement pas être atteinte sous le bug reproduit — la
+            # boucle de reconnexion tourne en continu. On attend seulement
+            # le premier tour réel, puis on observe une fenêtre fixe.
+            lab.wait_until(
+                lambda: len(lab.user_turns()) >= 1, 20.0, "premier tour utilisateur"
+            )
+            silence_start = time.monotonic()
+            connect_before = lab.server.connect_count
+
+            lab.wait(FOLLOW_UP_MARGIN_SECONDS)
+
+            reconnected_during_silence = lab.server.connect_count > connect_before
+            ghosted = len(lab.ghost_turns(since=silence_start)) > 0
+            self.assertTrue(
+                reconnected_during_silence or ghosted,
+                "le comportement PRÉ-correctif n'a pas reproduit le bug "
+                "« reconnexion après chaque tour » sur ce harness — le "
+                "harness ne serait alors pas capable de le détecter, ce qui "
+                "invaliderait TestNoSpuriousReconnectDuringActiveWindow",
+            )
 
 
 if __name__ == "__main__":

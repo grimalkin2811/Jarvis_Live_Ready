@@ -9,6 +9,48 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [1.7.5] — 2026-10-01
+
+**Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de
+cycle de vie.** Poursuite de la mission v1.7.4 : audit complet des points
+d'entrée de reconnexion, régressions supplémentaires contre le faux serveur
+(preuve que le bug est RÉEL et que les tests le détectent — pas un artefact
+du mock), et mise en place de l'infrastructure de validation contre l'API
+Gemini Live réelle. Rapport complet :
+`docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` (section de suivi v1.7.5).
+
+### Ajouté
+
+- **`GeminiLive`** : nouvel évènement de trace `SESSION_READY`, émis
+  exactement quand une session (neuve ou reprise) devient autorisée à
+  recevoir de l'audio (`_session_ready = True`, après la fin du rejeu de
+  contexte). Permet de prouver, trace à l'appui, qu'aucun bloc audio
+  n'atteint jamais une session avant la fin de son initialisation —
+  purement additif, aucun comportement existant modifié.
+- **`tests/real_gemini_harness.py`** : harness d'intégration qui exécute le
+  VRAI pipeline Jarvis (`AudioIO` + pont micro + `GeminiLive`, boucle
+  `connect()`/`receive_loop()` identique à `src/main.py`) contre l'API
+  Gemini Live RÉELLE, alimenté par de la parole humaine synthétisée (TTS) —
+  pas une tonalité factice — rejouée dans une fausse carte son (mêmes
+  threads temps réel qu'`EchoLab`).
+- **`scripts/validate_reconnect_v174_real.py`** : script de validation
+  réelle ciblé sur le bug « reconnexion-par-tour » (scénarios S1 à S6 de
+  l'audit : tour unique + silence, deux tours rapides, trois tours,
+  expiration de fenêtre, reconnexion réseau réelle, mémoire contextuelle
+  réelle). Clé lue uniquement depuis `GEMINI_API_KEY`/`GOOGLE_API_KEY`,
+  jamais journalisée.
+- **`.github/workflows/validate-gemini-live.yml`** : nouvelle étape qui
+  exécute ce script en CI (si le secret `GEMINI_API_KEY` est configuré) et
+  publie son verdict en commentaire de PR, en plus de la validation v1.7.1
+  existante.
+- **`tests/test_session_lifecycle.py`** : quatre tests supplémentaires —
+  une vraie coupure réseau déclenche bien une reconnexion jamais attribuée
+  à `turn_complete` ; aucun audio n'atteint une session neuve avant
+  `SESSION_READY` ; le contexte local survit à une reconnexion réelle et
+  est effectivement rejoué sur le câble ; et un test de contrôle qui
+  réintroduit le comportement PRÉ-v1.7.4 pour prouver que le bug est réel
+  (pas un artefact d'un mock aligné sur l'implémentation).
+
 ## [1.7.4] — 2026-09-30
 
 **Correctif critique : reconnexion après chaque tour normal (« Je vous

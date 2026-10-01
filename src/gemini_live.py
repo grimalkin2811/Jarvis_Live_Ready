@@ -909,6 +909,17 @@ class GeminiLive:
         # chunk ne peut précéder l'historique sur le WebSocket.
         self.context_seeded = await self._seed_context()
         self._session_ready = True
+        # Diagnostic (v1.7.4 — validation réelle, item #7 de l'audit) :
+        # marqueur explicite de l'instant où le micro est de nouveau autorisé
+        # à écrire sur CETTE session (``_can_send_now`` refuse tout envoi
+        # tant que ``_session_ready`` est faux — cf. « session pas prete »).
+        # Sert à prouver, trace à l'appui, qu'aucun bloc audio n'a pu
+        # atteindre une session neuve avant la fin de son rejeu de contexte.
+        self._record_trace(
+            "SESSION_READY",
+            session_id=self.session_id,
+            context_seeded=self.context_seeded,
+        )
         self._start_voice_watcher()
 
     def _start_voice_watcher(self) -> None:

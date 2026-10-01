@@ -94,6 +94,51 @@ jobs:
             echo '*Auto-posté par le workflow Validate Gemini Live (reel). Artefact* `reponses-audio` *: les réponses vocales à écouter.*'
           } | gh pr comment "$PR_NUMBER" --body-file -
 
+      # ---------------------------------------------------------------
+      # v1.7.4 — validation ciblée du bug « reconnexion-par-tour » /
+      # « Je vous écoute » périodique (scénarios S1-S6 de la mission),
+      # avec le VRAI pipeline (AudioIO + pont micro + GeminiLive, boucle
+      # connect()/receive_loop() identique a src/main.py) contre l'API
+      # reelle. Aucun materiel audio requis (fausse carte son en memoire,
+      # cf. tests/real_gemini_harness.py) : "google-genai numpy" suffit.
+      # ---------------------------------------------------------------
+      - name: Validation reconnexion-par-tour (v1.7.4) reelle
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          JARVIS_NO_MODEL_DOWNLOAD: "1"
+        run: |
+          set -o pipefail
+          python scripts/validate_reconnect_v174_real.py 2>&1 | tee validation_v174.log
+        continue-on-error: true
+
+      - name: Bilan v1.7.4 en commentaire de PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          VERDICT=$(awk '/^={60,}$/{flag=1} flag' validation_v174.log | head -80)
+          if [ -z "$VERDICT" ]; then
+            VERDICT="(bloc de verdict introuvable — voir le log complet du run)"
+          fi
+          VERDICT_LINES=$(printf '%s\n' "$VERDICT" | grep -E '^S[0-9]' || true)
+          LAST=$(gh pr view "$PR_NUMBER" --json comments \
+            --jq '[.comments[] | select(.author.login == "github-actions") | select(.body | startswith("## Validation reconnexion-par-tour"))][-1].body' 2>/dev/null || true)
+          LAST_LINES=$(printf '%s\n' "$LAST" | grep -E '^S[0-9]' || true)
+          if [ -n "$VERDICT_LINES" ] && [ "$VERDICT_LINES" = "$LAST_LINES" ]; then
+            echo "Verdict identique au dernier commentaire auto-poste : pas de doublon."
+            exit 0
+          fi
+          {
+            echo "## Validation reconnexion-par-tour (v1.7.4) réelle — run ${GITHUB_RUN_ID}"
+            echo ''
+            echo '```'
+            echo "$VERDICT"
+            echo '```'
+            echo ''
+            echo '*Auto-posté par le workflow Validate Gemini Live (reel). Scénarios S1-S6 : cf. mission v1.7.4.*'
+          } | gh pr comment "$PR_NUMBER" --body-file -
+
       - name: Reponses audio (a ecouter)
         if: always()
         uses: actions/upload-artifact@v4
@@ -105,9 +150,18 @@ jobs:
       - name: Conclusion
         if: always()
         run: |
-          if [ ! -f validation.log ]; then echo "pas de log"; exit 1; fi
-          if grep -q ' : FAIL' validation.log; then
-            echo 'VALIDATION EN ECHEC (voir le commentaire de PR)'; exit 1
+          if [ ! -f validation.log ] && [ ! -f validation_v174.log ]; then
+            echo "pas de log"; exit 1
           fi
-          echo 'Aucun FAIL — voir les verdicts dans le commentaire de PR.'
+          FAILED=0
+          if [ -f validation.log ] && grep -q ' : FAIL' validation.log; then
+            echo 'VALIDATION (contexte v1.7.1) EN ECHEC (voir le commentaire de PR)'
+            FAILED=1
+          fi
+          if [ -f validation_v174.log ] && grep -q ' : FAIL' validation_v174.log; then
+            echo 'VALIDATION (reconnexion v1.7.4) EN ECHEC (voir le commentaire de PR)'
+            FAILED=1
+          fi
+          if [ "$FAILED" = "1" ]; then exit 1; fi
+          echo 'Aucun FAIL — voir les verdicts dans les commentaires de PR.'
 
