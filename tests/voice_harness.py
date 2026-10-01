@@ -171,6 +171,25 @@ class VoiceHarness:
                 raise TimeoutError("Jarvis n'accepte pas l'audio (can_send bloqué)")
             await asyncio.sleep(0)
 
+    async def wait_ready(self, timeout: float = TURN_TIMEOUT) -> None:
+        """Attend que la session COURANTE soit entièrement prête (porte audio
+        ouverte : ``can_send()`` vrai), sans envoyer d'audio.
+
+        À utiliser après ``wait_sessions(...)`` quand le test lit un état qui
+        ne se stabilise qu'à la toute fin de ``_connect_once()`` (ex.
+        ``gemini.context_seeded``/``context_seed_confirmed``) SANS appeler
+        ``speak()`` juste après (qui, lui, attend déjà implicitement via
+        ``_wait_sendable``). Depuis le correctif v1.7.5 (attente réelle de la
+        confirmation serveur du rejeu, cf. ``GeminiLive._await_seed_commit``),
+        ``wait_sessions`` peut rendre la main AVANT la fin de ce rejeu — c'est
+        le comportement protocolairement correct (une vraie attente réseau a
+        été introduite), pas une régression : les tests qui inspectent l'état
+        post-connexion doivent donc attendre explicitement cette fin, au lieu
+        de supposer qu'une nouvelle session = une session déjà complètement
+        initialisée.
+        """
+        await self._wait_sendable(timeout)
+
     async def speak(self, text: str, chunks: int = 3, timeout: float = TURN_TIMEOUT) -> str:
         """« Parle » à Jarvis par le canal audio réel et retourne la réponse."""
         await self._settle()

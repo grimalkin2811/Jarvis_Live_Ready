@@ -571,6 +571,16 @@ class ModernModelTests(_HarnessCase):
         seed = server.client_content_events(generation=server.sessions[1].generation)
         self.assertEqual(len(seed), 1)
         self.assertTrue(seed[0].turn_complete)
+        # v1.7.5 : sur historyConfig (commit silencieux), le délai d'attente
+        # de confirmation (GeminiLive._await_seed_commit) expire normalement
+        # SANS réponse — ce n'est pas une erreur, juste l'absence de preuve
+        # explicite. La porte audio s'ouvre quand même (dégradation
+        # contrôlée) : le tour suivant doit fonctionner normalement.
+        await harness.wait_ready()
+        self.assertFalse(
+            harness.gemini.context_seed_confirmed,
+            "aucune confirmation ne doit être observée sur un commit silencieux",
+        )
         answer = await harness.speak("Quel est mon prénom ?")
         self.assertIn("Simon", answer)
 
@@ -611,7 +621,19 @@ class InstrumentationTests(_HarnessCase):
         server.drop_connection()
         await harness.wait_sessions(2)
         self.assertEqual(harness.gemini.session_generation, 2)
+        # v1.7.5 : ``wait_sessions`` ne garantit que la création de la
+        # session, pas la fin de son rejeu de contexte — depuis le correctif
+        # qui attend la confirmation RÉELLE du serveur avant d'ouvrir le
+        # micro (cf. GeminiLive._await_seed_commit), cette fin peut survenir
+        # après que la session apparaisse. On attend donc explicitement la
+        # porte audio avant de lire l'état final du rejeu.
+        await harness.wait_ready()
         self.assertTrue(harness.gemini.context_seeded)  # rejeu effectif
+        self.assertTrue(
+            harness.gemini.context_seed_confirmed,
+            "le serveur factice (sémantique 2.x) répond toujours au rejeu : "
+            "la confirmation doit avoir été observée avant l'ouverture du micro",
+        )
 
     async def test_traces_structurees_presentes(self) -> None:
         server = self.make_server()

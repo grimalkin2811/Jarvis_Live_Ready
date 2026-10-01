@@ -34,6 +34,47 @@ Ces tests utilisent le même harness temps réel que ``test_echo_loop.py``
 (``EchoLab`` : AudioIO + GeminiLive + faux serveur Live avec VAD) — la
 mission explicite étant de reproduire le scénario exact, pas seulement une
 simulation isolée de ``receive_loop()``.
+
+---
+
+RÉGRESSION v1.7.5 (suite) : contexte après reconnexion contre l'API RÉELLE
+---------------------------------------------------------------------------
+
+Validation réelle (Windows, vraie clé Gemini, vrai micro, vrai TTS) du
+correctif v1.7.4 : S1+S4/S2/S5 PASS (la reconnexion-par-tour reste corrigée,
+NE PAS RÉGRESSER), mais **S6 (mémoire contextuelle après une VRAIE
+reconnexion) a échoué** : réponse vide à « Quel est mon prénom ? » alors que
+la trace montrait ``context_seeded=True`` et « aucun audio avant
+SESSION_READY ».
+
+Cause racine démontrée (voir addendum v1.7.5 du rapport) : ``context_seeded``
+ne prouve que l'ENVOI du rejeu (``send_client_content``), pas que le serveur
+l'ait réellement TRAITÉ avant l'arrivée du tour suivant. Sur un WebSocket
+réel, l'envoi revient dès l'écriture réseau ; la réponse du modèle (reprise
+2.x) arrive de façon RÉELLEMENT asynchrone, parfois après que le tour suivant
+a déjà commencé. Le faux serveur partagé (``tests/live_harness.py``) ne
+pouvait PAS reproduire cette course : il génère sa réponse de façon
+SYNCHRONE à l'intérieur même de l'appel ``send_client_content`` (awaited
+jusqu'au bout avant de rendre la main), ce qu'un vrai WebSocket ne fait
+jamais — c'est pour cela qu'aucun test existant (y compris
+``TestContextPreservedAcrossRealReconnection`` ci-dessus) n'avait détecté le
+problème.
+
+Correctif (``GeminiLive._seed_context`` / nouveau ``_await_seed_commit``,
+``src/gemini_live.py``) : si le rejeu a été clôturé (``turn_complete=True``),
+Jarvis consomme maintenant EXPLICITEMENT le tour de réponse du serveur à ce
+rejeu (via ``_receive_one_turn_cycle``, le même mécanisme qu'un tour normal)
+AVANT d'ouvrir la porte audio — borné par ``SEED_COMMIT_TIMEOUT_SECONDS``
+pour ne jamais bloquer indéfiniment sur un modèle à commit silencieux
+(historyConfig/3.x). Un nouveau drapeau ``context_seed_confirmed`` distingue
+honnêtement « rejeu envoyé » de « rejeu confirmé par le serveur ».
+
+Les tests ci-dessous utilisent une session factice MINIMALE et dédiée
+(``_SlowAckSession``), volontairement DIFFÉRENTE du faux serveur partagé :
+son ``send_client_content`` revient immédiatement (fidèle au WebSocket
+réel), et sa réponse n'est délivrée que lorsque le test la libère
+explicitement — ce qui permet de observer/prouver la course de façon
+déterministe, sans dépendre d'un vrai délai réseau.
 """
 
 from __future__ import annotations
@@ -49,8 +90,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
 
 from tests.echo_loop_harness import EchoLab  # noqa: E402
+from tests.live_harness import msg_model_transcript, msg_turn_complete  # noqa: E402
 
-from src.conversation import ROLE_ASSISTANT, ROLE_USER  # noqa: E402
+from src.conversation import ROLE_ASSISTANT, ROLE_USER, ConversationContext  # noqa: E402
 from src.gemini_live import GeminiLive  # noqa: E402
 
 #: Durée totale d'observation du silence (mission #8 : la fenêtre de 8 s
@@ -497,6 +539,380 @@ class TestBugReproducesWithoutThePatch(_LifecycleTestCase):
                 "harness ne serait alors pas capable de le détecter, ce qui "
                 "invaliderait TestNoSpuriousReconnectDuringActiveWindow",
             )
+
+
+# ---------------------------------------------------------------------------
+# v1.7.5 — S6 : le rejeu de contexte doit être CONFIRMÉ, pas seulement ENVOYÉ,
+# avant l'ouverture de la porte audio.
+# ---------------------------------------------------------------------------
+
+
+class _SlowAckSession:
+    """Double minimal et volontairement RÉALISTE d'une session WebSocket.
+
+    Contrairement au faux serveur partagé (``tests/live_harness.py``), dont
+    la réponse au rejeu est générée de façon SYNCHRONE à l'intérieur même de
+    l'appel ``send_client_content`` (awaited jusqu'au bout avant de rendre la
+    main — ce qu'un vrai WebSocket ne fait JAMAIS), cette classe modélise
+    fidèlement la vraie asynchronie réseau : ``send_client_content`` revient
+    IMMÉDIATEMENT après l'écriture, et la réponse du serveur (reprise +
+    ``turn_complete``) n'est livrée sur ``receive()`` que lorsque le test
+    appelle explicitement ``release_ack()``. C'est cette fidélité qui permet
+    de prouver, de façon déterministe, la course identifiée par l'audit
+    v1.7.5 (cause racine de l'échec du scénario S6 contre l'API réelle).
+    """
+
+    def __init__(self) -> None:
+        self.sent: list[tuple[object, bool]] = []
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._closed = False
+        self.session_id = "slow-ack-session"
+        self.setup_complete = None
+
+    async def send_client_content(self, turns=None, turn_complete: bool = True) -> None:
+        self.sent.append((turns, turn_complete))
+        # AUCUNE attente ici : fidèle au vrai WebSocket, un envoi n'attend
+        # jamais la réponse du modèle avant de rendre la main.
+
+    def receive(self):
+        async def gen():
+            while True:
+                message = await self._queue.get()
+                if message is None:
+                    return
+                yield message
+                server_content = getattr(message, "server_content", None)
+                if server_content is not None and getattr(server_content, "turn_complete", False):
+                    return
+
+        return gen()
+
+    def release_ack(self, text: str = "Parfait, j'ai bien noté.") -> None:
+        """Le serveur « répond » enfin au rejeu — appelé explicitement par le test."""
+        self._queue.put_nowait(msg_model_transcript(text))
+        self._queue.put_nowait(msg_turn_complete())
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._queue.put_nowait(None)
+
+
+class _SlowAckCtx:
+    def __init__(self, session: _SlowAckSession) -> None:
+        self.session = session
+
+    async def __aenter__(self) -> _SlowAckSession:
+        return self.session
+
+    async def __aexit__(self, *args) -> bool:
+        self.session.close()
+        return False
+
+
+class _MiniFakeLive:
+    def __init__(self, ctx: _SlowAckCtx) -> None:
+        self._ctx = ctx
+
+    def connect(self, model=None, config=None) -> _SlowAckCtx:
+        return self._ctx
+
+
+class _MiniFakeAio:
+    def __init__(self, live: _MiniFakeLive) -> None:
+        self.live = live
+
+
+class _MiniFakeClient:
+    def __init__(self, ctx: _SlowAckCtx) -> None:
+        self.aio = _MiniFakeAio(_MiniFakeLive(ctx))
+
+
+def _make_seeded_gemini(session: _SlowAckSession) -> GeminiLive:
+    """``GeminiLive`` connecté à ``session``, contexte local pré-rempli,
+    prêt à exécuter ``_connect_once()``/``_seed_context()`` en isolation
+    (sans réseau, sans faux serveur partagé)."""
+    conversation = ConversationContext(max_turns=20, max_tokens=4096)
+    conversation.add_user_message("Mon prénom est Simon.")
+    conversation.add_assistant_message("Enchanté Simon.")
+    gemini = GeminiLive(
+        key="test-key",
+        model="gemini-2.5-flash-native-audio-preview-12-2025",
+        user="Test",
+        on_audio=lambda pcm: None,
+        conversation=conversation,
+    )
+    gemini.client = _MiniFakeClient(_SlowAckCtx(session))
+    gemini.resumption_handle = None
+    return gemini
+
+
+class TestSeedCommitAwaitsRealServerAck(unittest.IsolatedAsyncioTestCase):
+    """Item E/S6 (mission v1.7.5) : la porte audio ne doit PAS s'ouvrir tant
+    que le serveur n'a pas réellement répondu au rejeu de contexte — un envoi
+    réussi (``send_client_content`` revenu) ne suffit pas.
+    """
+
+    async def test_connect_once_blocks_until_server_acks_the_seed(self) -> None:
+        session = _SlowAckSession()
+        gemini = _make_seeded_gemini(session)
+
+        task = asyncio.ensure_future(gemini._connect_once())
+        # Laisse la coroutine envoyer le rejeu et commencer à attendre la
+        # confirmation — mais le serveur ne répond PAS encore.
+        for _ in range(10):
+            await asyncio.sleep(0)
+        self.assertEqual(len(session.sent), 1, "le rejeu n'a pas été envoyé")
+        self.assertTrue(
+            session.sent[0][1], "le rejeu doit être clôturé (turn_complete=True)"
+        )
+        self.assertFalse(
+            task.done(),
+            "_connect_once() a terminé AVANT que le serveur confirme le rejeu : "
+            "la porte audio s'ouvrirait alors que le serveur traite encore le "
+            "tour de rejeu — exactement la course qui a fait échouer le "
+            "scénario S6 contre l'API réelle (réponse vide à la question "
+            "suivante).",
+        )
+        self.assertFalse(gemini._session_ready)
+        self.assertFalse(gemini.can_send())
+
+        # Le serveur répond enfin : la porte doit s'ouvrir, et seulement
+        # maintenant.
+        session.release_ack()
+        await asyncio.wait_for(task, timeout=2.0)
+        self.assertTrue(gemini._session_ready)
+        self.assertTrue(gemini.can_send())
+        self.assertTrue(gemini.context_seeded)
+        self.assertTrue(
+            gemini.context_seed_confirmed,
+            "la confirmation serveur a été observée : elle doit être tracée comme telle",
+        )
+
+        ready_events = [e for e in gemini.trace_events() if e["kind"] == "SESSION_READY"]
+        self.assertEqual(len(ready_events), 1)
+        self.assertTrue(ready_events[0]["context_seed_confirmed"])
+        confirm_events = [
+            e for e in gemini.trace_events() if e["kind"] == "SEED_COMMIT_CONFIRMED"
+        ]
+        self.assertEqual(len(confirm_events), 1)
+
+        # La brève reprise du modèle a bien été committée dans le contexte
+        # local (comportement 2.x documenté), sans perdre les 2 messages
+        # réels précédents.
+        messages = gemini.conversation.get_messages()
+        self.assertEqual(len(messages), 3)
+        self.assertEqual(messages[2].role, ROLE_ASSISTANT)
+        self.assertEqual(messages[2].text, "Parfait, j'ai bien noté.")
+
+
+class TestSeedCommitTimesOutWithoutBlockingForever(unittest.IsolatedAsyncioTestCase):
+    """Item C/sécurité (mission v1.7.5) : un modèle qui commit le rejeu SANS
+    jamais répondre (historyConfig/3.x — comportement documenté, pas une
+    panne) ne doit JAMAIS bloquer le micro indéfiniment. La porte s'ouvre en
+    dégradé après ``SEED_COMMIT_TIMEOUT_SECONDS``, et le diagnostic dit
+    honnêtement qu'aucune confirmation n'a été observée.
+    """
+
+    async def test_gate_opens_in_degraded_mode_after_timeout(self) -> None:
+        session = _SlowAckSession()  # jamais libérée : aucune réponse ne viendra
+        gemini = _make_seeded_gemini(session)
+
+        start = time.monotonic()
+        await asyncio.wait_for(gemini._connect_once(), timeout=10.0)
+        elapsed = time.monotonic() - start
+
+        self.assertTrue(gemini._session_ready, "la porte doit finir par s'ouvrir")
+        self.assertTrue(gemini.can_send())
+        self.assertTrue(gemini.context_seeded, "le rejeu a bien été envoyé")
+        self.assertFalse(
+            gemini.context_seed_confirmed,
+            "aucune réponse n'a été observée : la confirmation ne doit jamais "
+            "être affirmée par optimisme",
+        )
+        # Le délai consommé est borné (pas un blocage permanent du micro).
+        from src.gemini_live import SEED_COMMIT_TIMEOUT_SECONDS
+
+        self.assertLessEqual(elapsed, SEED_COMMIT_TIMEOUT_SECONDS + 2.0)
+        timeout_events = [
+            e for e in gemini.trace_events() if e["kind"] == "SEED_COMMIT_TIMEOUT"
+        ]
+        self.assertEqual(len(timeout_events), 1)
+
+
+class TestSeedCommitSkippedWithoutASeed(unittest.IsolatedAsyncioTestCase):
+    """Item C (mission v1.7.5) : reconnexion SANS historique local (démarrage
+    à froid) ou AVEC un handle de reprise — aucun rejeu n'est envoyé, donc
+    aucune attente de confirmation ne doit avoir lieu (la porte s'ouvre
+    immédiatement, comme avant ce correctif).
+    """
+
+    async def test_cold_start_opens_immediately_without_waiting(self) -> None:
+        session = _SlowAckSession()
+        conversation = ConversationContext(max_turns=20, max_tokens=4096)
+        gemini = GeminiLive(
+            key="test-key",
+            model="gemini-2.5-flash-native-audio-preview-12-2025",
+            user="Test",
+            on_audio=lambda pcm: None,
+            conversation=conversation,
+        )
+        gemini.client = _MiniFakeClient(_SlowAckCtx(session))
+        gemini.resumption_handle = None
+
+        start = time.monotonic()
+        await asyncio.wait_for(gemini._connect_once(), timeout=2.0)
+        elapsed = time.monotonic() - start
+
+        self.assertFalse(gemini.context_seeded, "rien à rejouer : historique vide")
+        self.assertFalse(gemini.context_seed_confirmed)
+        self.assertTrue(gemini._session_ready)
+        self.assertEqual(session.sent, [], "aucun clientContent ne devait être envoyé")
+        self.assertLess(elapsed, 1.0, "aucune attente ne devait avoir lieu sans rejeu")
+
+    async def test_resumed_session_opens_immediately_without_reseed(self) -> None:
+        session = _SlowAckSession()
+        gemini = _make_seeded_gemini(session)
+        gemini.resumption_handle = "handle-valide"
+
+        start = time.monotonic()
+        await asyncio.wait_for(gemini._connect_once(), timeout=2.0)
+        elapsed = time.monotonic() - start
+
+        self.assertFalse(
+            gemini.context_seeded,
+            "le serveur reprend la session lui-même : aucun rejeu local ne doit partir",
+        )
+        self.assertEqual(session.sent, [])
+        self.assertTrue(gemini._session_ready)
+        self.assertLess(elapsed, 1.0)
+
+
+class TestBugReproducesWithoutThePatchS6(unittest.IsolatedAsyncioTestCase):
+    """Contrôle négatif (mission v1.7.5) : sans le correctif (c'est-à-dire si
+    ``_seed_context`` n'attendait pas la confirmation serveur, comportement
+    EXACT d'avant ce correctif), la porte audio s'ouvre bien AVANT que le
+    serveur ait traité le rejeu — la course existe réellement, elle n'est pas
+    une invention du nouveau test.
+    """
+
+    async def test_old_behavior_opens_the_gate_before_the_ack(self) -> None:
+        session = _SlowAckSession()
+        gemini = _make_seeded_gemini(session)
+
+        async def _pre_v175_seed_context(self: GeminiLive) -> bool:
+            """Rejoue EXACTEMENT le ``_seed_context`` d'avant v1.7.5 : envoie
+            le rejeu puis rend la main sans jamais attendre de réponse."""
+            if self.resumption_handle:
+                return False
+            messages = self.conversation.get_messages()
+            if not messages:
+                return False
+            from src.conversation import to_gemini_contents
+
+            turns = to_gemini_contents(messages)
+            if turns and turns[-1].get("role") != "user":
+                turns = [*turns, {"role": "user", "parts": [{"text": " "}]}]
+            await self.session.send_client_content(turns=turns, turn_complete=True)
+            return True
+
+        with mock.patch.object(GeminiLive, "_seed_context", _pre_v175_seed_context):
+            await asyncio.wait_for(gemini._connect_once(), timeout=2.0)
+
+        self.assertTrue(gemini.context_seeded)
+        self.assertTrue(
+            gemini._session_ready,
+            "le comportement PRÉ-v1.7.5 reproduit bien le bug : la porte "
+            "s'ouvre immédiatement après l'ENVOI, sans qu'aucune réponse du "
+            "serveur n'ait été observée — c'est exactement la course qui "
+            "casse le scénario S6 contre l'API réelle",
+        )
+        self.assertTrue(gemini.can_send())
+        # Le serveur n'a RIEN répondu : la preuve que la porte s'est ouverte
+        # sur la seule foi de l'envoi, pas d'une confirmation réelle.
+        self.assertEqual(len(session.sent), 1)
+
+
+class TestMultipleReconnectionsDoNotDuplicateContext(_LifecycleTestCase):
+    """Item G (mission v1.7.5) : au moins deux reconnexions réelles
+    successives ne doivent ni dupliquer ni perdre le contexte local, et la
+    SECONDE reconnexion doit être une REPRISE (handle obtenu après le rejeu
+    de la première) plutôt qu'un second rejeu complet — sinon le contexte
+    rejoué grossirait sans borne à chaque reconnexion.
+    """
+
+    def test_second_reconnection_resumes_instead_of_reseeding(self) -> None:
+        lab = self.make_lab()
+        gemini = lab.gemini
+        lab.server.next_user_transcripts = ["mon prénom est simon"]
+
+        lab.user_speaks(1.5)
+        self.settle_response(lab)
+        messages_before = len(gemini.conversation.get_messages())
+        self.assertEqual(messages_before, 2)
+
+        # Première coupure réseau réelle : aucun handle disponible -> VRAI
+        # rejeu local (chemin modifié par v1.7.4/v1.7.5).
+        gen_before_first = gemini.session_generation
+        gemini.resumption_handle = None
+        asyncio.run_coroutine_threadsafe(
+            lab._drop_current_session(), lab._loop
+        ).result(timeout=5.0)
+        lab.wait_until(
+            lambda: gemini.session_generation > gen_before_first,
+            10.0, "première reconnexion",
+        )
+        lab.wait_until(lambda: gemini.can_send(), 10.0, "session prête (1re reco)")
+        gen_after_first = gemini.session_generation
+        self.assertTrue(gemini.context_seeded, "premier rejeu attendu (aucun handle)")
+        handle_after_first = gemini.resumption_handle
+        self.assertIsNotNone(
+            handle_after_first,
+            "un nouveau handle doit avoir été délivré après le rejeu (sinon "
+            "toute reconnexion suivante rejouerait l'historique en entier à "
+            "chaque fois, sans jamais converger)",
+        )
+        messages_after_first = len(gemini.conversation.get_messages())
+        self.assertIn(
+            messages_after_first - messages_before, (0, 1),
+            "au plus UN message orphelin (la reprise 2.x) après le 1er rejeu",
+        )
+
+        # Deuxième coupure réseau réelle : CETTE FOIS un handle est présent
+        # -> la session doit être REPRISE, pas re-rejouée.
+        asyncio.run_coroutine_threadsafe(
+            lab._drop_current_session(), lab._loop
+        ).result(timeout=5.0)
+        lab.wait_until(
+            lambda: gemini.session_generation > gen_after_first,
+            10.0, "deuxième reconnexion",
+        )
+        lab.wait_until(lambda: gemini.can_send(), 10.0, "session prête (2e reco)")
+
+        self.assertFalse(
+            gemini.context_seeded,
+            "la 2e reconnexion devait REPRENDRE la session (handle présent), "
+            "pas rejouer l'historique une seconde fois",
+        )
+        resume_events = [
+            e for e in gemini.trace_events() if e["kind"] == "SESSION_RESUME"
+        ]
+        self.assertTrue(resume_events, "aucune reprise de session tracée")
+
+        # Le contexte local n'a PAS grossi : aucune duplication, rien perdu.
+        messages_after_second = len(gemini.conversation.get_messages())
+        self.assertEqual(
+            messages_after_second, messages_after_first,
+            "le contexte local a changé alors qu'aucun rejeu n'a eu lieu à "
+            "la 2e reconnexion : signe d'une duplication ou d'une perte",
+        )
+
+        # Un vrai suivi après ces deux reconnexions reste fonctionnel.
+        lab.server.next_user_transcripts = ["quel est mon prénom"]
+        lab.user_speaks(1.5)
+        self.settle_response(lab, min_turns=2)
+        self.assertEqual(len(lab.user_turns()), 2)
+        self.assertEqual(len(lab.ghost_turns()), 0)
 
 
 if __name__ == "__main__":

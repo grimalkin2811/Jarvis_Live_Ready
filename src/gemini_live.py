@@ -106,6 +106,36 @@ HISTORY_CONFIG_ENABLED = _env_flag("JARVIS_LIVE_HISTORY_CONFIG", True)
 #: ce qui détruit le contexte serveur. Kill-switch : ``JARVIS_LIVE_COMPRESSION=0``.
 CONTEXT_COMPRESSION_ENABLED = _env_flag("JARVIS_LIVE_COMPRESSION", True)
 
+#: Délai maximal pour attendre que le serveur confirme avoir réellement
+#: TRAITÉ le rejeu de contexte (son propre tour de clôture, observé via
+#: ``session.receive()``) avant d'autoriser le micro à parler du tour
+#: suivant.
+#:
+#: Cause racine (audit v1.7.5, échec du scénario S6 contre l'API réelle) :
+#: ``send_client_content(turn_complete=True)`` est un simple envoi réseau —
+#: il revient dès que le client a ÉCRIT sur le WebSocket, PAS quand le
+#: serveur a fini de traiter ce tour. Sur les modèles audio 2.x, ce tour
+#: clôturé déclenche une inférence (le modèle produit une brève reprise,
+#: cf. ``_seed_context``) : tant que cette inférence n'est pas terminée
+#: (son propre ``turn_complete`` reçu), le serveur est encore « occupé » par
+#: le tour de rejeu. Avant ce correctif, Jarvis ouvrait la porte audio dès
+#: l'ENVOI du rejeu (``context_seeded=True``) sans jamais vérifier qu'il
+#: avait été COMMITÉ : le micro pouvait alors livrer la question réelle
+#: suivante PENDANT que le serveur générait encore sa reprise, produisant un
+#: tour corrompu (réponse vide ou hors-sujet) — exactement le symptôme
+#: observé en validation réelle (scénario S6 : « Quel est mon prénom ? » ->
+#: réponse=''), alors que le faux serveur de test ne pouvait PAS reproduire
+#: la course (il génère sa réponse de façon synchrone à l'intérieur même de
+#: l'appel ``send_client_content``, ce qu'un vrai WebSocket ne fait jamais).
+#:
+#: Sur les modèles 3.x avec ``historyConfig`` (commit silencieux, aucune
+#: inférence déclenchée par le rejeu), cette attente expire normalement
+#: SANS réponse : c'est le comportement attendu, pas une erreur — la porte
+#: s'ouvre quand même après le délai (dégradation contrôlée), et
+#: ``context_seed_confirmed`` reste simplement False pour dire honnêtement
+#: qu'aucune confirmation explicite n'a été observée.
+SEED_COMMIT_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_SEED_COMMIT_TIMEOUT", "5") or 5)
+
 
 class GeminiLive:
     def __init__(
@@ -177,6 +207,16 @@ class GeminiLive:
         self.session_id: str | None = None
         self.session_generation = 0
         self.context_seeded = False
+        # Diagnostic (v1.7.5 — audit S6) : ``context_seeded`` dit seulement
+        # qu'un rejeu a été ENVOYÉ, pas que le serveur l'a réellement COMMITÉ
+        # avant l'arrivée du tour suivant. ``context_seed_confirmed`` est le
+        # signal fort : vrai seulement si le tour de clôture du serveur
+        # (son propre ``turn_complete`` en réponse au rejeu) a été OBSERVÉ
+        # avant l'ouverture de la porte audio. Ne jamais confondre les deux :
+        # c'est précisément cette confusion qui laissait passer un tour
+        # suivant corrompu contre l'API réelle (réponse vide ou hors-sujet)
+        # alors que tout semblait correct côté client.
+        self.context_seed_confirmed = False
         # Diagnostic (v1.7.4 — correctif reconnexion-par-tour) : pourquoi le
         # PROCHAIN appel à ``connect()`` a été jugé nécessaire. Positionné
         # explicitement à chaque déclencheur légitime (GoAway, reset de
@@ -502,6 +542,7 @@ class GeminiLive:
             self.session_generation, self.conversation.conversation_id,
             len(messages), len(turns), turn_complete, SEED_MODE,
         )
+        self.context_seed_confirmed = False
         try:
             await self.session.send_client_content(turns=turns, turn_complete=turn_complete)
         except Exception as exc:
@@ -514,7 +555,60 @@ class GeminiLive:
             "CONTEXT REPLAY END gen=%s resultat=ok roles=%s contents=%s turn_complete=%s",
             self.session_generation, roles, len(turns), turn_complete,
         )
+        # CORRECTIF v1.7.5 (cause racine de l'échec S6 en validation réelle) :
+        # l'envoi ci-dessus n'est qu'une écriture réseau — il ne dit RIEN sur
+        # le moment où le serveur a fini de TRAITER ce tour. Si le rejeu a été
+        # clôturé (turn_complete=True), le serveur va généralement répondre
+        # (reprise 2.x) ; tant que cette réponse n'est pas observée, le micro
+        # ne doit PAS être autorisé à parler du tour suivant (cf.
+        # ``SEED_COMMIT_TIMEOUT_SECONDS``). Sans ce correctif,
+        # ``context_seeded=True`` était pris à tort pour une preuve que le
+        # contexte était déjà exploitable par le modèle.
+        if turn_complete:
+            self.context_seed_confirmed = await self._await_seed_commit()
         return True
+
+    async def _await_seed_commit(self) -> bool:
+        """Consomme le tour de confirmation serveur du rejeu de contexte.
+
+        Appelle ``_receive_one_turn_cycle()`` — EXACTEMENT le même mécanisme
+        qui traite normalement un tour réel — pour absorber la réponse du
+        serveur au rejeu (reprise 2.x : transcription + audio + son propre
+        ``turn_complete``) AVANT que la porte audio ne s'ouvre. Borné par
+        ``SEED_COMMIT_TIMEOUT_SECONDS`` : sur les modèles 3.x/historyConfig
+        (commit silencieux, aucune inférence déclenchée), rien n'arrivera
+        jamais sur ce tour — le délai expire alors normalement et la porte
+        s'ouvre quand même (dégradation contrôlée, jamais un blocage
+        permanent du micro).
+
+        Retourne True si une confirmation serveur a réellement été observée
+        (son propre ``TURN_COMPLETE`` sur CE tour précis), False si le délai
+        a expiré sans réponse. Une erreur réseau/protocole pendant l'attente
+        est propagée normalement (comme toute autre erreur de session) : la
+        boucle externe (``main.py``/``ui.py``) reconnectera.
+        """
+        try:
+            received = await asyncio.wait_for(
+                self._receive_one_turn_cycle(), timeout=SEED_COMMIT_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            log.warning(
+                "SEED COMMIT TIMEOUT gen=%s : aucune confirmation serveur sous %.1fs "
+                "(normal sur un modèle à commit silencieux ; sinon, latence réseau "
+                "anormale) — ouverture du micro en dégradé, sans confirmation",
+                self.session_generation, SEED_COMMIT_TIMEOUT_SECONDS,
+            )
+            self._record_trace("SEED_COMMIT_TIMEOUT", session_id=self.session_id)
+            return False
+        log.info(
+            "SEED COMMIT CONFIRMED gen=%s : réponse serveur au rejeu reçue avant "
+            "l'ouverture du micro",
+            self.session_generation,
+        )
+        self._record_trace(
+            "SEED_COMMIT_CONFIRMED", session_id=self.session_id, received=received
+        )
+        return bool(received)
 
     #: Compat v1.7.0 : l'ancien nom reste disponible pour les diagnostics.
     _replay_context = _seed_context
@@ -877,6 +971,7 @@ class GeminiLive:
             getattr(self.session, "setup_complete", None), "session_id", None
         ) or getattr(self.session, "session_id", None)
         self.context_seeded = False
+        self.context_seed_confirmed = False
         self._session_ready = False
         # Diagnostic (v1.7.4) : pourquoi CETTE reconnexion a eu lieu. Toute
         # valeur autre que "startup"/"goaway"/"context_reset"/"voice_change"/
@@ -905,8 +1000,11 @@ class GeminiLive:
                 "SESSION_CONNECT", session_id=self.session_id, reason=reconnect_reason
             )
         # Rejeu du contexte local UNIQUEMENT si le serveur n'a pas repris la
-        # session. La porte audio reste fermée jusqu'à la fin du rejeu : aucun
-        # chunk ne peut précéder l'historique sur le WebSocket.
+        # session. La porte audio reste fermée jusqu'à la fin du rejeu ET,
+        # si ce rejeu a été clôturé, jusqu'à ce que le serveur ait lui-même
+        # confirmé l'avoir traité (``_await_seed_commit``, v1.7.5) : aucun
+        # chunk ne peut précéder l'historique sur le WebSocket, NI arriver
+        # pendant que le serveur génère encore sa réponse à ce rejeu.
         self.context_seeded = await self._seed_context()
         self._session_ready = True
         # Diagnostic (v1.7.4 — validation réelle, item #7 de l'audit) :
@@ -915,10 +1013,15 @@ class GeminiLive:
         # tant que ``_session_ready`` est faux — cf. « session pas prete »).
         # Sert à prouver, trace à l'appui, qu'aucun bloc audio n'a pu
         # atteindre une session neuve avant la fin de son rejeu de contexte.
+        # ``context_seed_confirmed`` (v1.7.5) distingue « rejeu envoyé » de
+        # « rejeu réellement traité par le serveur avant ce marqueur » — ne
+        # jamais déduire la seconde de la première (cause racine de
+        # l'échec du scénario S6 contre l'API réelle, cf. audit v1.7.5).
         self._record_trace(
             "SESSION_READY",
             session_id=self.session_id,
             context_seeded=self.context_seeded,
+            context_seed_confirmed=self.context_seed_confirmed,
         )
         self._start_voice_watcher()
 

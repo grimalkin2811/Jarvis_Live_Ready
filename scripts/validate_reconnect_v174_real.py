@@ -237,10 +237,25 @@ class ScenarioRunner:
             since_all = len(self.lab.turns)
             self.say(PROMPTS[0], wake=True)
             gen0 = self.lab.gemini.session_generation
-            self.lab.wait(2.0)
+            # v1.7.5 : un délai fixe de 2 s n'est pas fiable (le TTS de la
+            # réponse précédente peut encore jouer, ou la passerelle micro
+            # peut ne pas encore avoir rouvert la porte) -> cela produisait
+            # un TimeoutError (S3 « NON TESTABLE ») sans rapport avec un bug
+            # de contexte. On attend explicitement que Jarvis soit
+            # redevenu réellement prêt à écouter avant d'envoyer le tour
+            # suivant.
+            self.lab.wait_until(
+                lambda: self.lab.gemini.can_send() and not self.lab.gemini.speaking,
+                20.0,
+                "Jarvis prêt à écouter (avant 2e tour de S3)",
+            )
             self.say(PROMPTS[1])
             gen1 = self.lab.gemini.session_generation
-            self.lab.wait(2.0)
+            self.lab.wait_until(
+                lambda: self.lab.gemini.can_send() and not self.lab.gemini.speaking,
+                20.0,
+                "Jarvis prêt à écouter (avant 3e tour de S3)",
+            )
             self.say(PROMPTS[2])
             gen2 = self.lab.gemini.session_generation
             n_new_turns = len(self.lab.turns) - since_all
