@@ -9,6 +9,52 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [Non publié] — correctif S6 (mémoire après reconnexion), en attente de validation réelle
+
+**Ne pas fusionner/publier avant confirmation.** Voir
+`docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` §10 pour l'investigation
+complète, la cause racine et le protocole avant/après.
+
+### Corrigé
+
+- **`GeminiLive`** : après une reconnexion sans session resumption valide,
+  le rejeu local du contexte (`_seed_context`) ouvrait la porte micro dès
+  l'écriture réseau du rejeu (`context_seeded=True`), sans jamais vérifier
+  que le serveur avait réellement fini de le traiter. Sur les modèles audio
+  « 2.x », ce tour de rejeu déclenche côté serveur une courte reprise orale
+  (son propre tour, son propre `turn_complete`) : si le tour utilisateur
+  suivant arrivait pendant que le serveur générait encore cette reprise, il
+  pouvait recevoir une réponse vide/hors-sujet — symptôme observé en
+  validation réelle (scénario S6 : « Quel est mon prénom ? » -> réponse
+  vide). Nouveau flag `context_seed_confirmed` et méthode
+  `_await_seed_commit()` : la porte micro n'est désormais ouverte qu'après
+  avoir observé la confirmation serveur du rejeu (bornée par
+  `SEED_COMMIT_TIMEOUT_SECONDS`, défaut 5 s, override
+  `JARVIS_LIVE_SEED_COMMIT_TIMEOUT`) ; sur un modèle à commit silencieux
+  (3.x + `historyConfig`), ce délai expire normalement sans bloquer le
+  micro. `SESSION_READY` journalise désormais `context_seeded` et
+  `context_seed_confirmed` séparément.
+- **`scripts/validate_reconnect_v174_real.py`** : le scénario S3 (trois
+  tours consécutifs) utilisait un délai fixe de 2 s entre les tours, qui
+  pouvait expirer (`TimeoutError`, « NON TESTABLE ») alors que Jarvis
+  jouait encore sa réponse précédente ou n'avait pas encore rouvert sa
+  porte micro — sans rapport avec un bug de contexte/session. Remplacé par
+  une attente explicite de disponibilité réelle (`can_send()` et
+  `not speaking`). N'affecte que le harnais de validation, pas le produit.
+
+### Ajouté (tests)
+
+- `tests/test_session_lifecycle.py` : 6 nouveaux tests de non-régression
+  (items C, E, G de l'audit v1.7.5) prouvant que la porte micro bloque
+  jusqu'à l'ack serveur réel du rejeu (et seulement jusque-là), qu'elle
+  s'ouvre en mode dégradé après un délai borné sans ack, qu'aucune attente
+  n'a lieu sans rejeu (historique vide ou session reprise), et que deux
+  reconnexions réelles successives ne dupliquent ni ne perdent le contexte
+  (la seconde reprend via handle au lieu de rejouer une seconde fois).
+- `tests/test_live_context_harness.py` : deux tests existants renforcés
+  pour lire l'état post-rejeu seulement après la fin réelle de l'attente de
+  confirmation.
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

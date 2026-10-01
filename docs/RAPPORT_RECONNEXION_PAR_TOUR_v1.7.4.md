@@ -542,3 +542,269 @@ explicite, conformément à la consigne) :**
   S1+S4) — fortement probable au vu de l'audit (§9.1) et des tests contre
   le faux serveur, mais seule l'exécution réelle demandée à l'utilisateur
   peut le confirmer formellement.
+
+## 10. Suivi v1.7.5 bis — Correction réelle du scénario S6 (mémoire contextuelle après reconnexion)
+
+### 10.0 Contexte
+
+L'utilisateur a exécuté `scripts/validate_reconnect_v174_real.py` sur une
+machine Windows réelle (micro + TTS + clé Gemini réelle). Résultat :
+`v1.7.3` (double cycle) et `v1.7.4` (tempête de reconnexions) restent
+**corrigés** (trace réelle : `SESSION_REUSED_NEXT_TURN`,
+`session_generation=1` stable sur plusieurs tours). Verdicts par scénario :
+
+| Scénario | Verdict réel (avant ce correctif) |
+|---|---|
+| S1+S4 (silence, expiration) | PASS |
+| S2 (deux tours rapides, même session) | PASS (note : rappel de « Simon » faible même en restant dans la même session) |
+| S3 (trois tours consécutifs) | NON TESTABLE (`TimeoutError`) |
+| S5 (reconnexion réseau forcée) | PASS |
+| **S6 (mémoire après reconnexion réelle)** | **FAIL — réponse vide après la reconnexion** |
+
+Ce chapitre documente l'investigation, la cause racine identifiée et le
+correctif appliqué pour S6, ainsi que le diagnostic de S3.
+
+### 10.1 Méthode : trace structurée du scénario minimal avant tout correctif
+
+Avant toute modification de code, le scénario minimal (Tour A « Mon prénom
+est Simon. » → reconnexion forcée → Tour B « Quel est mon prénom ? ») a été
+rejoué contre le faux serveur temps réel (`EchoLab`, fidèle au séquencement
+réseau réel : `send_client_content()` revient immédiatement, la réponse du
+serveur n'arrive que plus tard via `session.receive()`), en instrumentant
+explicitement :
+
+- le contenu exact du contexte local avant reconnexion (`gemini.conversation.get_messages()` — rôles + nombre de messages) ;
+- le moment exact de mise à jour de `ConversationContext` (après chaque tour utilisateur/assistant complet, cf. `src/conversation.py`) ;
+- le moment exact de capture du contexte pour une reconnexion (`_seed_context()`, appelé depuis `connect()` juste avant `_session_ready = True`) ;
+- la séquence complète d'évènements de trace : `SESSION_CONNECT` → (rejeu si pas de handle) → `SESSION_READY` → premier `AUDIO_SENT_TO_GEMINI` → première réponse ;
+- `session_generation`, `resumption_handle`, et le flag diagnostique ajouté `context_seed_confirmed`.
+
+Extrait réel de cette trace (faux serveur, aucune clé API impliquée) **avant**
+correctif (le code de confirmation n'existant pas encore, `SESSION_READY`
+suit immédiatement l'envoi du rejeu, sans attendre quoi que ce soit) :
+
+```
+SESSION_CONNECT   gen=2 reason=error
+SESSION_READY     gen=2 context_seeded=True     # <-- porte ouverte tout de suite
+```
+
+**Constat :** `context_seeded=True` ne prouve que l'ÉCRITURE réseau du rejeu
+(`send_client_content(turn_complete=True)` a retourné), jamais que le
+serveur a fini de le TRAITER. Sur les modèles audio « 2.x », ce tour de
+rejeu clôturé déclenche côté serveur une courte reprise orale (son propre
+tour, avec son propre `turn_complete`) ; avant le correctif, rien n'attendait
+cette confirmation.
+
+### 10.2 Cause racine de S6
+
+`send_client_content()` est un appel réseau asynchrone qui revient dès que
+le client a écrit sur le WebSocket — **pas** quand le serveur a fini de
+traiter ce tour. Après une reconnexion sans handle de reprise valide
+(`_seed_context()`), Jarvis ouvrait la porte micro (`_session_ready = True`,
+`SESSION_READY` tracé) **immédiatement après cet envoi**, sans jamais
+vérifier que le serveur avait réellement fini de committer/traiter le
+rejeu. Contre le faux serveur de test, ceci ne pouvait pas être détecté,
+car `VadLiveServer`/`FakeLiveSession` répondent de façon **synchrone**, à
+l'intérieur même de l'appel `send_client_content()` — un vrai WebSocket ne
+fait jamais ça.
+
+Contre l'API réelle, la fenêtre entre « rejeu envoyé » et « rejeu traité »
+est bien réelle (latence réseau + temps d'inférence du serveur pour générer
+sa reprise). Si le tour B (« Quel est mon prénom ? ») arrive dans cette
+fenêtre, il est traité par un serveur encore occupé par le tour de rejeu :
+symptôme observé = **réponse vide** après reconnexion (exactement S6).
+
+**Distinction explicite (demandée) entre les quatre niveaux :**
+
+| Niveau | Avant correctif | Après correctif |
+|---|---|---|
+| Contexte local Jarvis (`ConversationContext`) | Toujours intact (jamais perdu) | Inchangé |
+| Historique envoyé à Gemini (`_seed_context`/`_replay_context`) | Envoyé en entier, rôles préservés | Inchangé |
+| Contexte accepté par Gemini (écriture réseau confirmée) | `context_seeded=True` dès l'envoi | Idem, mais ne dit toujours que « envoyé » |
+| Contexte réellement exploitable par Gemini pour le tour suivant | **Jamais vérifié** — porte ouverte trop tôt | **`context_seed_confirmed`** : vrai seulement si le propre `turn_complete` du serveur pour CE tour de rejeu a été observé avant d'ouvrir la porte |
+
+### 10.3 Correctif (`src/gemini_live.py`)
+
+- Nouveau flag `context_seed_confirmed` (toujours réinitialisé à `False` à
+  chaque reconnexion et avant chaque rejeu).
+- Nouvelle méthode `_await_seed_commit()` : après un rejeu clôturé
+  (`turn_complete=True`), consomme **le même mécanisme exact** qu'un tour
+  réel (`_receive_one_turn_cycle()`) pour absorber la réponse du serveur à
+  ce rejeu (reprise 2.x : texte + audio + son propre `turn_complete`),
+  borné par `SEED_COMMIT_TIMEOUT_SECONDS` (défaut **5 s**, override
+  `JARVIS_LIVE_SEED_COMMIT_TIMEOUT`).
+- Sur un modèle à commit silencieux (3.x + `historyConfig`, aucune
+  inférence déclenchée par le rejeu), ce délai expire **normalement** sans
+  réponse : la porte s'ouvre quand même après le délai (dégradation
+  contrôlée — **jamais un blocage permanent du micro**), et
+  `context_seed_confirmed` reste honnêtement `False`.
+- `_connect_once()` n'ouvre `_session_ready` (et donc la porte micro)
+  qu'**après** cette attente, que la session soit neuve (rejeu) ou reprise
+  (pas de rejeu, pas d'attente — handle déjà valide).
+- `SESSION_READY` trace désormais `context_seeded` **et**
+  `context_seed_confirmed` séparément : les deux ne doivent plus jamais être
+  confondus.
+
+Extrait réel de la même trace **après** correctif (faux serveur, item
+`TestSeedCommitAwaitsRealServerAck`) :
+
+```
+SESSION_CONNECT        gen=2 reason=error
+SEED_COMMIT_CONFIRMED  gen=2 received=True   # <-- ack serveur du rejeu, observé en premier
+SESSION_READY          gen=2 context_seeded=True context_seed_confirmed=True
+```
+
+La porte reste donc fermée strictement entre ces deux lignes — prouvé par
+`TestSeedCommitAwaitsRealServerAck::test_connect_once_blocks_until_server_acks_the_seed`,
+qui retarde artificiellement l'ack serveur et vérifie qu'aucun audio ne peut
+être envoyé avant sa réception, et qu'il s'ouvre immédiatement après.
+
+### 10.4 Protocole avant/après (séquence SESSION_CONNECT → … → premier audio)
+
+**Avant :**
+`SESSION_CONNECT` → setup → (si pas de handle) rejeu envoyé
+(`send_client_content`, retour réseau immédiat) → `SESSION_READY`
+(immédiat) → micro ouvert → **risque réel** : le tour utilisateur suivant
+peut atteindre un serveur encore occupé par sa propre reprise du rejeu.
+
+**Après :**
+`SESSION_CONNECT` → setup → session resumption (si handle valide, aucun
+rejeu, aucune attente) **ou** rejeu envoyé puis `_await_seed_commit()`
+(consomme l'ack serveur du rejeu, borné à 5 s) → `SESSION_READY` (avec
+`context_seed_confirmed` reflétant honnêtement si l'ack a été vu) → micro
+ouvert → le tour utilisateur suivant ne peut plus arriver pendant que le
+serveur traite encore le rejeu.
+
+### 10.5 Tests ajoutés (`tests/test_session_lifecycle.py`, 6 nouveaux, items C/E/G)
+
+Utilisent un faux double de session minimal (`_SlowAckSession`) construit
+spécifiquement pour ce correctif, plus fidèle qu'`EchoLab`/`VadLiveServer`
+au comportement réseau réel : `send_client_content()` revient
+**immédiatement** (fidélité WebSocket), et la réponse du serveur n'est
+délivrée que lorsque le test appelle explicitement `release_ack()` (file
+`asyncio.Queue`). Cela permet de prouver déterministement, sans dépendre
+d'un vrai réseau :
+
+- `TestSeedCommitAwaitsRealServerAck` — la porte reste fermée tant que
+  l'ack serveur n'est pas arrivé, et s'ouvre juste après.
+- `TestSeedCommitTimesOutWithoutBlockingForever` — modèle à commit
+  silencieux : la porte s'ouvre en mode dégradé après le délai borné, sans
+  jamais bloquer indéfiniment.
+- `TestSeedCommitSkippedWithoutASeed` (2 tests) — démarrage à froid
+  (historique vide) et session reprise (handle déjà valide) : aucun rejeu,
+  aucune attente, porte ouverte immédiatement.
+- `TestBugReproducesWithoutThePatchS6` — contrôle négatif : en
+  réintroduisant (monkeypatch scopé au test) le comportement pré-correctif
+  (pas d'attente), la porte s'ouvre AVANT l'ack serveur — preuve que la
+  course corrigée était réelle, pas un artefact du mock.
+- `TestMultipleReconnectionsDoNotDuplicateContext` (item G, contre le vrai
+  `EchoLab` temps réel) — deux reconnexions réelles successives : la
+  première rejoue (aucun handle), la seconde **reprend** (handle obtenu
+  après la première) au lieu de rejouer une seconde fois ; le contexte
+  local ne grossit ni ne diminue entre les deux ; un vrai tour de suivi
+  après les deux reconnexions reste fonctionnel.
+
+Les items A, B, D et F étaient déjà couverts par des tests existants
+(`test_live_context_harness.py`, `TestRealFollowUpStillHandledOnSameSession`,
+`TestContextPreservedAcrossRealReconnection`,
+`test_F_seed_cloture_et_termine_par_un_tour_user`) ; deux d'entre eux ont été
+renforcés (voir §10.6) pour lire `context_seeded`/`context_seed_confirmed`
+seulement après la fin réelle de l'attente de confirmation (sans quoi ils
+auraient pu lire un état transitoire par accident de timing, pas par
+preuve).
+
+### 10.6 Durcissement de l'infrastructure de test (nécessaire pour que l'attente soit testable)
+
+- `tests/__init__.py` : `JARVIS_LIVE_SEED_COMMIT_TIMEOUT=1.5` par défaut en
+  environnement de test (appliqué avant tout import de `src.gemini_live`),
+  pour ne pas ralentir chaque test de 5 s.
+- `tests/voice_harness.py` : nouvelle méthode publique `VoiceHarness.wait_ready()`
+  pour les tests qui lisent l'état post-rejeu sans enchaîner immédiatement
+  sur `speak()` (qui, lui, attend déjà en interne).
+- `tests/test_live_context_harness.py` : deux tests corrigés pour attendre
+  `wait_ready()` avant de lire `context_seeded`/`context_seed_confirmed` —
+  sans quoi ils pouvaient lire l'état avant que l'attente de confirmation
+  n'ait eu le temps de se résoudre (faux négatif/positif selon le timing
+  d'ordonnancement, pas un vrai bug).
+
+### 10.7 Diagnostic de S3 (« NON TESTABLE », `TimeoutError`)
+
+**Ce n'est pas un bug de contexte/session** : l'audit du scénario (trois
+tours consécutifs) montre que le script de validation réelle insérait un
+délai **fixe** de 2 s entre deux tours
+(`scripts/validate_reconnect_v174_real.py`, scénario S3) avant d'envoyer le
+tour suivant. Un délai fixe ne garantit pas que Jarvis a réellement fini de
+jouer la réponse précédente (TTS) ni que la passerelle micro a réellement
+rouvert sa porte — sur du matériel/réseau réel, ceci peut varier et produire
+un envoi de tour pendant que Jarvis parle encore, d'où un `TimeoutError`
+(aucune réponse détectée dans le délai imparti), sans rapport avec le
+correctif S6 ni avec une perte de contexte.
+
+**Correctif appliqué (harnais de script uniquement, aucun changement de
+comportement produit) :** les deux délais fixes `wait(2.0)` du scénario S3
+sont remplacés par une attente de préparation réelle :
+`self.lab.wait_until(lambda: gemini.can_send() and not gemini.speaking, 20.0, "Jarvis prêt à écouter")`.
+Ceci ne change ni les scénarios S1/S2/S4/S5/S6, ni le comportement du
+produit — uniquement la synchronisation du harnais de test avec l'état réel
+de Jarvis avant d'envoyer le tour suivant.
+
+### 10.8 Résultats locaux (après correctif)
+
+| Suite | Résultat |
+|---|---|
+| `tests/test_session_lifecycle.py` | **12/12** PASS (~96 s) |
+| `tests/test_live_context_harness.py` | **33/33** PASS (~5.4 s) |
+| Régression combinée (`test_version`, `test_session_lifecycle`, `test_gemini_live`, `test_turn_race`, `test_conversation_pipeline`, `test_live_context_harness`, `test_interruption`, `test_voice_runtime`, `test_desktop_events`, `test_conversation_context`, `test_conversation_providers`) | **232/232** PASS (~125 s) |
+| `tests/test_echo_loop.py` (harnais temps réel, écho acoustique) | **20/20** PASS (~269 s) |
+| `ruff check` (`src/gemini_live.py`, `tests/__init__.py`, `tests/voice_harness.py`, `tests/test_live_context_harness.py`, `tests/test_session_lifecycle.py`, `scripts/validate_reconnect_v174_real.py`) | Propre |
+
+### 10.9 Confirmation explicite de non-régression v1.7.3 / v1.7.4
+
+- **v1.7.3** (double cycle « Dis-moi tout ») : `tests/test_turn_race.py` et
+  `tests/test_echo_loop.py` passent intégralement (20/20) — aucune
+  modification de ces fichiers ni du chemin qu'ils couvrent.
+- **v1.7.4** (reconnexion-par-tour / « Je vous écoute » périodique) :
+  `tests/test_session_lifecycle.py` passe intégralement, y compris les 6
+  tests déjà livrés en v1.7.4 (`TestNoSpuriousReconnectDuringActiveWindow`,
+  `TestRealFollowUpStillHandledOnSameSession`,
+  `TestRealReconnectionIsNotCausedByTurnComplete`,
+  `TestNoAudioBeforeSessionReady`,
+  `TestContextPreservedAcrossRealReconnection`,
+  `TestBugReproducesWithoutThePatch`) — aucun n'a dû être affaibli.
+- Les 7 invariants listés dans la mission v1.7.5 (fenêtre active de 8 s
+  sans reconnexion parasite, tours rapides sur la même session,
+  reconnexion uniquement pour une vraie raison, aucun audio avant
+  `SESSION_READY`, protections `session_generation`/`turn_epoch`/
+  `_can_send_now()` actives, absence de boucle/réveil périodique/réponse
+  double, S1+S4/S2/S5 toujours PASS) restent tous vérifiés par la suite
+  combinée ci-dessus.
+
+### 10.10 Ce qui reste à faire avant de considérer la mission terminée
+
+**Le correctif ci-dessus n'a PAS encore été revalidé contre l'API Gemini
+Live réelle.** Conformément à la consigne (le test réel est la seule source
+de vérité pour S6, une suite contre faux serveur qui passe n'est pas
+suffisante), il reste à :
+
+1. Faire ré-exécuter `scripts/validate_reconnect_v174_real.py` par
+   l'utilisateur sur sa machine Windows (seul environnement avec accès
+   réseau réel à l'API Gemini depuis ce contexte de travail).
+2. Vérifier explicitement : **S6 = PASS** (Tour B mentionne bien « Simon »
+   après une reconnexion réelle), **S1+S4 = PASS**, **S2 = PASS**,
+   **S5 = PASS** (toujours, sans régression).
+3. Vérifier si le correctif du harnais S3 (§10.7) suffit à le rendre
+   TESTABLE ; documenter le verdict réel obtenu (PASS/FAIL), qu'il soit
+   positif ou négatif.
+4. Si S6 échoue encore en conditions réelles (p. ex. parce que le modèle de
+   production est en mode « commit silencieux » et ne renvoie jamais de
+   reprise orale après le rejeu, auquel cas `_await_seed_commit()` expire
+   systématiquement sans ack et n'apporte alors aucune garantie
+   supplémentaire), **ne pas déclarer la mission terminée** : revenir à
+   l'instrumentation réelle (trace complète de session avec la clé jamais
+   journalisée) pour déterminer si le modèle de production utilisé
+   (`gemini-2.5-flash-native-audio-preview-12-2025` ou équivalent) est bien
+   du côté « reprise 2.x » ou du côté « commit silencieux 3.x », et adapter
+   le correctif en conséquence (p. ex. nécessité d'un tour placeholder
+   différent, ou d'un mécanisme de confirmation propre au mode silencieux).
+5. Ne pas fusionner/publier tant que le point 2 n'est pas entièrement
+   vérifié avec un verdict S6 = PASS réel.
