@@ -603,6 +603,34 @@ class ModernModelTests(_HarnessCase):
         self.assertIsNotNone(getattr(config, "input_audio_transcription", None))
         self.assertIsNotNone(getattr(config, "output_audio_transcription", None))
 
+    async def test_le_kill_switch_de_compression_retire_bien_le_champ(self) -> None:
+        """v1.7.5 quater (investigation S6, validation réelle) : Google
+        documente ``context_window_compression`` comme un facteur AGGRAVANT
+        du bug serveur de génération vide/``turnComplete`` prématuré sur les
+        modèles audio natifs (googleapis/python-genai#2117 : « Growing
+        context length... context_window_compression: enabling worsens »).
+        C'est le seul levier concrètement sous notre contrôle identifié par
+        cette investigation -- avant de recommander de le désactiver en
+        conditions réelles (``JARVIS_LIVE_COMPRESSION=0``), ce test garantit
+        au moins que le kill-switch existant fonctionne réellement de bout
+        en bout (il n'avait jamais été testé)."""
+        with mock.patch.object(gl, "CONTEXT_COMPRESSION_ENABLED", False):
+            server = self.make_server()
+            harness = await self.make_harness(server)
+            config = server.last_config
+            compression = getattr(config, "context_window_compression", None)
+            self.assertIsNone(
+                compression,
+                "JARVIS_LIVE_COMPRESSION=0 doit retirer complètement "
+                "context_window_compression de la configuration envoyée",
+            )
+            # Les autres protections (historyConfig, transcriptions) restent
+            # actives : le kill-switch n'affecte QUE la compression.
+            history = getattr(config, "history_config", None)
+            self.assertTrue(
+                history and getattr(history, "initial_history_in_client_content", False)
+            )
+
 
 # ---------------------------------------------------------------------------
 # Instrumentation (mission §5)

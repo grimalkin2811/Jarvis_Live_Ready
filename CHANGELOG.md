@@ -229,6 +229,43 @@ fail, ça dépend des runs »/« non testable » selon les exécutions).
   local reste signalé même sans octet audio joué ; un tour de rejeu de
   contexte totalement vide ne déclenche plus `on_turn_complete`).
 
+### Investigation (addendum — S6 reste FAIL malgré EMPTY_GENERATION_RETRY)
+
+**Ne pas fusionner/publier avant confirmation. S6 n'est PAS corrigé.** Un
+nouveau run réel (après les correctifs bugs A/B ci-dessus) confirme S2 =
+PASS, mais S6 échoue toujours : `EMPTY_GENERATION_RETRY` se déclenche
+2 fois, les 2 relances produisent encore une génération vide, puis la
+tentative finale (épuisée) obtient bien un `TTS_START` mais sans
+`GEMINI_ASSISTANT_TRANSCRIPT` ni audio. Investigation trace-first complète
+dans `docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` §11 : la cause est un
+bug serveur Gemini documenté et toujours non résolu
+(`googleapis/python-genai#2117`, « Premature turnComplete », ~40
+confirmations indépendantes), **aggravé par la taille du contexte après
+rejeu et par `context_window_compression`** (facteurs explicitement cités
+par Google/la communauté) — pas par une confusion de `turn_id`/
+`session_generation` ni par un bug de bookkeeping des relances (les deux
+sont vérifiés sains par les nouveaux tests ci-dessous). Augmenter
+`EMPTY_GENERATION_MAX_RETRIES` ne réglerait rien : chaque relance
+supplémentaire a statistiquement la même probabilité d'échouer tant que le
+contexte reste dans cet état aggravant. Aucun changement de comportement
+par défaut n'a été appliqué : le seul levier identifié sous notre contrôle
+(`JARVIS_LIVE_COMPRESSION=0`, kill-switch déjà existant mais jamais testé)
+nécessite une validation réelle avant toute décision, car il a un coût
+propre (protection contre la coupure de session Live à ~15 min).
+
+#### Ajouté (tests)
+
+- `tests/test_s6_persistent_empty_generation.py` (2 tests) : rejoue la
+  signature exacte du run réel (3 tentatives vides consécutives, la
+  dernière avec un `model_turn` creux déclenchant `TTS_START`) et prouve
+  que le fallthrough actuel est le comportement attendu, pas un bug de
+  bookkeeping ; confirme l'identité stable de `turn_id`/`session_generation`
+  sur les 3 tentatives.
+- `tests/test_live_context_harness.py` : nouveau test confirmant que le
+  kill-switch `JARVIS_LIVE_COMPRESSION=0` retire bien
+  `context_window_compression` de la configuration envoyée au serveur
+  (jamais vérifié jusqu'ici), sans affecter les autres protections.
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

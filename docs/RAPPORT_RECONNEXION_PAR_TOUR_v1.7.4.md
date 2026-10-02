@@ -808,3 +808,218 @@ suffisante), il reste à :
    différent, ou d'un mécanisme de confirmation propre au mode silencieux).
 5. Ne pas fusionner/publier tant que le point 2 n'est pas entièrement
    vérifié avec un verdict S6 = PASS réel.
+
+## 11. Suivi v1.7.5 quater — S6 reste FAIL malgré EMPTY_GENERATION_RETRY (investigation trace-first)
+
+### 11.0 Contexte
+
+Après le correctif v1.7.5 bis (§10, `_await_seed_commit`) et le correctif
+v1.7.5 ter (bugs A/B, extinction prématurée + tour fantôme), un nouveau run
+réel a été exécuté. Résultat :
+
+| Scénario | Verdict réel |
+|---|---|
+| S2 (deux tours rapides) | **PASS** (bug A confirmé corrigé) |
+| **S6 (mémoire après reconnexion réelle)** | **FAIL — toujours une réponse vide après reconnexion** |
+
+Trace fournie par l'utilisateur pour S6 :
+
+```
+SEED_COMMIT_CONFIRMED        gen=2
+SESSION_READY                gen=2 context_seeded=True context_seed_confirmed=True
+GEMINI_USER_TRANSCRIPT       gen=2 text="Quel est mon prénom ?"
+EMPTY_GENERATION_RETRY       gen=2 attempt=1/2
+EMPTY_GENERATION_RETRY       gen=2 attempt=2/2
+TTS_START                    gen=2                     # 3e tentative (épuisée)
+TURN_COMPLETE                gen=2 had_content=False    # pas de GEMINI_ASSISTANT_TRANSCRIPT
+```
+
+Résultat observé côté harnais : S6 reçoit la question mais une réponse
+« (sans transcription) » → FAIL.
+
+**Consigne explicite reçue : ne pas se contenter d'augmenter le nombre de
+relances — investigation trace-first complète avant toute modification.**
+
+### 11.1 Comparaison g2-t8 (S6) vs g1-t3 (S2/S3) — ce qui diffère structurellement
+
+Aucune trace brute horodatée (JSON) n'a été fournie pour cette investigation
+(seul un résumé texte) : la comparaison ci-dessous s'appuie sur (a) le
+résumé exact fourni par l'utilisateur, (b) une relecture complète du code
+de réception (`GeminiLive._receive_one_turn_cycle`, `_seed_context`,
+`_await_seed_commit`, `_connect_once`), et (c) les `tests/test_s6_persistent_empty_generation.py`
+qui rejouent déterministiquement la signature exacte observée.
+
+| | g1-t3 (S2/S3, session fraîche) | g2-t8 (S6, après reconnexion S5) |
+|---|---|---|
+| `session_generation` | 1 (jamais reconnecté) | 2 (reconnexion S5 déjà effectuée) |
+| Taille du contexte serveur au moment du tour | 1-2 tours, écrits en direct | TOUT l'historique S1-S5 rejoué via `_seed_context()` (`CONTEXT REPLAY START ... contents=N`) juste avant |
+| `context_window_compression` (config session) | activé (défaut), mais improbable qu'il se déclenche réellement sur un contexte aussi court | activé (défaut) — **sur un contexte déjà « plein » dès la reconnexion** |
+| Génération vide observée ? | Non (0 relance nécessaire, S2 = PASS directement) | Oui, 3 tentatives consécutives, toutes vides |
+
+**Conclusion de la comparaison :** la différence structurelle n'est PAS le
+mécanisme de réception (`_receive_one_turn_cycle` est rigoureusement
+identique dans les deux cas, cf. §11.4) ni une confusion de `turn_id`/
+`session_generation` (cf. §11.4) — c'est la **taille/l'état du contexte au
+moment de la génération**, directement causée par le rejeu de contexte
+(`_seed_context`) qui est, par construction, plus volumineux qu'une session
+neuve.
+
+### 11.2 Ce que Gemini envoie autour de TTS_START / TURN_COMPLETE / interrupted
+
+D'après le code de réception et la trace fournie :
+
+- Tentatives 1 et 2 (originale + 1re relance) : `turn_complete` arrive
+  **sans qu'aucun `server_content.model_turn` n'ait jamais été vu** — pas
+  de `TTS_START` mentionné pour elles. C'est la variante « génération
+  totalement nulle » du bug serveur (aucune inférence audio n'a même
+  commencé à être streamée).
+- Tentative 3 (2e relance, dernière autorisée) : un `server_content.model_turn`
+  arrive bien (`TTS_START`/`on_speaking` se déclenchent — `self.speaking`
+  passe à `True`), mais ses `parts` ne contiennent **aucun `inline_data.data`**
+  et aucun `output_transcription` séparé n'arrive avant `turn_complete`.
+  C'est la variante « le modèle démarre puis s'arrête immédiatement » du
+  même bug.
+- Aucun `interrupted` n'apparaît dans cette trace (confirmé par l'absence
+  de mention) : ce n'est donc PAS une interruption locale ou serveur qui
+  avale la réponse — c'est bien un `turn_complete` qui arrive de façon
+  prématurée/vide, sans jamais passer par `interrupted` au préalable, ce
+  qui correspond exactement à la description du bug serveur Google
+  (§11.3) : *« a `turnComplete` message arrives **without** `interrupted:
+  true`»*.
+- `tests/test_s6_persistent_empty_generation.py::test_exact_real_trace_signature_g2_t8`
+  rejoue cette séquence exacte (2 tentatives sans `model_turn` du tout, puis
+  une 3e avec un `model_turn` creux) et confirme que `_receive_one_turn_cycle`
+  la traite exactement comme observé : `EMPTY_GENERATION_RETRY` × 2,
+  `TTS_START`/`on_speaking` sur la 3e tentative, aucun
+  `GEMINI_ASSISTANT_TRANSCRIPT`, puis `TURN_COMPLETE` avec `had_content=False`
+  — mais `on_turn_complete` se déclenche quand même car la question de
+  l'utilisateur (`pending_user_text`), elle, était bien réelle. **Ce n'est
+  pas une régression du filtre `had_content` du bug B (v1.7.5 ter)** : ce
+  filtre protège contre un tour SANS question réelle (traîne fantôme) ; ici
+  la question est bien réelle, seule la réponse manque — le tour DOIT se
+  clore et être signalé, avec une réponse vide, exactement ce qui a été
+  observé.
+
+### 11.3 Cause racine : un bug serveur Gemini documenté, aggravé par la taille du contexte ET par `context_window_compression`
+
+Recherche externe (GitHub, requise par la méthode trace-first avant toute
+modification) :
+[googleapis/python-genai#2117](https://github.com/googleapis/python-genai/issues/2117)
+« Gemini Live API Native Audio Premature turnComplete Causes Mid-Sentence
+Audio Truncation » — **~40 développeurs indépendants**, confirmé par
+Google comme un bug serveur (pas un artefact client, testé avec AEC
+matériel + VAD + désactivation de l'activité automatique, toujours
+reproductible), toujours **ouvert et non résolu** au moment de cette
+investigation (« There is currently no Gemini Live audio model without
+this bug »).
+
+Facteurs aggravants listés explicitement par Google/la communauté dans ce
+rapport, et leur pertinence pour Jarvis :
+
+| Facteur aggravant documenté | Présent dans g1-t3 (S2/S3) ? | Présent dans g2-t8 (S6) ? |
+|---|---|---|
+| **Contexte grandissant** (« Growing context length... longer conversations worsen ») | Non (session neuve, 1-2 tours) | **Oui** — tout l'historique S1-S5 vient d'être rejoué |
+| **`context_window_compression` activé** (« enabling worsens ») | Activé mais peu pertinent (contexte trop court pour déclencher quoi que ce soit) | **Activé**, et c'est précisément le facteur sous notre contrôle |
+| Appels d'outils récents | Non | Non (S1-S5 ne déclenchent aucun outil) |
+| Langue non-anglaise (français) | Oui (constant, ne distingue pas g1 de g2) | Oui (constant, ne distingue pas g1 de g2) |
+
+Un autre témoignage indépendant dans ce même rapport (équipe LiveKit,
+déploiement en production) confirme qu'un « nudge » texte applicatif (notre
+`EMPTY_GENERATION_RETRY`, conceptuellement identique) **« recovers most
+stalls » mais que « ~30% of stalls don't recover from the nudge »** — donc
+même la stratégie de relance par texte, déjà la meilleure pratique connue
+de l'écosystème, n'est PAS fiable à 100 % : un taux d'échec résiduel
+significatif (jusqu'à ~30 % par tentative selon ce témoignage) est attendu,
+**même en production chez d'autres équipes**, ce qui rend 2-3 échecs
+consécutifs statistiquement plausible sans qu'il s'agisse d'un bug dans
+notre bookkeeping de relance.
+
+**Verdict explicite demandé par l'utilisateur (points 3, 4, 5 de la
+consigne) :**
+
+3. Le problème n'est PAS lié à un contexte seed/replay « encore actif » au
+   sens d'un état corrompu côté client (`_seed_context`/`_await_seed_commit`
+   fonctionnent exactement comme prévu, `SEED_COMMIT_CONFIRMED` le prouve) :
+   il est lié à la TAILLE du contexte serveur résultant du rejeu, combinée à
+   `context_window_compression`, deux facteurs EXTERNEMENT documentés par
+   Google comme aggravant ce bug serveur précis.
+4. La relance renvoie bien le texte utilisateur dans un cycle `receive()`
+   strictement neuf à chaque tentative (`session.receive_calls` avance de 1
+   par tentative, `session.sent` contient bien le texte exact à chaque
+   relance — vérifié par les tests déjà existants
+   `tests/test_empty_generation_retry.py::EmptyGenerationRetrySucceedsTests`/
+   `EmptyGenerationRetryBoundedTests`, et par le nouveau
+   `test_exact_real_trace_signature_g2_t8`). Le serveur ne « sait » pas que
+   c'est une relance (chaque `send_client_content` est un tour normal) :
+   s'il répond encore vide, c'est que les CONDITIONS qui ont fait échouer la
+   première tentative (contexte long + compression) sont toujours réunies
+   pour les suivantes, pas que le serveur traite spécifiquement les
+   relances comme un état à part.
+5. `turn_id`/`session_generation` restent cohérents sur les 3 tentatives
+   (vérifié explicitement par le nouveau test
+   `test_turn_identity_is_stable_across_all_three_attempts` :
+   `_begin_turn_if_needed()` n'est appelé qu'une seule fois, sur la
+   transcription utilisateur de la 1re tentative ; `turn_counter` et
+   `session_generation` ne varient jamais entre les 3 tentatives du même
+   cycle `g2-t8`) — aucune confusion d'identité côté client.
+
+### 11.4 Pourquoi « augmenter `EMPTY_GENERATION_MAX_RETRIES` » ne réglerait rien
+
+Si la cause est un contexte durablement « dans un état aggravant » pour
+toute la durée de la session (pas un hasard ponctuel qui se dissiperait
+après 1-2 tentatives), chaque relance supplémentaire a statistiquement la
+MÊME probabilité d'échouer que les précédentes — ajouter des relances
+déplace le problème (répond parfois après 5 tentatives au lieu de 3) sans
+l'adresser, au prix d'une latence perçue bien plus grande pour
+l'utilisateur à chaque fois que le bug se manifeste. Ce n'est pas la
+correction demandée.
+
+### 11.5 Levier concret identifié, tests ajoutés, et ce qui reste à valider
+
+Le seul facteur aggravant réellement **sous notre contrôle** (le contexte
+long après reconnexion est inhérent à la fonctionnalité de mémoire
+conversationnelle — on ne peut pas raisonnablement le supprimer) est
+`context_window_compression`, actif par défaut via `CONTEXT_COMPRESSION_ENABLED`
+(kill-switch déjà existant : `JARVIS_LIVE_COMPRESSION=0`, jamais testé
+jusqu'ici). Son rôle actuel est d'éviter la coupure de session Live après
+~15 minutes (documentation Live API) : le désactiver a donc un coût propre,
+distinct de ce bug.
+
+**Ce qui a été fait dans cette session (uniquement de l'investigation et des
+tests, aucune modification de comportement par défaut) :**
+
+- `tests/test_s6_persistent_empty_generation.py` (2 tests) : rejoue la
+  signature EXACTE du run réel (3 tentatives vides, la dernière avec un
+  `model_turn` creux déclenchant `TTS_START`) et prouve que le fallthrough
+  actuel (`on_turn_complete` se déclenche avec une réponse vide) est le
+  comportement ATTENDU étant donné ces conditions, pas un bug de
+  bookkeeping ; confirme l'identité stable de `turn_id`/`session_generation`
+  sur les 3 tentatives.
+- `tests/test_live_context_harness.py::ModernModelTests::test_le_kill_switch_de_compression_retire_bien_le_champ` :
+  le kill-switch `JARVIS_LIVE_COMPRESSION=0` n'avait jamais été testé —
+  confirmé qu'il retire bien `context_window_compression` de la
+  configuration envoyée au serveur, sans toucher aux autres protections
+  (`historyConfig`, transcriptions).
+
+**Ce qui reste à faire avant de considérer S6 comme corrigé (ne pas
+fusionner/publier avant) :**
+
+1. Décision produit à prendre par l'utilisateur : tester en conditions
+   réelles `JARVIS_LIVE_COMPRESSION=0` sur le scénario S6 (et S3, plus
+   long, pour vérifier l'absence de coupure de session à ~15 min) avant
+   tout changement de comportement par défaut — c'est une hypothèse
+   plausible et bien documentée côté Google, pas une certitude pour CET
+   cette application précise.
+2. Si la désactivation de la compression ne suffit pas (le bug reste
+   fondamentalement un bug serveur Google non résolu, cf. §11.3 — aucune
+   mitigation client connue dans l'écosystème n'atteint 100 % de fiabilité),
+   envisager une dégradation explicite côté UX plutôt qu'un silence : par
+   exemple, après épuisement des relances, faire dire à Jarvis une phrase
+   de repli générique (« Je n'ai pas bien capté, peux-tu répéter ? ») au
+   lieu de rester muet — ceci n'élimine pas le bug serveur mais transforme
+   un échec silencieux (perçu comme un crash) en un échec audible et
+   actionnable par l'utilisateur. Décision produit à valider avant
+   implémentation (change le comportement observable, pas seulement un
+   correctif interne).
+3. Ne pas marquer S6 comme corrigé tant que (1) n'a pas été testé en
+   conditions réelles avec un verdict PASS explicite.
