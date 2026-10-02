@@ -34,6 +34,7 @@ complète, la cause racine et le protocole avant/après.
   (3.x + `historyConfig`), ce délai expire normalement sans bloquer le
   micro. `SESSION_READY` journalise désormais `context_seeded` et
   `context_seed_confirmed` séparément.
+- **`scripts/validate_reconnect_v174_real.py`** : la synthèse TTS locale via `pyttsx3`/SAPI5 est désormais exécutée dans un processus enfant avec un timeout dur de 30 s par prompt. Un blocage de `runAndWait()` ne peut plus figer le harness ; le fichier WAV et le PCM sont vérifiés avant de poursuivre, puis le fallback Gemini est utilisé si le backend local échoue. Cette correction reste confinée au harnais de validation.
 - **`scripts/validate_reconnect_v174_real.py`** : le scénario S3 (trois
   tours consécutifs) utilisait un délai fixe de 2 s entre les tours, qui
   pouvait expirer (`TimeoutError`, « NON TESTABLE ») alors que Jarvis
