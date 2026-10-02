@@ -188,6 +188,8 @@ class GeminiLive:
         on_tool_end=None,
         on_user_transcript=None,
         on_assistant_transcript=None,
+        on_turn_open=None,
+        on_turn_resolved=None,
         response_mode_provider=None,
         voice_provider=None,
         voice_version_provider=None,
@@ -213,6 +215,19 @@ class GeminiLive:
         self.on_tool_end = on_tool_end
         self.on_user_transcript = on_user_transcript
         self.on_assistant_transcript = on_assistant_transcript
+        # v1.7.5 ter (régression « endormissement prématuré pendant une
+        # réponse lente » — scénario S2, validation réelle) : ``on_turn_open``
+        # prévient l'appelant dès qu'un VRAI tour utilisateur démarre (première
+        # transcription serveur), AVANT que la moindre voix audible ne se
+        # fasse entendre côté Jarvis. ``on_turn_resolved`` prévient,
+        # INCONDITIONNELLEMENT (même pour un tour sans le moindre contenu,
+        # contrairement à ``on_turn_complete``/``on_interrupted`` — cf.
+        # ``_finish_turn``), que ce tour est désormais clos. Ensemble, ils
+        # permettent à l'appelant (``AudioIO``) de suspendre son minuteur de
+        # conversation pendant tout le temps où Gemini réfléchit encore,
+        # plutôt que seulement pendant la voix effectivement audible.
+        self.on_turn_open = on_turn_open
+        self.on_turn_resolved = on_turn_resolved
         # Fournit le mode de réponse courant (menu radial) pour le prompt système.
         self.response_mode_provider = response_mode_provider
         # Fournit la voix prébuilt Gemini (menu radial). La voix ne peut pas
@@ -473,6 +488,7 @@ class GeminiLive:
             self.session_generation, self.conversation.conversation_id,
         )
         self._record_trace("TURN_OPEN", source="input_transcription")
+        self._notify(self.on_turn_open)
 
     def _finish_turn(self) -> None:
         """Clôt proprement le tour courant (fin de tour ou interruption).
@@ -494,6 +510,15 @@ class GeminiLive:
         if not already_closed:
             self.turn_epoch += 1
             self._record_trace("TURN_CLOSE")
+            # INCONDITIONNEL (contrairement à ``on_turn_complete``/
+            # ``on_interrupted`` plus bas, cf. le filtre « contenu réel »
+            # dans le bloc FIN DE TOUR) : l'appelant doit toujours savoir
+            # qu'un tour qu'il avait annoncé ouvert (``on_turn_open``) est
+            # désormais résolu, même un tour resté totalement vide — sinon
+            # la suspension du minuteur de conversation resterait bloquée
+            # indéfiniment (bornée seulement par un filet de sécurité côté
+            # ``AudioIO``, qu'il ne faut pas être le seul rempart).
+            self._notify(self.on_turn_resolved)
 
     def _handle_context_reset(self, info) -> None:
         """Le contexte a été réinitialisé : la session Gemini doit repartir.
@@ -1452,15 +1477,44 @@ class GeminiLive:
                 server_content
                 and server_content.interrupted
             ):
+                # Capturé AVANT tout nettoyage : un « barge-in » local
+                # (l'utilisateur a recommencé à parler pendant que Jarvis
+                # répondait) reste un évènement réel et significatif même
+                # si, à cause du barge-in justement, aucun octet audio n'a
+                # eu le temps d'être joué (cf. le filtre « contenu réel »
+                # ci-dessous, qui ne doit PAS avaler ce cas précis --
+                # régression constatée par tests/test_interruption.py).
+                had_local_interrupt = self.interrupt_requested
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
                 self._record_trace("INTERRUPTION", source="serveur")
-                # Ce que Jarvis avait commencé à dire reste référencable
-                # (« non, l'autre », « redis ça plus court »).
+                # v1.7.5 ter (régression S6, validation réelle) : un tour
+                # qui n'a RIEN produit (ni transcription utilisateur, ni
+                # audio/transcription assistant) n'est pas une vraie
+                # interruption observable -- c'est typiquement la traîne
+                # TARDIVE d'une génération déjà abandonnée côté client (ex. :
+                # le rejeu de contexte après un ``SEED_COMMIT_TIMEOUT``, dont
+                # la réponse serveur finit par arriver bien après que la
+                # porte micro s'est ouverte en dégradé, et se fait couper par
+                # l'arrivée du VRAI tour suivant). Sans ce filtre,
+                # ``on_interrupted`` se déclenche pour un non-évènement et —
+                # pire — le ``turn_complete`` séparé qui suit immédiatement
+                # (cf. bloc FIN DE TOUR) se ferait passer pour la fin du vrai
+                # tour en cours auprès de l'appelant (fenêtre de conversation
+                # réarmée à tort, ou pire : un consommateur qui attend « le
+                # prochain tour terminé » reçoit ce tour fantôme à la place
+                # de la vraie réponse, cf. harnais de validation réelle).
+                had_content = (
+                    bool(" ".join(self._turn_user_text).strip())
+                    or self._turn_model_content_seen
+                    or had_local_interrupt
+                )
                 self._finish_turn()
-                if self.on_interrupted:
+                if had_content and self.on_interrupted:
                     self.on_interrupted()
+                elif not had_content:
+                    self._record_trace("INTERRUPTION_CALLBACK_SUPPRESSED_EMPTY")
 
             # =================================================
             # FIN DE TOUR
@@ -1470,6 +1524,12 @@ class GeminiLive:
                 server_content
                 and server_content.turn_complete
             ):
+                # Capturé AVANT tout nettoyage, pour la même raison que dans
+                # le bloc INTERRUPTION ci-dessus : un ``turn_complete`` qui
+                # clôt un tour pendant qu'un barge-in local était en attente
+                # reste un évènement réel pour l'appelant, même sans la
+                # moindre miette de contenu transcrit ou audio.
+                had_local_interrupt = self.interrupt_requested
                 # v1.7.5 bis : génération vide confirmée côté serveur Gemini
                 # (cf. EMPTY_GENERATION_MAX_RETRIES) -- un VRAI tour
                 # utilisateur (texte transcrit non vide) qui se clôt sans
@@ -1525,12 +1585,38 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
-                self._record_trace("TURN_COMPLETE", source="serveur")
+                had_content = (
+                    bool(pending_user_text)
+                    or self._turn_model_content_seen
+                    or had_local_interrupt
+                )
+                self._record_trace(
+                    "TURN_COMPLETE", source="serveur", had_content=had_content
+                )
                 # Contexte conversationnel d'abord : le tour est clos avec
                 # l'ordre USER -> OUTILS -> ASSISTANT.
                 self._finish_turn()
-                if self.on_turn_complete:
-                    self.on_turn_complete()
+                # v1.7.5 ter (régression S6, validation réelle) : un
+                # ``turn_complete`` totalement vide (ni texte utilisateur
+                # transcrit pour CE tour, ni la moindre miette de réponse) ne
+                # correspond à aucun échange réel -- c'est la signature de la
+                # traîne tardive d'une génération déjà abandonnée (cf. le
+                # commentaire symétrique du bloc INTERRUPTION ci-dessus). Le
+                # laisser déclencher ``on_turn_complete`` ferait croire à
+                # l'appelant qu'une VRAIE question vient d'être traitée :
+                # c'est exactement ce qui, en validation réelle, a fait
+                # réarmer la fenêtre de conversation pour rien côté
+                # ``AudioIO``, et fait répondre le harnais de test avec une
+                # réponse vide au mauvais tour (« (sans transcription) » alors
+                # que le vrai tour suivant n'avait même pas commencé). Le
+                # cas où l'utilisateur a bien parlé mais n'a jamais obtenu de
+                # réponse (relances épuisées, ``pending_user_text`` non vide)
+                # reste signalé normalement : ce tour-là a bien existé.
+                if had_content:
+                    if self.on_turn_complete:
+                        self.on_turn_complete()
+                else:
+                    self._record_trace("TURN_COMPLETE_CALLBACK_SUPPRESSED_EMPTY")
                 # Mémoire persistante : inchangée, volontairement séparée du
                 # contexte. Seule l'extraction conservatrice existante peut
                 # écrire un souvenir (« souviens-toi que… »).

@@ -159,6 +159,76 @@ Jarvis — voir addendum « génération vide » du rapport)
   (jamais relancé), et aucune relance tant qu'une interruption locale est
   active.
 
+### Corrigé (addendum — bugs A et B, nouvelle validation réelle)
+
+**Ne pas fusionner/publier avant confirmation.** Deux bugs supplémentaires
+révélés par une validation réelle post-correctif S6 ci-dessus (Windows,
+vraie clé Gemini) : S6/S2 restaient instables (« soit en pass soit en
+fail, ça dépend des runs »/« non testable » selon les exécutions).
+
+- **`GeminiLive` (bug A — extinction prématurée)** : rien ne signalait à
+  `AudioIO` qu'un VRAI tour utilisateur était ouvert et en cours de
+  génération *avant* que Gemini produise le moindre octet de réponse.
+  Si la génération prenait plus longtemps que la fenêtre de conversation
+  restante, `_check_timeout()` endormait Jarvis (ou laissait expirer la
+  fenêtre) pendant que la réponse arrivait encore — toute relance posée
+  immédiatement après, sans mot de réveil, était alors silencieusement
+  perdue. Nouveaux callbacks `on_turn_open` (déclenché une fois par VRAI
+  tour, dès la première transcription utilisateur) et `on_turn_resolved`
+  (déclenché inconditionnellement à la clôture de ce tour, quel que soit le
+  contenu produit — pour ne jamais laisser une suspension ouverte côté
+  appelant).
+- **`AudioIO` (bug A, suite)** : nouvelles méthodes `note_turn_open()`/
+  `note_turn_resolved()` (câblées sur les callbacks ci-dessus dans
+  `src/main.py`, `src/ui.py` et les harnais de test) et `_turn_pending()`,
+  désormais vérifiée par `_check_timeout()` en plus de `_voice_audible()` :
+  le minuteur de conversation reste suspendu tant qu'un tour est annoncé
+  ouvert sans être encore résolu, borné par la nouvelle constante
+  `TURN_PENDING_MAX_GRACE_SECONDS` (45 s, filet de sécurité si
+  `on_turn_resolved` n'arrivait jamais — connexion perdue sans
+  notification, par exemple).
+- **`GeminiLive` (bug B — tour fantôme pris pour un vrai tour)** : la
+  traîne tardive d'un tour de rejeu de contexte déjà abandonné (après
+  expiration de `SEED_COMMIT_TIMEOUT_SECONDS`) pouvait arriver bien après
+  l'ouverture dégradée de la porte micro, sous forme d'un message
+  `interrupted`/`turn_complete` totalement vide (ni transcription
+  utilisateur, ni la moindre miette de contenu assistant). Rien ne
+  distinguait alors ce non-évènement d'une vraie fin de tour : un
+  consommateur qui attendait « le prochain tour terminé » recevait ce tour
+  fantôme à la place de la vraie réponse (observé en validation réelle,
+  scénario de contexte après reconnexion). Les callbacks `on_interrupted`
+  et `on_turn_complete` sont désormais filtrés par `had_content` (texte
+  utilisateur transcrit pour CE tour, contenu assistant produit, ou
+  barge-in local en cours — pour ne jamais avaler un VRAI « stop »
+  utilisateur qui n'aurait eu le temps de couper aucun octet audio) :
+  un tour totalement vide clôt toujours proprement le contexte conversationnel
+  en interne (`_finish_turn()` reste inconditionnel), mais ne se fait plus
+  jamais passer pour un échange réel auprès de l'appelant. Nouveaux
+  évènements de trace `INTERRUPTION_CALLBACK_SUPPRESSED_EMPTY` et
+  `TURN_COMPLETE_CALLBACK_SUPPRESSED_EMPTY` pour rester diagnosticable.
+  **Il s'agit de deux correctifs timing/race-dépendants** : seule une
+  nouvelle validation réelle (scénarios S2/S6 de
+  `scripts/validate_reconnect_v174_real.py`) peut confirmer l'élimination
+  effective des deux symptômes.
+
+#### Ajouté (tests)
+
+- `tests/test_turn_callbacks.py` (4 tests) : `on_turn_open`/
+  `on_turn_resolved` se déclenchent en paire pour un vrai tour répondu ;
+  un tour totalement vide (rejeu de contexte ou traîne tardive
+  `interrupted`+`turn_complete`) ne déclenche ni `on_turn_open`,
+  ni `on_interrupted`, ni `on_turn_complete` ; le VRAI tour suivant reste
+  signalé normalement après une traîne fantôme.
+- `tests/test_audio_turn_pending.py` (4 tests) : `_check_timeout()` ne
+  rendort plus Jarvis tant qu'un tour est annoncé ouvert sans réponse ;
+  reprise normale du minuteur une fois le tour résolu ; filet de sécurité
+  `TURN_PENDING_MAX_GRACE_SECONDS` ; non-régression du mode écoute
+  continue.
+- `tests/test_interruption.py`/`tests/test_empty_generation_retry.py` :
+  mis à jour pour refléter le nouveau filtre `had_content` (un barge-in
+  local reste signalé même sans octet audio joué ; un tour de rejeu de
+  contexte totalement vide ne déclenche plus `on_turn_complete`).
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

@@ -483,6 +483,8 @@ def _run_voice_loop(
             on_audio=audio.play,
             on_turn_complete=audio.extend_listening,
             on_interrupted=on_interrupted,
+            on_turn_open=audio.note_turn_open,
+            on_turn_resolved=audio.note_turn_resolved,
             on_speaking=lambda: _on_speaking(audio, presence_hook),
             on_thinking=lambda: _on_thinking(presence_hook),
             # v1.7.0 — évènements réels du pipeline pour le Desktop Mode.

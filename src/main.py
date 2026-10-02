@@ -289,6 +289,8 @@ async def run_headless():
             on_turn_complete=audio.extend_listening,
             on_interrupted=audio.clear_output,
             on_speaking=audio.begin_speaking,
+            on_turn_open=audio.note_turn_open,
+            on_turn_resolved=audio.note_turn_resolved,
             memory_manager=memory_manager,
             conversation=conversation,
             **voice_kwargs,

@@ -159,6 +159,12 @@ class RealVoiceLab:
         gemini.on_turn_complete = self._on_turn_complete
         gemini.on_interrupted = audio.clear_output
         gemini.on_speaking = audio.begin_speaking
+        # v1.7.5 ter (bug A, validation réelle) : identique au câblage de
+        # src/main.py / src/ui.py -- ce harnais DOIT reproduire fidèlement
+        # le chemin réel, sans quoi il ne détecterait pas la régression
+        # qu'il a justement servi à révéler.
+        gemini.on_turn_open = audio.note_turn_open
+        gemini.on_turn_resolved = audio.note_turn_resolved
 
     # -- callbacks transcription / tour --------------------------------------
 

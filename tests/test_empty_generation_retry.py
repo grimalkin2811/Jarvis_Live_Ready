@@ -179,7 +179,12 @@ class EmptyGenerationRetryBoundedTests(unittest.IsolatedAsyncioTestCase):
 class SeedReplayTurnIsNeverRetriedTests(unittest.IsolatedAsyncioTestCase):
     """Le tour de rejeu de contexte (``_await_seed_commit``) n'a jamais de
     transcription utilisateur associée : une génération vide y reste
-    acceptée telle quelle, sans déclencher la moindre relance."""
+    acceptée telle quelle, sans déclencher la moindre relance. Elle ne doit
+    pas non plus déclencher ``on_turn_complete`` auprès de l'appelant : un
+    tour totalement vide (ni texte utilisateur, ni contenu assistant, ni
+    barge-in local en cours) n'est pas un échange réel -- c'est exactement
+    la signature d'une traîne tardive de génération abandonnée (régression
+    S2/S6 constatée en validation réelle, cf. CHANGELOG)."""
 
     async def test_empty_turn_without_user_transcript_is_not_retried(self) -> None:
         session = _ScriptedSession([[msg_turn_complete()]])
@@ -198,7 +203,12 @@ class SeedReplayTurnIsNeverRetriedTests(unittest.IsolatedAsyncioTestCase):
         kinds = [e["kind"] for e in gemini.trace_events()]
         self.assertNotIn("EMPTY_GENERATION_RETRY", kinds)
         self.assertEqual(kinds.count("TURN_COMPLETE"), 1)
-        self.assertEqual(turn_complete_calls, [1])
+        self.assertIn("TURN_COMPLETE_CALLBACK_SUPPRESSED_EMPTY", kinds)
+        self.assertEqual(
+            turn_complete_calls, [],
+            "un tour totalement vide ne doit jamais se faire passer pour "
+            "un vrai échange auprès de l'appelant (cf. bug validation réelle)",
+        )
 
 
 class EmptyGenerationRetrySkippedDuringInterruptionTests(unittest.IsolatedAsyncioTestCase):

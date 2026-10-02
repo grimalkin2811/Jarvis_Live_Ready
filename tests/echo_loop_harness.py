@@ -574,6 +574,10 @@ class EchoLab:
         gemini.on_turn_complete = audio.extend_listening
         gemini.on_interrupted = audio.clear_output
         gemini.on_speaking = audio.begin_speaking
+        # v1.7.5 ter (bug A, validation réelle) : câblage identique à
+        # src/main.py / src/ui.py / tests/real_gemini_harness.py.
+        gemini.on_turn_open = audio.note_turn_open
+        gemini.on_turn_resolved = audio.note_turn_resolved
 
     # -- cycle de vie -----------------------------------------------------------
 

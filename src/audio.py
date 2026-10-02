@@ -31,6 +31,19 @@ class AudioIO:
     # la fin d'une réponse Gemini
     FOLLOW_UP_SECONDS = 8.0
 
+    # v1.7.5 ter (bug A, validation réelle) : durée MAXIMALE pendant laquelle
+    # un tour « ouvert mais pas encore résolu » (``note_turn_open`` appelé,
+    # ``note_turn_resolved`` pas encore reçu) suspend le minuteur de
+    # conversation. Ce n'est volontairement PAS une attente indéfinie : si
+    # ``GeminiLive`` ne clôt jamais le tour (plantage, connexion perdue sans
+    # notification), ce filet de sécurité évite de rester éveillé pour
+    # toujours. Doit rester nettement en-dessous du ``TURN_TIMEOUT`` des
+    # harnais de validation réelle (60 s) tout en couvrant largement le pire
+    # cas des relances S6 (``EMPTY_GENERATION_RETRY``, qui ne déclenchent
+    # ``on_turn_resolved`` qu'une fois épuisées — plusieurs allers-retours
+    # réseau, mais jamais plus de quelques secondes chacun en pratique).
+    TURN_PENDING_MAX_GRACE_SECONDS = 45.0
+
     # Anti-double-détection
     WAKE_COOLDOWN_SECONDS = 1.0
 
@@ -180,6 +193,25 @@ class AudioIO:
         # Heure limite de la fenêtre de conversation
         self.follow_up_until = 0.0
         self.last_wake_time = 0.0
+
+        # =====================================================
+        # TOUR GEMINI EN ATTENTE (v1.7.5 ter — correctif bug A)
+        # -----------------------------------------------------
+        # ``note_turn_open``/``note_turn_resolved`` sont appelés par
+        # ``GeminiLive`` (callbacks ``on_turn_open``/``on_turn_resolved``,
+        # cf. src/gemini_live.py) pour signaler qu'un VRAI tour utilisateur
+        # est en train d'être généré, indépendamment du contenu déjà produit.
+        # Avant ce correctif, ``_check_timeout`` ne connaissait que
+        # ``_voice_audible()`` (parole déjà émise ou en file) : si Gemini
+        # mettait plusieurs secondes à produire le premier octet de sa
+        # réponse, la fenêtre de conversation pouvait expirer PENDANT la
+        # génération et endormir Jarvis juste avant que la réponse arrive —
+        # perdant alors silencieusement toute relance posée sans mot de
+        # réveil juste après (bug constaté en validation réelle, scénario
+        # « deux questions rapides »).
+        # =====================================================
+        self._turn_pending_since: float | None = None
+        self._turn_pending_lock = threading.Lock()
 
         # =====================================================
         # MICRO
@@ -679,6 +711,47 @@ class AudioIO:
             speaking = self.speaking
         return speaking or self.output_pending_bytes() > 0
 
+    # =========================================================
+    # TOUR GEMINI EN ATTENTE (v1.7.5 ter — correctif bug A)
+    # =========================================================
+
+    def note_turn_open(self) -> None:
+        """Un VRAI tour Gemini vient de s'ouvrir (``GeminiLive.on_turn_open``).
+
+        Appelé dès qu'une transcription utilisateur réelle démarre un
+        nouveau tour — AVANT que la moindre réponse (audio ou texte) ait pu
+        être produite. Suspend ``_check_timeout`` le temps que la génération
+        aboutisse, borné par ``TURN_PENDING_MAX_GRACE_SECONDS``.
+        """
+        with self._turn_pending_lock:
+            self._turn_pending_since = time.monotonic()
+        self._record_trace("turn_pending", state="open")
+
+    def note_turn_resolved(self) -> None:
+        """Le tour en cours vient d'être clos (``GeminiLive.on_turn_resolved``).
+
+        Déclenché inconditionnellement par ``GeminiLive`` (même pour un tour
+        resté sans contenu) : lève la suspension posée par
+        ``note_turn_open`` quel que soit le résultat obtenu.
+        """
+        with self._turn_pending_lock:
+            self._turn_pending_since = None
+        self._record_trace("turn_pending", state="resolved")
+
+    def _turn_pending(self) -> bool:
+        """Vrai si un tour Gemini est en cours de génération sans réponse.
+
+        Filet de sécurité : au-delà de ``TURN_PENDING_MAX_GRACE_SECONDS``
+        sans ``note_turn_resolved``, on cesse de faire confiance au signal
+        (connexion perdue sans notification, par exemple) plutôt que de
+        suspendre le minuteur indéfiniment.
+        """
+        with self._turn_pending_lock:
+            since = self._turn_pending_since
+        if since is None:
+            return False
+        return (time.monotonic() - since) <= self.TURN_PENDING_MAX_GRACE_SECONDS
+
     def _remember_recent_block(self, pcm) -> None:
         """Conserve les derniers blocs micro captés pendant la réponse.
 
@@ -1010,6 +1083,17 @@ class AudioIO:
         # conversation est suspendue : on ne retourne en veille qu'une fois
         # que l'utilisateur n'entend plus Jarvis.
         if self._voice_audible():
+            return
+
+        # v1.7.5 ter (bug A, validation réelle) : un tour est ouvert
+        # (``note_turn_open``) mais Gemini n'a encore produit NI audio NI
+        # texte — ``_voice_audible()`` est donc faux alors que la réponse
+        # arrive encore. Sans ce garde-fou, la fenêtre de conversation
+        # pouvait expirer pendant la génération et endormir Jarvis juste
+        # avant que la réponse (et toute relance immédiate de
+        # l'utilisateur) n'arrive. Borné par ``TURN_PENDING_MAX_GRACE_SECONDS``
+        # pour ne jamais rester suspendu indéfiniment en cas d'anomalie.
+        if self._turn_pending():
             return
 
         if time.monotonic() >= self.follow_up_until:
