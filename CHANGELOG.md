@@ -94,6 +94,30 @@ produit, en étaient la cause — voir §11 du rapport)
   pour permettre de diagnostiquer sa cause plutôt que de masquer le repli.
   N'affecte que le harnais de validation, pas le produit.
 
+### Changé (harnais de validation réelle — quota TTS Gemini)
+
+- **`scripts/validate_reconnect_v174_real.py`** : le backend TTS PAR DÉFAUT
+  pour synthétiser l'audio d'entrée (les 5 `PROMPTS`) est désormais une
+  synthèse vocale **locale** (`pyttsx3` -> SAPI5 sur Windows, NSSS sur
+  macOS, espeak sur Linux), sans appel réseau ni quota Gemini. Signalé par
+  l'utilisateur : `gemini-2.5-flash-preview-tts` via `generateContent` est
+  limité sur le palier disponible à **3 requêtes/minute ET 10
+  requêtes/jour** — un quota épuisé en une seule exécution du script (5
+  prompts), ce qui expliquait aussi en partie le repli vers la synthèse
+  Live peu fiable corrigée plus haut. Le backend Gemini (TTS dédié, puis
+  repli conversationnel Live) devient un secours utilisé seulement si
+  aucun moteur local n'est disponible dans l'environnement — espacé de 22 s
+  entre appels et avec un essai supplémentaire sur 429
+  (`RESOURCE_EXHAUSTED`). Tout prompt synthétisé avec succès (quel que soit
+  le backend) est mis en cache sur disque (`scripts/.tts_cache/`, ajouté au
+  `.gitignore`) pour ne plus jamais reconsommer de quota une fois obtenu.
+  Sélection automatique d'une voix française locale si disponible (best
+  effort, continue avec la voix par défaut sinon). Nouvelles variables
+  d'environnement : `JARVIS_VALIDATE_TTS_BACKEND` (`auto`/`local`/`gemini`)
+  et `JARVIS_VALIDATE_TTS_NO_CACHE=1`. `pyttsx3` (+ `pywin32` sur Windows)
+  ajoutés à `requirements-dev.txt` (outil de validation, pas une dépendance
+  produit). N'affecte que le harnais de validation, pas le produit.
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

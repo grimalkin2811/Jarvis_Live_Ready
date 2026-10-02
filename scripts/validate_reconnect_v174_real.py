@@ -25,6 +25,22 @@ Clé API : lue UNIQUEMENT depuis la variable d'environnement
 fichier versionné). Elle n'est JAMAIS journalisée : tout message est filtré
 par ``redact()`` avant impression.
 
+Synthèse de l'audio d'ENTRÉE (les 5 prompts de ``PROMPTS``) :
+    Backend PAR DÉFAUT = synthèse LOCALE (``pyttsx3`` -> SAPI5/NSSS/espeak),
+    sans appel réseau ni quota Gemini. ``gemini-2.5-flash-preview-tts`` via
+    ``generateContent`` est limité sur le palier disponible à 3
+    requêtes/minute ET 10 requêtes/jour — un quota épuisé en une seule
+    exécution du script si on s'y fie comme source principale, ce qui
+    invalidait les runs de validation précédents. Le backend Gemini (TTS
+    dédié, puis repli conversationnel Live si besoin) n'est utilisé qu'en
+    secours si aucun moteur local n'est disponible, et chaque prompt
+    synthétisé (quel que soit le backend) est mis en cache disque
+    (``scripts/.tts_cache/``, jamais versionné) pour ne plus jamais
+    reconsommer de quota une fois obtenu avec succès.
+    Variables d'environnement : ``JARVIS_VALIDATE_TTS_BACKEND``
+    (``auto`` par défaut, ou ``local``/``gemini`` pour forcer un backend) et
+    ``JARVIS_VALIDATE_TTS_NO_CACHE=1`` (ignorer le cache disque).
+
 Utilisation ::
     GEMINI_API_KEY=... python scripts/validate_reconnect_v174_real.py
 """
@@ -64,8 +80,232 @@ def load_api_key() -> str:
     return ""
 
 
+# =====================================================================
+# Cache disque des prompts synthétisés (clé = backend + modèle + texte).
+#
+# Root cause (signalé par l'utilisateur) : l'API Gemini 2.5 Flash TTS
+# (``generateContent`` avec ``response_modalities=["AUDIO"]``) est limitée à
+# 3 requêtes/minute ET 10 requêtes/jour sur le palier disponible ici — le
+# quota est donc épuisé en une seule exécution du script (5 prompts) voire
+# avant même de la terminer. Un cache disque persistant (indépendant du
+# backend utilisé) garantit qu'un prompt donné n'est JAMAIS resynthétisé une
+# fois obtenu avec succès, quel que soit le nombre de ré-exécutions du
+# script — y compris si le backend Gemini doit être utilisé un jour.
+# =====================================================================
+
+_CACHE_DIR = Path(__file__).resolve().parent / ".tts_cache"
+
+
+def _cache_path(backend: str, model: str, prompt: str) -> Path:
+    import hashlib
+
+    key = hashlib.sha256(f"{backend}|{model}|{SAMPLE_RATE}|{prompt}".encode("utf-8")).hexdigest()[:32]
+    return _CACHE_DIR / f"{key}.pcm"
+
+
+def _cache_load(backend: str, model: str, prompt: str) -> bytes | None:
+    if os.environ.get("JARVIS_VALIDATE_TTS_NO_CACHE") == "1":
+        return None
+    path = _cache_path(backend, model, prompt)
+    if path.exists():
+        try:
+            data = path.read_bytes()
+            if data:
+                return data
+        except OSError:
+            pass
+    return None
+
+
+def _cache_store(backend: str, model: str, prompt: str, data: bytes) -> None:
+    try:
+        _CACHE_DIR.mkdir(exist_ok=True)
+        _cache_path(backend, model, prompt).write_bytes(data)
+    except OSError:
+        pass
+
+
+# =====================================================================
+# Backend PRIMAIRE (par défaut) : synthèse vocale LOCALE (pyttsx3 ->
+# SAPI5 sur Windows, NSSpeechSynthesizer sur macOS, espeak sur Linux).
+#
+# Aucun appel réseau, AUCUN quota Gemini consommé : cela règle le problème
+# de quota à la racine plutôt que de le contourner (rate-limiting/cache ne
+# suffiraient pas face à 10 requêtes/jour). Le backend Gemini
+# (``synthesize_prompt`` / ``synthesize_all_via_live`` ci-dessous) devient un
+# repli de secours, utilisé seulement si aucun moteur TTS local n'est
+# disponible dans l'environnement d'exécution.
+# =====================================================================
+
+LOCAL_TTS_BACKEND_NAME = "local-tts"
+
+
+def _select_french_voice(engine):
+    """Sélectionne une voix française si le moteur local en propose une.
+
+    Best effort : si aucune voix française n'est détectable (attributs
+    ``languages``/``name``/``id`` variables selon la plateforme et le
+    pilote), la voix par défaut du moteur est conservée — Gemini Live côté
+    reconnaissance vocale reste généralement robuste à un accent ou une
+    voix de synthèse imparfaite.
+    """
+    try:
+        voices = engine.getProperty("voices") or []
+    except Exception:
+        return None
+
+    def _matches_french(haystack: str) -> bool:
+        if not haystack:
+            return False
+        if "french" in haystack or "français" in haystack or "francais" in haystack:
+            return True
+        if any(name in haystack for name in ("hortense", "julie", "paul", "claude")):
+            return True
+        if "fr-fr" in haystack or "fr_fr" in haystack:
+            return True
+        # Code langue "fr" strict (jeton isolé) pour éviter un faux positif
+        # sur un sous-mot anglais contenant "fr".
+        return "fr" in re.split(r"[^a-z]+", haystack)
+
+    for voice in voices:
+        langs = []
+        try:
+            raw_langs = getattr(voice, "languages", None) or []
+            for lang in raw_langs:
+                if isinstance(lang, bytes):
+                    lang = lang.decode("utf-8", "ignore")
+                langs.append(str(lang).lower())
+        except Exception:
+            langs = []
+        name = str(getattr(voice, "name", "") or "").lower()
+        vid = str(getattr(voice, "id", "") or "").lower()
+        if any(_matches_french(haystack) for haystack in (*langs, name, vid)):
+            try:
+                engine.setProperty("voice", voice.id)
+                return voice
+            except Exception:
+                continue
+    return None
+
+
+
+def _wav_file_to_pcm16k(path: Path):
+    """Lit un fichier .wav et renvoie du PCM 16 kHz mono s16le avec 0.5 s de silence final."""
+    import wave
+
+    import numpy as np
+
+    with wave.open(str(path), "rb") as wf:
+        rate = wf.getframerate()
+        channels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        frames = wf.readframes(wf.getnframes())
+    if sampwidth != 2:
+        raise RuntimeError(f"format audio local inattendu (sampwidth={sampwidth} octets, 2 attendu)")
+    samples = np.frombuffer(frames, dtype=np.int16)
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1).astype(np.int16)
+    if rate != SAMPLE_RATE and len(samples) > 1:
+        count = max(1, int(len(samples) * SAMPLE_RATE / rate))
+        samples = np.interp(
+            np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples
+        ).astype(np.int16)
+    tail = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.int16)
+    return (np.concatenate([samples, tail])).tobytes()
+
+
+def synthesize_all_local(prompts: list[str]) -> dict[str, bytes] | None:
+    """Synthétise tous les prompts via le moteur TTS LOCAL (pas de quota).
+
+    Renvoie ``None`` (jamais ne lève) si aucun moteur local n'est
+    disponible dans cet environnement, pour permettre un repli propre vers
+    le backend Gemini en amont (``main()``).
+    """
+    import tempfile
+
+    try:
+        import pyttsx3
+    except ImportError:
+        safe_print(
+            "[entrée] pyttsx3 non installé — synthèse locale indisponible "
+            "(pip install pyttsx3 ; pywin32 en plus sur Windows)."
+        )
+        return None
+
+    try:
+        engine = pyttsx3.init()
+    except Exception as exc:
+        safe_print(
+            f"[entrée] moteur TTS local indisponible dans cet environnement "
+            f"({type(exc).__name__} : {exc})."
+        )
+        return None
+
+    voice = _select_french_voice(engine)
+    if voice is not None:
+        safe_print(f"[entrée] voix locale sélectionnée : {getattr(voice, 'name', voice)!r}")
+    else:
+        safe_print(
+            "[entrée] aucune voix française détectée parmi les voix locales "
+            "disponibles — voix par défaut du système utilisée."
+        )
+
+    cache: dict[str, bytes] = {}
+    try:
+        with tempfile.TemporaryDirectory(prefix="jarvis_validate_tts_") as td:
+            tmp_dir = Path(td)
+            for index, prompt in enumerate(prompts):
+                cached = _cache_load(LOCAL_TTS_BACKEND_NAME, "local", prompt)
+                if cached is not None:
+                    cache[prompt] = cached
+                    safe_print(f"   [synthèse locale] {prompt[:60]}… (depuis le cache disque)")
+                    continue
+                wav_path = tmp_dir / f"prompt_{index}.wav"
+                engine.save_to_file(prompt, str(wav_path))
+                engine.runAndWait()
+                if not wav_path.exists() or wav_path.stat().st_size == 0:
+                    raise RuntimeError(f"le moteur TTS local n'a produit aucun fichier pour : {prompt!r}")
+                pcm = _wav_file_to_pcm16k(wav_path)
+                cache[prompt] = pcm
+                _cache_store(LOCAL_TTS_BACKEND_NAME, "local", prompt, pcm)
+                safe_print(f"   [synthèse locale] {prompt[:60]}… ({len(pcm)} octets)")
+    except Exception as exc:
+        safe_print(
+            f"[entrée] la synthèse locale a échoué en cours de route "
+            f"({type(exc).__name__} : {exc}) — abandon de ce backend."
+        )
+        return None
+    finally:
+        try:
+            engine.stop()
+        except Exception:
+            pass
+    return cache
+
+
+# =====================================================================
+# Backend de SECOURS : Gemini ``generateContent`` TTS dédié, puis repli
+# conversationnel Live si ``generateContent`` échoue (quota ou autre).
+#
+# ATTENTION QUOTA : ``gemini-2.5-flash-preview-tts`` via ``generateContent``
+# est limité (constaté : 3 req/min, 10 req/jour sur le palier disponible).
+# ``GEMINI_TTS_MIN_INTERVAL_SECONDS`` espace donc les appels, et le cache
+# disque ci-dessus évite de reconsommer le quota à chaque ré-exécution.
+# =====================================================================
+
+GEMINI_TTS_MIN_INTERVAL_SECONDS = 22.0  # marge de sécurité sous 3 requêtes/minute
+_last_gemini_tts_call = 0.0
+
+
 async def synthesize_prompt(client, text: str, model: str) -> bytes:
-    """Texte -> PCM 16 kHz mono s16le, via le modèle TTS Gemini."""
+    """Texte -> PCM 16 kHz mono s16le, via le modèle TTS Gemini.
+
+    Repli de secours uniquement (cf. en-tête de section) : espacé dans le
+    temps pour respecter la limite de 3 requêtes/minute, avec un essai
+    supplémentaire après une courte attente en cas de 429
+    (``RESOURCE_EXHAUSTED``) avant d'abandonner ce prompt.
+    """
+    global _last_gemini_tts_call
     import numpy as np
     from google.genai import types
 
@@ -77,10 +317,34 @@ async def synthesize_prompt(client, text: str, model: str) -> bytes:
             )
         ),
     )
-    response = await asyncio.wait_for(
-        client.aio.models.generate_content(model=model, contents=text, config=config),
-        timeout=TTS_TIMEOUT,
-    )
+
+    async def _call_once() -> bytes:
+        elapsed = time.monotonic() - _last_gemini_tts_call
+        wait = GEMINI_TTS_MIN_INTERVAL_SECONDS - elapsed
+        if wait > 0:
+            await asyncio.sleep(wait)
+        response = await asyncio.wait_for(
+            client.aio.models.generate_content(model=model, contents=text, config=config),
+            timeout=TTS_TIMEOUT,
+        )
+        return response
+
+    try:
+        response = await _call_once()
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        if code == 429:
+            safe_print(
+                f"   [TTS Gemini] 429 RESOURCE_EXHAUSTED pour {text!r} — "
+                f"nouvel essai dans {GEMINI_TTS_MIN_INTERVAL_SECONDS:.0f}s."
+            )
+            await asyncio.sleep(GEMINI_TTS_MIN_INTERVAL_SECONDS)
+            response = await _call_once()
+        else:
+            raise
+    finally:
+        _last_gemini_tts_call = time.monotonic()
+
     part = response.candidates[0].content.parts[0]
     data = getattr(getattr(part, "inline_data", None), "data", None)
     if not data:
@@ -98,6 +362,7 @@ async def synthesize_prompt(client, text: str, model: str) -> bytes:
         ).astype(np.int16)
     tail = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.int16)
     return (np.concatenate([samples, tail])).tobytes()
+
 
 
 def _normalize_for_comparison(text: str) -> str:
@@ -180,6 +445,11 @@ async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dic
 
     cache: dict[str, bytes] = {}
     for prompt in prompts:
+        cached = _cache_load("gemini-live-tts", model, prompt)
+        if cached is not None:
+            cache[prompt] = cached
+            safe_print(f"   [synthèse] {prompt[:60]}… (depuis le cache disque)")
+            continue
         wanted = _normalize_for_comparison(prompt)
         pcm = b""
         last_transcript = ""
@@ -205,6 +475,7 @@ async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dic
         ).astype(np.int16)
         tail = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.int16)
         cache[prompt] = np.concatenate([resampled, tail]).tobytes()
+        _cache_store("gemini-live-tts", model, prompt, cache[prompt])
         safe_print(
             f"   [synthèse] {prompt[:60]}… ({len(cache[prompt])} octets, "
             f"transcription vérifiée : {last_transcript[:60]!r})"
@@ -446,28 +717,68 @@ async def main() -> int:
     model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
     tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 
-    import google.genai as genai
-
-    client = genai.Client(api_key=api_key)
-
     notes: list[str] = []
     prompt_cache: dict[str, bytes] = {}
-    input_mode = "tts"
-    try:
-        for prompt in PROMPTS:
-            prompt_cache[prompt] = await synthesize_prompt(client, prompt, tts_model)
-    except Exception as exc:
-        safe_print(
-            f"[entrée] TTS generateContent indisponible ({type(exc).__name__} : {exc}) "
-            "— synthèse via Live (repli)."
-        )
-        try:
-            prompt_cache = await synthesize_all_via_live(client, model, PROMPTS)
-            input_mode = "live-tts"
-        except Exception as exc2:
-            safe_print(f"AUCUNE SYNTHÈSE POSSIBLE : {type(exc2).__name__} — {exc2}")
-            print_verdicts({}, [f"synthèse audio impossible : {exc2}"])
-            return 3
+    modes_used: set[str] = set()
+
+    # 1) Backend PRIMAIRE : synthèse locale (pyttsx3), zéro quota Gemini.
+    tts_backend = os.getenv("JARVIS_VALIDATE_TTS_BACKEND", "auto").strip().lower()
+    if tts_backend in ("auto", "local"):
+        local_result = synthesize_all_local(PROMPTS)
+        if local_result:
+            prompt_cache.update(local_result)
+            modes_used.add("local-tts")
+
+    missing = [p for p in PROMPTS if p not in prompt_cache]
+
+    # 2) Repli de SECOURS uniquement pour les prompts manquants (backend
+    #    Gemini local indisponible, ou JARVIS_VALIDATE_TTS_BACKEND=gemini
+    #    forcé explicitement) : generateContent TTS d'abord (limité à 3
+    #    req/min et 10 req/jour sur le palier disponible — ``synthesize_
+    #    prompt`` espace donc ses appels), puis repli Live par prompt si
+    #    generateContent échoue (quota ou autre erreur).
+    if missing and tts_backend != "local":
+        if not modes_used:
+            safe_print(
+                "[entrée] aucun moteur TTS local disponible — repli sur l'API "
+                "Gemini pour la synthèse d'entrée (quota limité : 3 requêtes/min, "
+                "10 requêtes/jour sur ce palier)."
+            )
+        import google.genai as genai
+
+        client = genai.Client(api_key=api_key)
+        for prompt in missing:
+            cached = _cache_load("gemini-tts", tts_model, prompt)
+            if cached is not None:
+                prompt_cache[prompt] = cached
+                modes_used.add("gemini-tts(cache)")
+                continue
+            try:
+                pcm = await synthesize_prompt(client, prompt, tts_model)
+                prompt_cache[prompt] = pcm
+                _cache_store("gemini-tts", tts_model, prompt, pcm)
+                modes_used.add("gemini-tts")
+            except Exception as exc:
+                safe_print(
+                    f"[entrée] TTS generateContent indisponible pour {prompt!r} "
+                    f"({type(exc).__name__} : {exc}) — repli Live pour ce prompt."
+                )
+                try:
+                    one = await synthesize_all_via_live(client, model, [prompt])
+                    prompt_cache.update(one)
+                    modes_used.add("gemini-live-tts")
+                except Exception as exc2:
+                    safe_print(f"AUCUNE SYNTHÈSE POSSIBLE pour {prompt!r} : {type(exc2).__name__} — {exc2}")
+                    print_verdicts({}, [f"synthèse audio impossible pour {prompt!r} : {exc2}"])
+                    return 3
+
+    still_missing = [p for p in PROMPTS if p not in prompt_cache]
+    if still_missing:
+        safe_print(f"AUCUNE SYNTHÈSE POSSIBLE pour : {still_missing!r}")
+        print_verdicts({}, [f"synthèse audio impossible pour : {still_missing!r}"])
+        return 3
+
+    input_mode = "+".join(sorted(modes_used)) or "inconnu"
     notes.append(f"entrée audio : {input_mode} (parole réelle synthétisée, pas une tonalité)")
 
     os.environ.setdefault("JARVIS_AUDIO_TRACE", "1")

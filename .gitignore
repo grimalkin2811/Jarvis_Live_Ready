@@ -16,6 +16,11 @@ data/
 *.db-shm
 *.db-wal
 
+# Cache disque des prompts audio synthétisés pour la validation réelle
+# (scripts/validate_reconnect_v174_real.py) — régénéré localement, jamais
+# versionné (contenu binaire propre à chaque machine/voix).
+scripts/.tts_cache/
+
 # Données Deezer locales (token OAuth et associations — ne jamais committer)
 deezer_auth.json
 **/deezer_auth.json
