@@ -291,16 +291,6 @@ def synthesize_all_local(prompts: list[str]) -> dict[str, bytes] | None:
             "(pip install pyttsx3 ; pywin32 en plus sur Windows)."
         )
         return None
-    try:
-        probe = pyttsx3.init()
-        probe.stop()
-    except Exception as exc:
-        safe_print(
-            f"[entrée] moteur TTS local indisponible dans cet environnement "
-            f"({type(exc).__name__} : {exc})."
-        )
-        return None
-
     cache: dict[str, bytes] = {}
     try:
         with tempfile.TemporaryDirectory(prefix="jarvis_validate_tts_") as td:
