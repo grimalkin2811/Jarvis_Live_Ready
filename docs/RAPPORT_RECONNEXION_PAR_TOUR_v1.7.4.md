@@ -1187,3 +1187,58 @@ elle n'est pas confirmée par une observation directe des champs
 est exactement ce que cette instrumentation vise à obtenir au prochain run.
 Aucun correctif n'est implémenté sur cette base tant que cette confirmation
 manque, conformément à la consigne reçue.
+
+### 12.5 Premier run réel avec l'instrumentation v1.7.5 quinquies — S6 PASS, bug non reproduit cette fois
+
+Un run complet (S1+S4/S2/S3/S5/S6, verdict final : **tous PASS, y compris
+S6**) a été fourni par l'utilisateur, exécuté avec le code de ce commit
+(`ea63c37`). **Aucun `EMPTY_GENERATION_RETRY` ne s'est déclenché une seule
+fois dans tout ce run** : `g2-t8` (« Quel est mon prénom ? » après
+reconnexion réelle) a reçu sa réponse complète (« Votre prénom est Simon »)
+dès la toute première tentative. Ce run ne reproduit donc pas le bug — il
+ne peut pas répondre aux questions encore ouvertes du §12.4, mais il
+apporte des faits nouveaux, directement observés (plus seulement déduits
+du code) :
+
+- **Chaque tour réel (9/9 dans ce run, y compris le tour de reprise
+  automatique `g2-t7` « Je vous écoute » après reconnexion) commence par un
+  `model_turn` contenant une part TEXTE SEULE** (`MODEL_TURN_RECEIVED
+  parts_count=1 has_inline_audio=False has_text_part=True`), **avant**
+  qu'un seul chunk audio n'arrive. C'est désormais un comportement protocole
+  confirmé et systématique, pas une occurrence isolée. `TTS_START` se
+  déclenche dès ce tout premier chunk (texte, sans audio) — confirmation
+  directe de l'analyse du §12.2 : `TTS_START` ne garantit aucun contenu
+  audible. Ce texte n'est actuellement consommé nulle part (ni pour la
+  lecture audio, ni pour `GEMINI_ASSISTANT_TRANSCRIPT`, qui provient du
+  canal séparé `output_transcription`) ; rien dans ce run ne prouve qu'il
+  diffère du contenu réellement prononcé ensuite, donc aucune action n'est
+  prise sur cette base — mais c'est une piste précise et falsifiable pour
+  la prochaine capture d'un tour S6 QUI ÉCHOUE : si une tentative vide
+  s'arrête après CE SEUL chunk texte sans qu'aucun chunk `inline_data` ne
+  suive jamais, ce serait la première preuve directe que le modèle
+  « démarre puis s'arrête immédiatement » au sens strict (hypothèse du
+  §11.2, jamais confirmée par une observation directe jusqu'ici).
+- **`generation_complete=True` accompagne systématiquement (9/9) la
+  complétion normale d'un tour**, juste avant `TURN_COMPLETE` — c'est donc
+  la signature confirmée du chemin « tout s'est bien passé ».
+- **`turn_complete_reason` / `interaction_status` / `waiting_for_input`
+  ne sont apparus NULLE PART dans ce run** (aucune ligne
+  `LIVE_DIAGNOSTIC_FIELDS` ne les contient) : ils sont donc authentiquement
+  absents/`None` sur le chemin normal — preuve négative utile, mais qui ne
+  dit toujours rien du chemin défaillant.
+- **Confirmation directe (pas seulement par lecture de code) du
+  §12.2 pour un cas `has_user_text=False`** : le tour de reprise `g2-t7`
+  (réponse automatique du serveur après rejeu de contexte, aucune question
+  utilisateur) a bien `TURN_COMPLETE has_user_text=False
+  has_model_content=True had_content=True` — exactement le comportement
+  attendu, observé pour la première fois en conditions réelles.
+
+**Ce run ne clôt donc PAS l'investigation** : conforme à la nature
+probabiliste du bug serveur documenté en §11.3 (jusqu'à ~30 % d'échecs
+résiduels par tentative selon le témoignage externe cité), il est normal
+qu'un run donné ne reproduise pas le symptôme. **Il manque toujours** une
+capture d'un run où `EMPTY_GENERATION_RETRY` se déclenche réellement,
+produite avec ce même code instrumenté, pour lire les valeurs de
+`turn_complete_reason`/`interaction_status`/`waiting_for_input` et la
+forme exacte (`has_text_part`/`has_inline_audio`) du `model_turn` creux
+des tentatives qui échouent.
