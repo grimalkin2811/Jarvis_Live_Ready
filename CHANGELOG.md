@@ -266,6 +266,67 @@ propre (protection contre la coupure de session Live à ~15 min).
   `context_window_compression` de la configuration envoyée au serveur
   (jamais vérifié jusqu'ici), sans affecter les autres protections.
 
+### Investigation (addendum 2 — `JARVIS_LIVE_COMPRESSION=0` ne corrige PAS
+S6 ; cause encore non prouvée, instrumentation ajoutée)
+
+**Ne pas fusionner/publier avant confirmation. S6 n'est toujours PAS
+corrigé.** Un nouveau run réel avec `JARVIS_LIVE_COMPRESSION=0` confirme
+S1/S2/S3/S4/S5 = PASS mais **S6 échoue encore, avec exactement la même
+signature** que sans le kill-switch (`EMPTY_GENERATION_RETRY` 1/2 puis
+2/2, 3ᵉ tentative avec `TTS_START` + `TURN_COMPLETE had_content=True` mais
+toujours aucun `GEMINI_ASSISTANT_TRANSCRIPT`). Ceci démontre que
+`context_window_compression` n'est **pas** la cause (unique ou
+suffisante) : **aucun changement de comportement par défaut sur ce point
+n'est fait** (le kill-switch reste disponible mais désactivé par défaut).
+
+Le fichier de trace réel annoncé pour cette investigation n'a en pratique
+jamais été transmis à l'agent (recherché sur l'ensemble du système de
+fichiers, absent). En l'absence de cette preuve, et conformément à la
+consigne explicite de ne PAS implémenter de correctif/contournement
+spéculatif tant que la cause n'est pas démontrée, seule de
+l'instrumentation en lecture seule a été ajoutée (aucun comportement
+produit modifié — confirmé par la suite de 98 tests ciblés, tous verts) :
+
+- **`GeminiLive._live_diagnostics()`** (nouveau) : lit quatre champs
+  officiels du SDK `google-genai` jamais exploités jusqu'ici —
+  `turn_complete_reason` (énumération incluant notamment
+  `RESPONSE_REJECTED`, `NEED_MORE_INPUT`, `MALFORMED_FUNCTION_CALL`,
+  `MAX_REGENERATION_REACHED`), `generation_complete`,
+  `interaction_status` (`IN_PROGRESS`/`REQUIRES_ACTION`/`IDLE`) et
+  `waiting_for_input`. Si Gemini indique explicitement pourquoi une
+  génération n'a rien produit, ces champs sont le seul moyen actuel de le
+  voir. Nouvel évènement de trace `LIVE_DIAGNOSTIC_FIELDS` (capture ces
+  champs même sur un message isolé, sans `model_turn` ni `turn_complete` —
+  comportement documenté du SDK pour `generation_complete`).
+- **`MODEL_TURN_RECEIVED`** (nouveau) : trace `parts_count`,
+  `has_inline_audio` et `has_text_part` pour chaque `model_turn` reçu,
+  avant toute logique d'interruption/contenu — teste l'hypothèse que
+  Gemini enverrait un `part.text` actuellement ignoré (seul
+  `part.inline_data` est consommé).
+- **`TURN_COMPLETE`** : le booléen agrégé `had_content` (valeur et
+  logique en aval strictement inchangées) est désormais accompagné de ses
+  trois composantes explicites `has_user_text`, `has_model_content`,
+  `has_local_interrupt` — pour qu'une lecture future de la trace ne
+  suppose jamais que `had_content=True` prouve qu'une réponse assistant
+  exploitable a été reçue (seul `has_model_content=True` le prouve).
+- **`INTERRUPTION`** : enrichie des mêmes champs `live_diag`.
+
+Observation manquante, explicitement : il faut un nouveau run réel
+reproduisant S6 **avec cette instrumentation** (ou le fichier de trace
+réel déjà évoqué mais jamais reçu) pour savoir si
+`turn_complete_reason`/`interaction_status`/`waiting_for_input` se
+remplissent pendant les tentatives vides de S6, et si `has_user_text`
+(et non `has_model_content`) est bien ce qui rend `had_content=True`
+dans ce cas précis.
+
+#### Ajouté (tests)
+
+- Aucun nouveau test : changement purement additif sur la forme des
+  évènements de trace, vérifié par la suite existante (notamment
+  `tests/test_s6_persistent_empty_generation.py`,
+  `tests/test_turn_callbacks.py`, `tests/test_interruption.py`,
+  `tests/test_live_context_harness.py`) sans aucune modification.
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

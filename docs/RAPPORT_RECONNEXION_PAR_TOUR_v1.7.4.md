@@ -1023,3 +1023,167 @@ fusionner/publier avant) :**
    correctif interne).
 3. Ne pas marquer S6 comme corrigé tant que (1) n'a pas été testé en
    conditions réelles avec un verdict PASS explicite.
+
+## 12. Suivi v1.7.5 quinquies — `JARVIS_LIVE_COMPRESSION=0` ne corrige PAS S6 ; instrumentation ajoutée, cause encore non prouvée
+
+### 12.0 Contexte et résultat du test réel demandé en §11.5
+
+Le point (1) de §11.5 a été exécuté par l'utilisateur :
+`scripts/validate_reconnect_v174_real.py` avec `JARVIS_LIVE_COMPRESSION=0`.
+Résultat :
+
+| Scénario | Verdict réel (compression désactivée) |
+|---|---|
+| S1 + S4 / S2 / S3 / S5 | **PASS** |
+| **S6 (mémoire après reconnexion réelle)** | **FAIL — même signature exacte qu'en §11** : `EMPTY_GENERATION_RETRY` 1/2 puis 2/2, 3ᵉ tentative avec `TTS_START` + `TURN_COMPLETE had_content=True` mais toujours aucun `GEMINI_ASSISTANT_TRANSCRIPT` |
+
+**Conclusion ferme et actionnable :** `context_window_compression` n'est
+**pas** la cause de S6 (ou n'en est, au mieux, qu'un facteur marginal/non
+déterminant) — désactiver ce kill-switch par défaut n'aurait aucun effet
+démontré sur le symptôme, pour un coût propre (risque de coupure de
+session Live à ~15 min). **Décision : ne pas changer ce comportement par
+défaut**, conformément à l'instruction explicite reçue.
+
+### 12.1 Pourquoi cette section ne referme PAS l'investigation (donnée manquante)
+
+L'utilisateur a demandé une nouvelle analyse événement-par-événement très
+détaillée (comparaison exacte `g1-t3` vs un nouveau tour S6 réel,
+inspection précise de `receive()`, preuve que `had_content=True` ne
+signifie pas « contenu assistant reçu », etc.), en réaction au fichier de
+trace de ce nouveau run (« Texte collé(7).txt » dans l'échange).
+**Ce fichier n'a cependant jamais été effectivement transmis à l'agent**
+dans cette session (recherché explicitement sur l'ensemble du système de
+fichiers accessible : absent). Sans lui, les points suivants de la demande
+ne peuvent PAS être répondus avec des preuves (seulement avec du
+raisonnement sur le code, explicitement jugé insuffisant par le critère de
+fin demandé) :
+
+- Comparaison événement-par-événement exacte d'un nouveau tour S6 réel
+  (la seule comparaison disponible reste celle de §11.1/11.2, basée sur le
+  run *précédent*, pas sur celui avec compression désactivée).
+- Confirmation empirique que `had_content=True` dans CE run précis est bien
+  dû à `has_user_text=True` (raisonnement correct par lecture du code,
+  cf. §12.2, mais jamais observé directement faute de trace).
+- Contenu réel de `turn_complete_reason`/`interaction_status`/
+  `waiting_for_input` pour ce run — ces champs n'étaient pas encore tracés
+  au moment où ce run a eu lieu (voir §12.3 : ils viennent d'être ajoutés).
+
+**Décision pour cette session, conformément au point 10 de la consigne
+reçue** (« si la cause reste incertaine : ne pas implémenter de
+contournement spéculatif ; ajouter l'instrumentation minimale nécessaire
+pour distinguer les hypothèses, et expliquer précisément quelle
+observation manque ») : aucun correctif ni contournement n'a été
+implémenté. Seule de l'instrumentation en lecture seule a été ajoutée
+(§12.3), et l'observation manquante est énoncée explicitement (§12.4).
+
+### 12.2 Ce qui EST prouvé par lecture de code (sans ambiguïté, sans trace supplémentaire nécessaire)
+
+Deux points de la consigne (n°2 et n°3) ont une réponse certaine, obtenue
+directement par lecture de `src/gemini_live.py::_receive_one_turn_cycle`
+(pas une supposition) :
+
+- **Sémantique de `TTS_START` (point 3)** : l'évènement est émis dans le
+  bloc `if server_content and server_content.model_turn:`, dès que
+  `(not self.speaking or self._interrupt_was_active)` — c'est-à-dire **dès
+  qu'une enveloppe `model_turn` arrive sur le flux**, AVANT que la boucle
+  qui consomme `part.inline_data.data` (seule source d'audio réellement
+  jouée) ne s'exécute. `TTS_START` prouve donc uniquement « un `model_turn`
+  est arrivé », jamais « du contenu exploitable est arrivé » — exactement
+  ce qui explique qu'il se déclenche sur la 3ᵉ tentative de `g2-t8` sans
+  qu'aucun `GEMINI_ASSISTANT_TRANSCRIPT` ne suive (le `model_turn` reçu est
+  creux : `parts` sans `inline_data.data` exploitable, cf. §11.2).
+- **Sémantique de `had_content=True` (point 2)** : dans le bloc
+  `TURN_COMPLETE`, `had_content = has_user_text or has_model_content or
+  has_local_interrupt`, où `has_user_text = bool(pending_user_text)` (la
+  question utilisateur transcrite) et `has_model_content =
+  self._turn_model_content_seen` (vrai UNIQUEMENT si de l'audio
+  `inline_data.data` a réellement été reçu — voir boucle juste après
+  `MODEL_TURN_RECEIVED`). Dans la signature S6 décrite par l'utilisateur
+  (question transcrite, zéro audio, zéro transcription assistant),
+  `had_content=True` ne peut être porté QUE par `has_user_text=True` — il
+  **ne prouve en aucun cas qu'un contenu assistant a été reçu**. C'est
+  précisément la mise en garde du point 2 de la consigne : « ne pas traiter
+  `had_content=True` comme preuve d'un contenu assistant exploitable ».
+  Ce raisonnement est maintenant vérifiable DIRECTEMENT sur une future trace
+  (plus besoin de le déduire du code) grâce à l'instrumentation du §12.3.
+
+### 12.3 Instrumentation ajoutée (lecture seule, aucun changement de comportement)
+
+Quatre champs officiels de `google.genai.types.LiveServerContent`, présents
+dans le SDK installé mais **jamais lus nulle part dans ce code base**
+avant cette session, sont maintenant tracés :
+
+- `turn_complete_reason` — énumération `TurnCompleteReason` (28 valeurs
+  dans le SDK installé, incluant notamment `RESPONSE_REJECTED`,
+  `NEED_MORE_INPUT`, `MALFORMED_FUNCTION_CALL`, `MAX_REGENERATION_REACHED`,
+  plusieurs raisons liées à la sécurité du contenu). Si Gemini explique
+  explicitement pourquoi une génération n'a rien produit, c'est ce champ
+  qui le dirait.
+- `generation_complete` — documenté dans le SDK comme pouvant arriver
+  **seul**, sur un message séparé de `model_turn`/`turn_complete`, si le
+  modèle attend la fin de la lecture audio temps réel.
+- `interaction_status` — énumération `InteractionStatus`
+  (`IN_PROGRESS`/`REQUIRES_ACTION`/`IDLE`/`INTERACTION_STATUS_UNSPECIFIED`),
+  documentée comme « toujours envoyée aux côtés de `turn_complete` ».
+- `waiting_for_input` — documenté comme signifiant que « le modèle
+  n'est pas en train de générer parce qu'il attend plus d'entrée, par ex.
+  il s'attend à ce que l'utilisateur continue à parler ».
+
+Changements dans `src/gemini_live.py` (commit `ea63c37`) :
+
+- `GeminiLive._live_diagnostics(server_content) -> dict` (nouvelle méthode
+  statique) : lit ces quatre champs, déballe la valeur `.value` des
+  énumérations, ne retourne que les entrées non `None`.
+- Nouvel évènement de trace `LIVE_DIAGNOSTIC_FIELDS`, émis dès que
+  `server_content` est extrait (avant tout aiguillage `model_turn`/
+  `turn_complete`/`interrupted`) si au moins un de ces champs est présent —
+  capture le cas où `generation_complete` arrive seul.
+- Nouvel évènement de trace `MODEL_TURN_RECEIVED`, émis au tout début du
+  bloc `model_turn`, AVANT `TTS_START` et avant toute décision : expose
+  `parts_count`, `has_inline_audio` (vrai si au moins une `part` a un
+  `inline_data.data` non vide) et `has_text_part` (vrai si au moins une
+  `part` a un `.text` non vide — teste l'hypothèse qu'un contenu texte
+  exploitable pourrait exister et être actuellement ignoré, puisque seule
+  `inline_data` est consommée par la boucle existante).
+- `TURN_COMPLETE` : `had_content` reste calculé et utilisé à l'identique
+  (aucun changement de la valeur ni des branches `if had_content:`), mais
+  le payload de trace expose maintenant séparément `has_user_text`,
+  `has_model_content` et `has_local_interrupt`.
+- `INTERRUPTION` : payload de trace enrichi des mêmes champs
+  `live_diag`.
+
+Confirmé sans régression : les 98 tests ciblés
+(`test_gemini_live`, `test_interruption`, `test_empty_generation_retry`,
+`test_turn_callbacks`, `test_s6_persistent_empty_generation`,
+`test_session_lifecycle`, `test_turn_race`, `test_live_context_harness`)
+passent tous, inchangés — ce changement est purement additif sur le
+contenu des évènements de trace.
+
+### 12.4 Observation manquante, formulée explicitement
+
+Pour répondre aux points 1, 4, 5, 6 et 7 de la consigne (comparaison
+événement-par-événement exacte, distinction entre « 3 générations
+distinctes » et « 3 envois dans un état serveur bloqué », état résiduel
+après rejeu de contexte), il manque précisément :
+
+- **Soit** le contenu réel du fichier de trace déjà évoqué mais jamais
+  reçu par l'agent dans cette session (nécessaire pour toute analyse
+  événement-par-événement exacte d'un run passé) ;
+- **Soit** un nouveau run réel de `scripts/validate_reconnect_v174_real.py`
+  (scénario S6 au minimum) exécuté AVEC le code de ce commit (`ea63c37`),
+  dont la trace complète (via `GeminiLive.trace_events()` / le fichier
+  JSON produit par le harnais) montrerait, pour chacune des 3 tentatives de
+  `g2-t8` : les valeurs de `turn_complete_reason`/`interaction_status`/
+  `waiting_for_input`/`generation_complete` (actuellement jamais
+  observées), et les valeurs de `parts_count`/`has_inline_audio`/
+  `has_text_part` du `model_turn` creux de la 3ᵉ tentative.
+
+**Tant que l'une de ces deux données n'est pas disponible, la cause de S6
+reste non prouvée au sens du critère de fin demandé** : l'hypothèse du bug
+serveur documenté `googleapis/python-genai#2117` (§11.3) demeure la plus
+plausible et la mieux étayée par des sources externes indépendantes, mais
+elle n'est pas confirmée par une observation directe des champs
+`turn_complete_reason`/`interaction_status` sur un run Jarvis réel — ce qui
+est exactement ce que cette instrumentation vise à obtenir au prochain run.
+Aucun correctif n'est implémenté sur cette base tant que cette confirmation
+manque, conformément à la consigne reçue.
