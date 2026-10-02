@@ -215,15 +215,74 @@ def _wav_file_to_pcm16k(path: Path):
     return (np.concatenate([samples, tail])).tobytes()
 
 
+LOCAL_TTS_TIMEOUT = 30.0
+
+
+def _local_tts_worker(prompt: str, wav_path: str, result_queue) -> None:
+    """Run SAPI5/pyttsx3 in an isolated process so it cannot hang the harness."""
+    try:
+        import pyttsx3
+        engine = pyttsx3.init()
+        voice = _select_french_voice(engine)
+        engine.save_to_file(prompt, wav_path)
+        engine.runAndWait()
+        engine.stop()
+        path = Path(wav_path)
+        if not path.exists() or path.stat().st_size == 0:
+            raise RuntimeError("le moteur TTS local n'a produit aucun fichier WAV")
+        result_queue.put(("ok", getattr(voice, "name", None)))
+    except Exception as exc:
+        result_queue.put(("error", type(exc).__name__, str(exc)))
+
+
+def _synthesize_one_local(prompt: str, wav_path: Path, timeout: float = LOCAL_TTS_TIMEOUT) -> str | None:
+    """Generate one WAV with a hard timeout around the SAPI5 worker."""
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue()
+    process = ctx.Process(
+        target=_local_tts_worker,
+        args=(prompt, str(wav_path), result_queue),
+        name="jarvis-local-tts",
+    )
+    process.start()
+    process.join(timeout)
+    if process.is_alive():
+        process.terminate()
+        process.join(5.0)
+        try:
+            process.close()
+        except Exception:
+            pass
+        raise TimeoutError(
+            f"le moteur TTS local a dépassé le délai de {timeout:.0f}s pour {prompt!r}"
+        )
+    try:
+        result = result_queue.get_nowait()
+    except Exception:
+        result = None
+    finally:
+        try:
+            result_queue.close()
+            result_queue.join_thread()
+        except Exception:
+            pass
+        try:
+            process.close()
+        except Exception:
+            pass
+    if not result:
+        raise RuntimeError(
+            f"le processus TTS local s'est terminé sans résultat (code={process.exitcode}) "
+            f"pour {prompt!r}"
+        )
+    if result[0] != "ok":
+        raise RuntimeError(f"{result[1]} : {result[2]}")
+    return result[1]
+
+
 def synthesize_all_local(prompts: list[str]) -> dict[str, bytes] | None:
-    """Synthétise tous les prompts via le moteur TTS LOCAL (pas de quota).
-
-    Renvoie ``None`` (jamais ne lève) si aucun moteur local n'est
-    disponible dans cet environnement, pour permettre un repli propre vers
-    le backend Gemini en amont (``main()``).
-    """
+    """Synthesize locally with a hard per-prompt timeout; never hang the harness."""
     import tempfile
-
     try:
         import pyttsx3
     except ImportError:
@@ -232,24 +291,15 @@ def synthesize_all_local(prompts: list[str]) -> dict[str, bytes] | None:
             "(pip install pyttsx3 ; pywin32 en plus sur Windows)."
         )
         return None
-
     try:
-        engine = pyttsx3.init()
+        probe = pyttsx3.init()
+        probe.stop()
     except Exception as exc:
         safe_print(
             f"[entrée] moteur TTS local indisponible dans cet environnement "
             f"({type(exc).__name__} : {exc})."
         )
         return None
-
-    voice = _select_french_voice(engine)
-    if voice is not None:
-        safe_print(f"[entrée] voix locale sélectionnée : {getattr(voice, 'name', voice)!r}")
-    else:
-        safe_print(
-            "[entrée] aucune voix française détectée parmi les voix locales "
-            "disponibles — voix par défaut du système utilisée."
-        )
 
     cache: dict[str, bytes] = {}
     try:
@@ -259,28 +309,28 @@ def synthesize_all_local(prompts: list[str]) -> dict[str, bytes] | None:
                 cached = _cache_load(LOCAL_TTS_BACKEND_NAME, "local", prompt)
                 if cached is not None:
                     cache[prompt] = cached
-                    safe_print(f"   [synthèse locale] {prompt[:60]}… (depuis le cache disque)")
+                    safe_print(
+                        f'   [synthèse locale] Génération de "{prompt[:60]}..." '
+                        "(depuis le cache disque)"
+                    )
                     continue
                 wav_path = tmp_dir / f"prompt_{index}.wav"
-                engine.save_to_file(prompt, str(wav_path))
-                engine.runAndWait()
-                if not wav_path.exists() or wav_path.stat().st_size == 0:
-                    raise RuntimeError(f"le moteur TTS local n'a produit aucun fichier pour : {prompt!r}")
+                safe_print(f'   [synthèse locale] Génération de "{prompt[:60]}..."')
+                voice_name = _synthesize_one_local(prompt, wav_path)
+                safe_print(
+                    f"   [synthèse locale] WAV généré ({wav_path.stat().st_size} octets)"
+                    + (f" — voix : {voice_name!r}" if voice_name else "")
+                )
                 pcm = _wav_file_to_pcm16k(wav_path)
                 cache[prompt] = pcm
                 _cache_store(LOCAL_TTS_BACKEND_NAME, "local", prompt, pcm)
-                safe_print(f"   [synthèse locale] {prompt[:60]}… ({len(pcm)} octets)")
+                safe_print(f"   [synthèse locale] PCM prêt ({len(pcm)} octets)")
     except Exception as exc:
         safe_print(
             f"[entrée] la synthèse locale a échoué en cours de route "
-            f"({type(exc).__name__} : {exc}) — abandon de ce backend."
+            f"({type(exc).__name__} : {exc}) — repli vers Gemini."
         )
         return None
-    finally:
-        try:
-            engine.stop()
-        except Exception:
-            pass
     return cache
 
 
