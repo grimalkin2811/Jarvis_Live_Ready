@@ -430,6 +430,38 @@ class GeminiLive:
         with self._trace_lock:
             return list(self._trace)
 
+    @staticmethod
+    def _live_diagnostics(server_content) -> dict:
+        """Champs officiels du SDK Gemini Live, exposés mais jamais lus
+        jusqu'ici (v1.7.5 quinquies — instrumentation S6, lecture seule,
+        AUCUN effet sur le comportement) : ``turn_complete_reason``
+        (``RESPONSE_REJECTED``/``NEED_MORE_INPUT``/``MALFORMED_FUNCTION_CALL``/…),
+        ``generation_complete``, ``interaction_status``
+        (``IN_PROGRESS``/``REQUIRES_ACTION``/``IDLE``) et ``waiting_for_input``.
+
+        Investigation S6 (cf. docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md
+        §12) : un tour qui se clôt sans la moindre miette de contenu
+        pourrait être EXPLIQUÉ par ces champs (le serveur dirait alors
+        explicitement pourquoi) plutôt que d'être une troncature aléatoire
+        non motivée. Tant qu'une validation réelle n'a pas confirmé LAQUELLE
+        de ces causes se produit effectivement pour Jarvis, aucune décision
+        de comportement n'est prise sur la base de ces champs : ils sont
+        uniquement tracés pour distinguer les hypothèses.
+        """
+        if server_content is None:
+            return {}
+        reason = getattr(server_content, "turn_complete_reason", None)
+        status = getattr(server_content, "interaction_status", None)
+        diag = {
+            "turn_complete_reason": getattr(reason, "value", reason)
+            if reason is not None else None,
+            "generation_complete": getattr(server_content, "generation_complete", None),
+            "interaction_status": getattr(status, "value", status)
+            if status is not None else None,
+            "waiting_for_input": getattr(server_content, "waiting_for_input", None),
+        }
+        return {key: value for key, value in diag.items() if value is not None}
+
     # ------------------------------------------------------------------
     # Contexte conversationnel (v1.6.0)
     # ------------------------------------------------------------------
@@ -1383,6 +1415,18 @@ class GeminiLive:
                 None
             )
 
+            # v1.7.5 quinquies (instrumentation S6, lecture seule) : certains
+            # champs officiels du SDK (``generation_complete`` notamment) sont
+            # documentés comme pouvant arriver SEULS, sur un message qui ne
+            # porte ni ``model_turn`` ni ``turn_complete`` -- un évènement qui
+            # ne correspondrait à AUCUN des blocs ci-dessous serait donc
+            # invisible sans ce filet. Totalement passif : n'influence aucune
+            # décision, juste de la trace supplémentaire pour distinguer les
+            # hypothèses lors d'un prochain run réel.
+            live_diag = self._live_diagnostics(server_content)
+            if live_diag:
+                self._record_trace("LIVE_DIAGNOSTIC_FIELDS", **live_diag)
+
             # Transcription de l'audio utilisateur (activée dans connect()).
             # Elle alimente le contexte conversationnel, la détection locale
             # de « nouvelle conversation » et l'extraction mémoire
@@ -1433,6 +1477,26 @@ class GeminiLive:
                 server_content
                 and server_content.model_turn
             ):
+                # v1.7.5 quinquies (instrumentation S6, lecture seule) :
+                # décrit EXACTEMENT ce que contient ce ``model_turn``, avant
+                # toute décision -- notamment si des ``parts`` contiennent du
+                # texte que le code actuel ignore (seul ``inline_data`` est
+                # consommé ci-dessous). Si un futur run réel montre
+                # ``has_text_part=True`` pendant un tour resté « vide », ce
+                # serait la preuve qu'un contenu exploitable existe et est
+                # actuellement perdu -- à ce jour, aucune observation ne le
+                # confirme, donc aucun changement de comportement n'est fait.
+                _parts = list(server_content.model_turn.parts or [])
+                self._record_trace(
+                    "MODEL_TURN_RECEIVED",
+                    parts_count=len(_parts),
+                    has_inline_audio=any(
+                        getattr(p, "inline_data", None) and p.inline_data.data
+                        for p in _parts
+                    ),
+                    has_text_part=any(getattr(p, "text", None) for p in _parts),
+                    **live_diag,
+                )
                 # Le modèle répond : la demande de l'utilisateur est complète,
                 # on la fige dans le contexte avant tout message assistant.
                 self._commit_user_text()
@@ -1488,7 +1552,7 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
-                self._record_trace("INTERRUPTION", source="serveur")
+                self._record_trace("INTERRUPTION", source="serveur", **live_diag)
                 # v1.7.5 ter (régression S6, validation réelle) : un tour
                 # qui n'a RIEN produit (ni transcription utilisateur, ni
                 # audio/transcription assistant) n'est pas une vraie
@@ -1585,13 +1649,32 @@ class GeminiLive:
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
+                # v1.7.5 quinquies (instrumentation S6) : ``had_content``
+                # est un OU de trois raisons bien distinctes -- une lecture
+                # ultérieure de la trace ne doit JAMAIS supposer que
+                # ``had_content=True`` prouve qu'une réponse assistant
+                # exploitable a été reçue (cf.
+                # docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md §12) : seul
+                # ``has_model_content=True`` le prouve. Les deux autres
+                # raisons (une vraie question utilisateur sans réponse après
+                # épuisement des relances ; un barge-in local en cours) sont
+                # légitimes pour ne pas avaler l'évènement, mais ne disent
+                # RIEN sur le contenu produit par Gemini.
+                has_user_text = bool(pending_user_text)
+                has_model_content = self._turn_model_content_seen
                 had_content = (
-                    bool(pending_user_text)
-                    or self._turn_model_content_seen
+                    has_user_text
+                    or has_model_content
                     or had_local_interrupt
                 )
                 self._record_trace(
-                    "TURN_COMPLETE", source="serveur", had_content=had_content
+                    "TURN_COMPLETE",
+                    source="serveur",
+                    had_content=had_content,
+                    has_user_text=has_user_text,
+                    has_model_content=has_model_content,
+                    has_local_interrupt=had_local_interrupt,
+                    **live_diag,
                 )
                 # Contexte conversationnel d'abord : le tour est clos avec
                 # l'ordre USER -> OUTILS -> ASSISTANT.
