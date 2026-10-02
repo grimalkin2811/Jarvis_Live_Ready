@@ -55,6 +55,45 @@ complète, la cause racine et le protocole avant/après.
   pour lire l'état post-rejeu seulement après la fin réelle de l'attente de
   confirmation.
 
+### Corrigé (harnais de validation réelle — S6 toujours FAIL en conditions
+réelles après le correctif ci-dessus ; deux bugs du harnais, pas du
+produit, en étaient la cause — voir §11 du rapport)
+
+- **Fuite de variable d'environnement de test vers un script réel** :
+  `tests/__init__.py` positionnait `JARVIS_LIVE_SEED_COMMIT_TIMEOUT=1.5`
+  (marge réservée aux tests contre le faux serveur). Comme ce module
+  s'exécute dès qu'on importe quoi que ce soit depuis le paquet `tests`,
+  `scripts/validate_reconnect_v174_real.py` (qui fait
+  `from tests.real_gemini_harness import ...`) héritait silencieusement de
+  ce délai de 1,5 s au lieu du défaut produit de 5 s — confirmé dans une
+  trace réelle (`SEED COMMIT TIMEOUT ... aucune confirmation serveur sous
+  1.5s`). Déplacé vers un nouveau `tests/conftest.py` (chargé uniquement
+  par pytest, jamais par un `import` Python ordinaire du paquet `tests`) ;
+  `tests/__init__.py` ne fait plus aucun `os.environ.setdefault` lié aux
+  tests. Comportement de la suite pytest inchangé (même délai de 1,5 s sous
+  pytest, vérifié par ré-exécution complète de la suite).
+- **Synthèse de secours peu fiable corrompant les prompts réels** :
+  quand `generateContent` (TTS dédié) échoue (`ClientError`, observé dans
+  les deux runs réels), le script se rabat sur
+  `synthesize_all_via_live()`, qui demandait à une session Live
+  conversationnelle de « répéter exactement » chaque prompt. Dérive
+  confirmée en conditions réelles : le modèle répondait parfois AU prompt
+  au lieu de le répéter (« Mon prénom est Simon. » -> audio généré disant
+  « D'accord, Simon. » ; « Quel est mon prénom ? » -> audio généré disant
+  « Même en pleine. »), ce qui corrompait l'entrée audio du scénario S6
+  AVANT même que le mécanisme de contexte/session soit sollicité — un FAIL
+  de S6 dans ces conditions ne prouvait donc rien sur le produit. Corrigé :
+  chaque prompt est désormais synthétisé dans sa PROPRE session Live (plus
+  d'historique partagé pouvant dériver au fil des 5 prompts) et la
+  transcription de sortie (`output_audio_transcription`) est comparée (
+  normalisée : minuscules, sans accents/ponctuation) au texte demandé, avec
+  un nouvel essai en cas de désaccord et un échec explicite (au lieu d'une
+  mise en cache silencieuse d'un audio incorrect) si la synthèse ne
+  reproduit jamais fidèlement le prompt. Le message d'erreur du
+  `ClientError` de `generateContent` est maintenant journalisé (redacté)
+  pour permettre de diagnostiquer sa cause plutôt que de masquer le repli.
+  N'affecte que le harnais de validation, pas le produit.
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

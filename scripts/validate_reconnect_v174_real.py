@@ -100,41 +100,115 @@ async def synthesize_prompt(client, text: str, model: str) -> bytes:
     return (np.concatenate([samples, tail])).tobytes()
 
 
-async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dict[str, bytes]:
-    """Repli si generateContent/TTS n'est pas accessible (jeton éphémère)."""
+def _normalize_for_comparison(text: str) -> str:
+    """Normalise un texte pour comparer prompt demandé vs. transcription obtenue.
+
+    Minuscules, accents retirés, ponctuation retirée, espaces compressés —
+    uniquement pour détecter une dérive SÉMANTIQUE du synthétiseur de repli
+    (un modèle conversationnel qui répond au lieu de répéter), pas pour
+    exiger une transcription phonétique parfaite.
+    """
+    import unicodedata
+
+    decomposed = unicodedata.normalize("NFD", text)
+    without_accents = "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
+    kept = "".join(c.lower() if c.isalnum() else " " for c in without_accents)
+    return " ".join(kept.split())
+
+
+async def _synthesize_one_via_live(client, model: str, prompt: str) -> tuple[bytes, str]:
+    """Synthétise un seul prompt dans une session Live FRAÎCHE (sans historique).
+
+    Root cause (audit v1.7.5 bis, S6 « FAIL » reproduit deux fois avec un
+    texte entendu totalement différent du prompt demandé) : en réutilisant
+    UNE SEULE session Live pour les 5 prompts à la suite, le modèle
+    (conversationnel, pas un vrai TTS) dérive au bout de quelques tours et
+    se met à RÉPONDRE au texte au lieu de le répéter mot pour mot (ex. :
+    « Mon prénom est Simon. » -> audio généré disant « D'accord, Simon. » ;
+    « Quel est mon prénom ? » -> audio généré disant « Même en pleine. »).
+    Le scénario entendait alors un texte totalement différent de celui
+    voulu, et l'echec de S6 observé n'avait RIEN à voir avec le contexte de
+    session — c'était l'audio d'entrée lui-même qui était corrompu. Deux
+    mesures correctives : (1) une session Live indépendante par prompt (pas
+    d'historique de conversation pouvant dériver), (2) une transcription de
+    la sortie (``output_audio_transcription``) comparée au prompt demandé,
+    avec un nouvel essai si elle ne correspond pas.
+    """
     import numpy as np
     from google.genai import types
 
     config = types.LiveConnectConfig(
         response_modalities=["AUDIO"],
+        output_audio_transcription=types.AudioTranscriptionConfig(),
         system_instruction=(
-            "Tu es un synthétiseur vocal. Quand on t'envoie du texte, tu le "
-            "répètes EXACTEMENT mot pour mot en français, sans rien ajouter."
+            "Tu es un synthétiseur vocal, pas un assistant conversationnel. "
+            "Tu ne réponds JAMAIS à ce qu'on t'envoie, tu ne commentes jamais, "
+            "tu ne confirmes jamais : tu te contentes de LIRE À VOIX HAUTE, "
+            "mot pour mot et sans aucun ajout, exactement le texte suivant, "
+            "une seule fois : "
         ),
     )
-    cache: dict[str, bytes] = {}
     async with client.aio.live.connect(model=model, config=config) as session:
-        for prompt in prompts:
-            await session.send_realtime_input(text=prompt)
-            chunks = bytearray()
-            async for message in session.receive():
-                content = message.server_content
-                if content and content.model_turn:
-                    for part in content.model_turn.parts:
-                        if part.inline_data and part.inline_data.data:
-                            chunks.extend(part.inline_data.data)
-                if content and content.turn_complete:
-                    break
-            if not chunks:
-                raise RuntimeError(f"la session Live n'a pas synthétisé : {prompt!r}")
-            samples = np.frombuffer(bytes(chunks), dtype=np.int16)
-            count = int(len(samples) * SAMPLE_RATE / 24000)
-            resampled = np.interp(
-                np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples
-            ).astype(np.int16)
-            tail = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.int16)
-            cache[prompt] = np.concatenate([resampled, tail]).tobytes()
-            safe_print(f"   [synthèse] {prompt[:60]}… ({len(cache[prompt])} octets)")
+        await session.send_realtime_input(text=prompt)
+        chunks = bytearray()
+        transcript = ""
+        async for message in session.receive():
+            content = message.server_content
+            if content and content.model_turn:
+                for part in content.model_turn.parts:
+                    if part.inline_data and part.inline_data.data:
+                        chunks.extend(part.inline_data.data)
+            if content and content.output_transcription and content.output_transcription.text:
+                transcript += content.output_transcription.text
+            if content and content.turn_complete:
+                break
+        if not chunks:
+            raise RuntimeError(f"la session Live n'a pas synthétisé : {prompt!r}")
+        return bytes(chunks), transcript
+
+
+async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dict[str, bytes]:
+    """Repli si generateContent/TTS n'est pas accessible (jeton éphémère).
+
+    Chaque prompt est synthétisé dans sa PROPRE session Live (cf.
+    ``_synthesize_one_via_live``) et la transcription de la sortie est
+    vérifiée par rapport au texte demandé — avec un nouvel essai si le
+    modèle a dérivé vers une réponse conversationnelle au lieu de répéter
+    le texte (symptôme réel observé deux fois en validation réelle).
+    """
+    import numpy as np
+
+    cache: dict[str, bytes] = {}
+    for prompt in prompts:
+        wanted = _normalize_for_comparison(prompt)
+        pcm = b""
+        last_transcript = ""
+        for attempt in range(2):
+            pcm, last_transcript = await _synthesize_one_via_live(client, model, prompt)
+            got = _normalize_for_comparison(last_transcript)
+            if got == wanted or (wanted and wanted in got) or (got and got in wanted):
+                break
+            safe_print(
+                f"   [synthèse] ATTENTION : tentative {attempt + 1} pour {prompt!r} "
+                f"a produit un texte différent ({last_transcript!r}) — nouvel essai."
+            )
+        else:
+            raise RuntimeError(
+                f"le synthétiseur de repli n'a jamais répété fidèlement {prompt!r} "
+                f"(dernière tentative entendue : {last_transcript!r}) — audio d'entrée "
+                "non fiable, verdicts en aval non significatifs"
+            )
+        samples = np.frombuffer(pcm, dtype=np.int16)
+        count = int(len(samples) * SAMPLE_RATE / 24000)
+        resampled = np.interp(
+            np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples
+        ).astype(np.int16)
+        tail = np.zeros(int(SAMPLE_RATE * 0.5), dtype=np.int16)
+        cache[prompt] = np.concatenate([resampled, tail]).tobytes()
+        safe_print(
+            f"   [synthèse] {prompt[:60]}… ({len(cache[prompt])} octets, "
+            f"transcription vérifiée : {last_transcript[:60]!r})"
+        )
     return cache
 
 
@@ -383,7 +457,10 @@ async def main() -> int:
         for prompt in PROMPTS:
             prompt_cache[prompt] = await synthesize_prompt(client, prompt, tts_model)
     except Exception as exc:
-        safe_print(f"[entrée] TTS generateContent indisponible ({type(exc).__name__}) — synthèse via Live.")
+        safe_print(
+            f"[entrée] TTS generateContent indisponible ({type(exc).__name__} : {exc}) "
+            "— synthèse via Live (repli)."
+        )
         try:
             prompt_cache = await synthesize_all_via_live(client, model, PROMPTS)
             input_mode = "live-tts"
