@@ -119,6 +119,46 @@ produit, en étaient la cause — voir §11 du rapport)
   ajoutés à `requirements-dev.txt` (outil de validation, pas une dépendance
   produit). N'affecte que le harnais de validation, pas le produit.
 
+### Corrigé (S6 toujours FAIL contre l'API Gemini réelle après les deux
+correctifs ci-dessus : cause racine confirmée côté serveur Google, pas
+Jarvis — voir addendum « génération vide » du rapport)
+
+- **`GeminiLive`** : même avec `context_seed_confirmed=True` (le serveur a
+  bien traité le rejeu AVANT le tour suivant, cf. correctif précédent), une
+  exécution réelle a montré « Quel est mon prénom ? » recevant un
+  `turn_complete` sans la moindre miette de réponse (ni audio, ni
+  `output_transcription`), alors que la transcription utilisateur était
+  bien reçue. Ce n'est pas un défaut de construction du rejeu de contexte :
+  Google confirme un bug serveur connu où le modèle de génération vocale
+  native retourne occasionnellement un `turn_complete` prématuré/vide
+  (issue `googleapis/python-genai#2117`), un symptôme déjà documenté côté
+  client officiel (`google-gemini/live-api-web-console#117`) et déjà
+  contourné architecturalement par d'autres SDK de production
+  (`livekit/agents#4249`/`agents-js#1450`). `_receive_one_turn_cycle`
+  détecte désormais une génération totalement vide survenant pour un VRAI
+  tour utilisateur (texte effectivement transcrit — le tour de rejeu de
+  contexte, qui n'a jamais de transcription utilisateur associée, n'est
+  jamais concerné) et la relance automatiquement en ré-envoyant le même
+  texte déjà transcrit, de façon transparente (aucun `TURN_COMPLETE`/
+  `on_turn_complete` n'est émis pour la tentative avortée — seule la
+  réponse finale, réussie ou en dégradé après épuisement des relances, clôt
+  le tour). Bornée par la nouvelle constante `EMPTY_GENERATION_MAX_RETRIES`
+  (défaut 2, override `JARVIS_LIVE_EMPTY_GENERATION_RETRIES`, `0` désactive
+  la relance) ; une relance abandonnée (interruption locale entre-temps,
+  erreur réseau sur le ré-envoi) referme le tour normalement, sans jamais
+  bloquer ni planter. Chaque tentative est tracée séparément
+  (`EMPTY_GENERATION_RETRY`) pour rester diagnosticable en conditions
+  réelles. **Il s'agit d'une atténuation d'un bug serveur probabiliste, pas
+  d'une élimination garantie** : seule une nouvelle validation réelle peut
+  confirmer sa portée pratique.
+
+### Ajouté (tests)
+
+- `tests/test_empty_generation_retry.py` (4 tests) : relance automatique
+  déclenchée et bornée, aucune régression du tour de rejeu de contexte
+  (jamais relancé), et aucune relance tant qu'une interruption locale est
+  active.
+
 ## [1.7.5] — 2026-10-01
 
 **Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de

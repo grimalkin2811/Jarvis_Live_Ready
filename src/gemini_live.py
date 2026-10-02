@@ -136,6 +136,42 @@ CONTEXT_COMPRESSION_ENABLED = _env_flag("JARVIS_LIVE_COMPRESSION", True)
 #: qu'aucune confirmation explicite n'a été observée.
 SEED_COMMIT_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_SEED_COMMIT_TIMEOUT", "5") or 5)
 
+#: Nombre maximal de relances automatiques quand le serveur clôt un tour
+#: (``turn_complete``) sans AUCUN contenu (ni audio, ni transcription) alors
+#: que l'utilisateur a réellement parlé ce tour-ci.
+#:
+#: Cause racine (audit v1.7.5 bis, validation réelle post-correctif S6 :
+#: ``context_seed_confirmed=True``, transcription utilisateur correcte
+#: — « Quel est mon prénom ? » — mais ``TURN_COMPLETE`` arrive sans la
+#: moindre miette de réponse) : ce n'est PAS un bug du protocole de rejeu de
+#: contexte de Jarvis, c'est un défaut CÔTÉ SERVEUR de Gemini Live, confirmé
+#: par Google et documenté par ~40 développeurs indépendants sur EXACTEMENT
+#: le modèle utilisé ici (``gemini-2.5-flash-native-audio-preview-12-2025``) :
+#: « Native Audio Premature turnComplete » / génération vide
+#: (googleapis/python-genai#2117 ; google-gemini/live-api-web-console#117,
+#: reconnu par Google comme « known issue » ; portage côté LiveKit :
+#: livekit/agents#4249 et livekit/agents-js#1450, qui traitent une
+#: génération vide comme un échec RÉESSAYABLE plutôt que comme une réponse
+#: valide). Le rapport confirme explicitement que la fréquence augmente avec
+#: la longueur du contexte — exactement le cas d'un tour juste après une
+#: reconnexion + rejeu de contexte, ce qui explique pourquoi ce symptôme
+#: apparaît précisément là en validation réelle.
+#:
+#: Mitigation (même principe que le correctif LiveKit référencé ci-dessus) :
+#: une génération vide pour un VRAI tour utilisateur (texte transcrit non
+#: vide) n'est jamais acceptée comme réponse finale — elle déclenche un
+#: nouvel envoi du même texte utilisateur via ``send_client_content`` (même
+#: mécanisme, déjà éprouvé, que le rejeu de contexte) pour forcer une
+#: nouvelle tentative de génération, borné par cette constante. Le tour de
+#: rejeu de contexte lui-même (``_await_seed_commit``) n'a PAS de
+#: transcription utilisateur associée (c'est un ``send_client_content``
+#: local, pas de l'audio) : il n'est donc jamais concerné par cette relance,
+#: qu'il se termine avec ou sans contenu (silence normal sur un modèle à
+#: commit silencieux). Kill-switch : ``JARVIS_LIVE_EMPTY_GENERATION_RETRIES=0``.
+EMPTY_GENERATION_MAX_RETRIES = int(
+    os.getenv("JARVIS_LIVE_EMPTY_GENERATION_RETRIES", "2") or 0
+)
+
 
 class GeminiLive:
     def __init__(
@@ -270,6 +306,11 @@ class GeminiLive:
         # transcription arrive par fragments pendant que l'utilisateur parle).
         self._turn_model_text = []
         self._user_text_committed = ""
+        # v1.7.5 bis : vrai dès que CE tour a produit le moindre contenu
+        # modèle (audio ou transcription) — sert uniquement à détecter une
+        # génération totalement vide pour un vrai tour utilisateur (cf.
+        # EMPTY_GENERATION_MAX_RETRIES ci-dessus), jamais à autre chose.
+        self._turn_model_content_seen = False
         # Vrai quand le tour courant est clos côté contexte : la prochaine
         # transcription entrante ouvre un nouveau tour (et ne recopie pas la
         # demande précédente, cf. interruption suivie de turn_complete).
@@ -425,6 +466,7 @@ class GeminiLive:
         self._turn_user_text.clear()
         self._turn_model_text.clear()
         self._user_text_committed = ""
+        self._turn_model_content_seen = False
         self.turn_counter += 1
         log.debug(
             "TURN START gen=%s conversation=%s",
@@ -1252,12 +1294,25 @@ class GeminiLive:
                 # une exception propagée normalement par le SDK).
                 return
 
-    async def _receive_one_turn_cycle(self) -> bool:
+    async def _receive_one_turn_cycle(self, _empty_generation_retries: int = 0) -> bool:
         """Traite les messages d'UN appel à ``session.receive()``.
 
         Retourne ``True`` si au moins un message a été reçu (cas normal :
         une session réellement vivante représente toujours un tour complet),
         ``False`` si l'appel n'a livré strictement rien.
+
+        ``_empty_generation_retries`` : nombre de relances déjà consommées
+        par une éventuelle génération vide (v1.7.5 bis, cf.
+        ``EMPTY_GENERATION_MAX_RETRIES``) — usage interne uniquement, ne pas
+        passer depuis l'extérieur. Google confirme que ``session.receive()``
+        se termine NATURELLEMENT dès ``turn_complete`` (issue
+        googleapis/python-genai#1224) : la relance ne peut donc PAS
+        simplement poursuivre la MÊME boucle ``async for`` déjà épuisée --
+        elle doit rouvrir un nouvel appel à ``receive()``, exactement comme
+        le fait ``_receive_loop`` pour un tour suivant normal. On obtient ce
+        nouvel appel par un simple ré-appel (borné) de cette méthode, plutôt
+        que par une restructuration de la boucle existante, pour ne prendre
+        aucun risque de régression sur le chemin nominal déjà validé.
         """
         received_any = False
         async for r in self.session.receive():
@@ -1335,6 +1390,7 @@ class GeminiLive:
                     out_text = getattr(out, "text", None) if out else None
                     if out_text:
                         self._commit_user_text()
+                        self._turn_model_content_seen = True
                         self._turn_model_text.append(str(out_text))
                         self._record_trace("GEMINI_ASSISTANT_TRANSCRIPT", text=str(out_text))
                         self._notify(
@@ -1383,6 +1439,7 @@ class GeminiLive:
                             and part.inline_data.data
                         ):
 
+                            self._turn_model_content_seen = True
                             self.on_audio(
                                 part.inline_data.data
                             )
@@ -1413,6 +1470,58 @@ class GeminiLive:
                 server_content
                 and server_content.turn_complete
             ):
+                # v1.7.5 bis : génération vide confirmée côté serveur Gemini
+                # (cf. EMPTY_GENERATION_MAX_RETRIES) -- un VRAI tour
+                # utilisateur (texte transcrit non vide) qui se clôt sans
+                # la moindre miette de réponse (ni audio, ni transcription)
+                # n'est jamais accepté comme réponse finale : on relance en
+                # ré-envoyant le même texte utilisateur, borné et SANS
+                # jamais toucher le tour de rejeu de contexte (qui n'a pas
+                # de transcription utilisateur associée, cf. constante).
+                pending_user_text = " ".join(self._turn_user_text).strip()
+                if (
+                    pending_user_text
+                    and not self._turn_model_content_seen
+                    and not self.interrupt_active()
+                    and _empty_generation_retries < EMPTY_GENERATION_MAX_RETRIES
+                ):
+                    next_attempt = _empty_generation_retries + 1
+                    self._record_trace(
+                        "EMPTY_GENERATION_RETRY",
+                        attempt=next_attempt,
+                        max_attempts=EMPTY_GENERATION_MAX_RETRIES,
+                    )
+                    log.warning(
+                        "gen=%s : génération vide confirmée par le serveur pour un "
+                        "tour utilisateur réel (texte=%r) -- relance %s/%s (bug "
+                        "serveur Gemini connu, googleapis/python-genai#2117)",
+                        self.session_generation, pending_user_text,
+                        next_attempt, EMPTY_GENERATION_MAX_RETRIES,
+                    )
+                    self.speaking = False
+                    self._clear_interrupt()
+                    self._interrupt_was_active = False
+                    try:
+                        await self.session.send_client_content(
+                            turns=[{"role": "user", "parts": [{"text": pending_user_text}]}],
+                            turn_complete=True,
+                        )
+                    except Exception as exc:
+                        log.warning(
+                            "gen=%s : échec de la relance après génération vide (%s) "
+                            "-- abandon, le tour sera clos sans réponse",
+                            self.session_generation, exc,
+                        )
+                    else:
+                        # ``session.receive()`` se termine NATURELLEMENT dès
+                        # ``turn_complete`` (confirmé par Google, issue
+                        # googleapis/python-genai#1224) : la boucle
+                        # ``async for`` courante est déjà épuisée, on ne peut
+                        # pas la « continuer ». On rouvre donc un nouvel
+                        # appel à ``receive()`` pour la tentative relancée,
+                        # borné par ``_empty_generation_retries`` qui se
+                        # propage à travers l'appel récursif.
+                        return await self._receive_one_turn_cycle(next_attempt)
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
