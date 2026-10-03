@@ -1242,3 +1242,188 @@ produite avec ce même code instrumenté, pour lire les valeurs de
 `turn_complete_reason`/`interaction_status`/`waiting_for_input` et la
 forme exacte (`has_text_part`/`has_inline_audio`) du `model_turn` creux
 des tentatives qui échouent.
+
+## 13. Quatre nouveaux runs réels instrumentés — preuve directe obtenue, deux phénomènes distincts identifiés
+
+L'utilisateur a fourni 4 runs complets exécutés avec le code du §12 (commits
+`ea63c37`/`c8d0ad7`). **2 PASS (tests 2 et... non, précisément : test 2 = PASS,
+tests 1/3/4 = FAIL sur S6.** Contrairement au run du §12.5, ces runs
+reproduisent le bug — avec, pour la première fois, les champs
+`LIVE_DIAGNOSTIC_FIELDS`/`MODEL_TURN_RECEIVED` capturés **pendant** l'échec.
+Ceci permet de répondre aux points 1 à 7 de la consigne avec des preuves
+directes, plus seulement du raisonnement sur le code.
+
+### 13.1 Séquence exacte de `g2-t8` dans les runs qui échouent (tests 1 et 3) — identique dans les deux
+
+```
+TURN_OPEN                 g2-t8
+GEMINI_USER_TRANSCRIPT    g2-t8  texte réellement transcrit
+[... AUDIO_SENT_TO_GEMINI ...]
+MODEL_TURN_RECEIVED       g2-t8  parts_count=1 has_inline_audio=False has_text_part=True
+TTS_START                 g2-t8
+LIVE_DIAGNOSTIC_FIELDS    g2-t8  generation_complete=True   <-- SEUL champ présent
+EMPTY_GENERATION_RETRY    g2-t8  attempt=1/2
+[... nouvel envoi du texte, AUDIO_SENT_TO_GEMINI ...]
+MODEL_TURN_RECEIVED       g2-t8  parts_count=1 has_inline_audio=False has_text_part=True
+TTS_START                 g2-t8
+LIVE_DIAGNOSTIC_FIELDS    g2-t8  generation_complete=True
+EMPTY_GENERATION_RETRY    g2-t8  attempt=2/2
+[... nouvel envoi du texte, AUDIO_SENT_TO_GEMINI ...]
+MODEL_TURN_RECEIVED       g2-t8  parts_count=1 has_inline_audio=False has_text_part=True
+TTS_START                 g2-t8
+LIVE_DIAGNOSTIC_FIELDS    g2-t8  generation_complete=True
+TURN_COMPLETE             g2-t8  had_content=True has_user_text=True has_model_content=False has_local_interrupt=False
+```
+
+Cette séquence, strictement identique dans les deux runs qui échouent (y
+compris après l'épuisement des 2 relances), apporte des réponses directes et
+définitives :
+
+- **Point 6 (3 générations distinctes, ou 3 envois dans un état bloqué ?)**
+  — **3 générations réellement distinctes, prouvé.** Chaque tentative a son
+  propre `TTS_START` et son propre `LIVE_DIAGNOSTIC_FIELDS`
+  (`generation_complete=True` à chaque fois) : ce n'est pas un état serveur
+  figé qui répond trois fois la même chose en boucle, c'est le serveur qui
+  choisit, **trois fois indépendamment**, de terminer la génération
+  immédiatement après un unique envelope creux. Chaque relance obtient bien
+  son propre cycle complet.
+- **Point 3 (que signale `TTS_START` ?)** — confirmé une fois de plus,
+  directement : il se déclenche sur un `model_turn` dont les `parts`
+  contiennent uniquement du **texte** (`has_inline_audio=False
+  has_text_part=True`), jamais suivi d'un seul octet `inline_data` avant que
+  `generation_complete=True` n'arrive. `TTS_START` ne prouve donc **jamais**
+  qu'un son sera produit.
+- **Point 2 (`had_content=True` ne prouve pas un contenu assistant)** —
+  confirmé directement sur la trace réelle : le `TURN_COMPLETE` final affiche
+  `has_model_content=False` explicitement ; `had_content=True` est
+  entièrement porté par `has_user_text=True` (la question de l'utilisateur,
+  réellement transcrite).
+- **Nouvelle réponse, cruciale, au point 10 (quelle observation manquait) :
+  `turn_complete_reason`, `interaction_status`, `waiting_for_input` ne sont
+  JAMAIS apparus, pas une seule fois, dans AUCUNE des 3 tentatives, dans
+  AUCUN des 4 runs (PASS ou FAIL).** `generation_complete=True` est le seul
+  champ renvoyé, aussi bien dans les tours réussis que dans les tours
+  totalement vides. **Conclusion ferme : le serveur Gemini ne fournit, à ce
+  jour, strictement aucune information exploitable permettant de distinguer
+  côté client une génération vide « normale » d'une génération vide « due au
+  bug ». Aucune instrumentation supplémentaire côté client ne peut extraire
+  plus d'information du serveur sur CE point précis** — les quatre champs du
+  §12.3 ont été testés en conditions réelles d'échec et n'apportent rien de
+  plus que ce qui était déjà su.
+- **Points 1, 4, 5 (comparaison événement par événement, inspection du cycle
+  `receive()`)** — désormais répondus avec des preuves directes
+  ci-dessus : le cycle `receive()` se comporte identiquement à chaque
+  tentative (nouvel appel propre, cf. commentaire ligne ~1649 confirmé par
+  la trace), sans aucune fuite d'état d'une tentative à l'autre ; la seule
+  différence entre un tour réussi (`g1-t3` par ex.) et un tour qui échoue
+  est le nombre de `MODEL_TURN_RECEIVED` reçus après le premier : plusieurs
+  dizaines avec `has_inline_audio=True` dans les tours réussis, **zéro**
+  dans les tours qui échouent.
+
+### 13.2 Un second phénomène, distinct, découvert dans le test 4 — à ne pas confondre avec le précédent
+
+Le test 4 échoue aussi sur S6, mais avec une signature **complètement
+différente**, jamais observée auparavant :
+
+```
+GEMINI_USER_TRANSCRIPT    g2-t8  text=" Quel est mon prÚnom ?"
+MODEL_TURN_RECEIVED       g2-t8  parts_count=1 has_inline_audio=False has_text_part=True
+TTS_START                 g2-t8
+GEMINI_ASSISTANT_TRANSCRIPT  g2-t8  text="[appel outil] recall(query='prÚnom') exquisitely"
+LIVE_DIAGNOSTIC_FIELDS    g2-t8  generation_complete=True
+TURN_COMPLETE             g2-t8  had_content=True has_user_text=True has_model_content=True has_local_interrupt=False
+```
+`tool_active` reste `False` sur tout l'échange : **aucun appel d'outil réel
+n'a eu lieu** (`src/gemini_live.py` ~ligne 1734 : `tool_active` ne passe à
+`True` que si le serveur envoie réellement des `function_calls`). Le modèle
+a donc **prononcé littéralement, en français, la phrase
+« [appel outil] recall(query='prénom') exquisitely »** comme une réponse
+vocale normale (un `output_transcription` existe, confirmé par
+`GEMINI_ASSISTANT_TRANSCRIPT`), sans jamais produire le moindre octet audio
+(`has_inline_audio` reste `False` sur l'unique `MODEL_TURN_RECEIVED` de ce
+tour) ni de suite cohérente (« exquisitely » est un mot isolé, sans lien
+avec le reste de la phrase).
+
+**Ce qui est prouvé, par le code, pas supposé :**
+
+- `src/conversation.py::to_gemini_contents()` (ligne ~320-327) sérialise tout
+  appel d'outil antérieur en un `Content` de rôle **`"model"`** dont le texte
+  littéral est `f"[appel outil] {message.text}"` (ex. :
+  `"[appel outil] recall(query='prénom')"`) — exactement la chaîne
+  prononcée. C'est **notre propre code**, pas une invention du modèle : ce
+  préfixe `[appel outil]` est un artefact de présentation interne destiné à
+  l'historique de conversation texte, jamais pensé pour être rejoué tel quel
+  comme la **propre parole passée** du modèle dans une session Live.
+- Ce `Content` (rôle `"model"`, texte `"[appel outil] ..."`) est exactement
+  le format que `_seed_context()` rejoue au serveur après reconnexion comme
+  historique de conversation.
+- **Ce qui N'EST PAS prouvé (hypothèse, pas une certitude)** : qu'un appel
+  réel à `recall` ait eu lieu plus tôt dans CETTE session précise pour que ce
+  texte provienne effectivement d'un rejeu. Aucun `tool_active=True` n'apparaît
+  nulle part dans le test 4 avant ce point — donc soit (a) un appel d'outil a
+  eu lieu lors d'un tour non capturé par cette trace tronquée, soit (b) le
+  modèle a **halluciné** ce texte de toutes pièces en imitant le style
+  `[appel outil] nom(args)` qu'il a pu voir ailleurs dans son contexte
+  système ou ses instructions (`recall` est un nom d'outil réel, déclaré et
+  cité en toutes lettres dans `system_instruction`, cf.
+  `src/gemini_live.py` ligne ~867), combiné à une troncature prématurée en
+  plein mot (« exquisitely ») — cohérent avec le MÊME bug serveur documenté
+  en §11.3 (« Mid-Sentence Audio Truncation »), mais appliqué cette fois à
+  une génération qui avait commencé à produire du texte halluciné plutôt
+  qu'à une génération totalement vide.
+
+**Conclusion sur ce second phénomène : il s'agit très probablement de la
+MÊME troncature prématurée côté serveur (§11.3), simplement observée sur
+une génération qui avait déjà commencé à produire du contenu (halluciné)
+avant d'être coupée, plutôt que sur une génération qui n'avait encore rien
+produit.** Ce n'est PAS un bug différent nécessitant un correctif séparé au
+sens strict — mais le contenu halluciné `[appel outil] ...` révèle un
+défaut d'hygiène de prompt indépendant et potentiellement actionnable : le
+préfixe `"[appel outil] {text}"` utilisé par `to_gemini_contents()` ressemble
+à une phrase que l'assistant pourrait prononcer, ce qui est fragile dès lors
+que ce texte est rejoué dans une session Live (vocale) et non plus consommé
+par un LLM texte. **Cette hypothèse n'est pas confirmée avec une preuve
+suffisante (un seul cas observé, mécanisme de rejeu non vérifié en pratique)
+pour justifier une modification de `to_gemini_contents()` maintenant** —
+conformément au point 10 de la consigne, elle est documentée ici comme piste
+à creuser avec de nouvelles données plutôt qu'implémentée en spéculatif.
+
+### 13.3 Réponse au critère de fin de l'utilisateur
+
+**Ce qui est maintenant PROUVÉ (preuve directe, trace réelle, pas une
+supposition) :**
+
+1. Ce que Jarvis reçoit pendant `g2-t8` qui échoue : un unique `model_turn`
+   contenant une part texte vide de sens pratique (jamais consommée,
+   jamais de contenu audio), suivi immédiatement de `generation_complete=True`
+   sans aucun autre champ de diagnostic renseigné — et ceci se reproduit
+   identiquement 3 fois de suite (tentative originale + 2 relances).
+2. Pourquoi cela produit `TTS_START` + `had_content=True` sans transcript
+   assistant : `TTS_START` se déclenche sur la simple arrivée d'un
+   `model_turn` quel que soit son contenu ; `had_content=True` est
+   entièrement porté par la question utilisateur réellement transcrite
+   (`has_user_text=True`), jamais par un contenu assistant
+   (`has_model_content=False` est visible explicitement dans la trace).
+3. En quoi cela diffère de `g1-t3` (tour réussi) : structurellement
+   identique au tout début (un `model_turn` texte-seul déclenche
+   `TTS_START` dans les deux cas), mais un tour réussi reçoit ensuite des
+   dizaines de `model_turn` supplémentaires porteurs d'audio
+   (`has_inline_audio=True`) avant `generation_complete=True` ; un tour qui
+   échoue n'en reçoit plus aucun.
+4. Qu'aucune instrumentation supplémentaire ne peut, à ce stade, en dire
+   plus : les 4 champs ajoutés en §12.3 ont été observés sur des échecs
+   réels et n'apportent aucune information complémentaire au-delà de ce qui
+   était déjà documenté en §11.3 sur la base de la littérature externe.
+
+**Ce qui reste une hypothèse, pas une preuve :** le mécanisme exact par
+lequel le texte `"[appel outil] recall(query='prénom')"` est apparu dans le
+test 4 (rejeu d'un appel réel vs. hallucination stylistique) — documenté en
+§13.2, non résolu, nécessite soit une trace plus complète du test 4
+(tours antérieurs à `g2-t8`), soit une reproduction délibérée.
+
+**Décision pour cette session** : aucun changement de comportement
+implémenté. Le mécanisme `EMPTY_GENERATION_RETRY` existant reste la
+meilleure atténuation connue d'un bug serveur désormais confirmé,
+indépendamment, comme n'émettant aucun signal diagnostique exploitable.
+Le second phénomène (§13.2) est documenté comme piste à explorer, pas comme
+correctif à implémenter faute de preuve suffisante.
