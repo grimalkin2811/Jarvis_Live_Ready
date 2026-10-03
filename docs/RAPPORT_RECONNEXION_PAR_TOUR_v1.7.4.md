@@ -1628,3 +1628,84 @@ pré-existant et indépendant de ce travail — il échoue identiquement sur
 l'état déjà poussé `0cca5be`, avant toute modification de cette section,
 et reproduit un dépassement de délai de 5 s spécifique à l'environnement
 d'exécution de ces vérifications, sans rapport avec l'investigation outil).
+
+## 15. Premier run réel avec l'instrumentation du §14 — PASS partout, mais donnée décisive obtenue quand même
+
+L'utilisateur a exécuté `scripts/validate_reconnect_v174_real.py` contre la
+vraie API Gemini Live avec le code du §14 (commit `afeabeb`). **Verdict :
+PASS sur les 5 scénarios, y compris S6** — le bug n'est reproduit ni sous sa
+forme `EMPTY_GENERATION_RETRY`, ni sous sa forme « fuite `[appel outil]` ».
+Aucun événement `TRANSCRIPT_TOOL_MARKER_LEAK` ni `EMPTY_GENERATION_RETRY`
+n'apparaît dans toute la trace. Malgré l'absence de reproduction, cette
+trace apporte une information décisive pour l'investigation du §14.
+
+### 15.1 Ce que révèle `CONTEXT_REPLAY_TOOL_ENTRIES` sur CE run
+
+À la reconnexion forcée (S5 → S6, `session_generation` 1 → 2), la nouvelle
+instrumentation a produit :
+
+```
+CONTEXT_REPLAY_TOOL_ENTRIES turn_id=g2-t7 session_generation=2
+  tool_call_names=['get_local_time', 'remember', 'recall', 'get_local_time', 'recall']
+  tool_result_names=['get_local_time', 'remember', 'recall', 'get_local_time', 'recall']
+```
+
+**Preuve directe, sur un run réel, que le mécanisme décrit au §14.1 est bien
+exercé en conditions réelles** : l'historique local rejoué à cette
+reconnexion contenait RÉELLEMENT deux appels à `recall` (un pendant S3, un
+juste avant la coupure S5 — « Mon prénom est son nom. » → le modèle a
+appelé `recall`, a constaté l'incohérence avec la mémoire existante et a
+répondu « D'après ma mémoire, votre prénom est Simon. Est-ce qu'il y a une
+erreur ? »). Le `client_content` physiquement envoyé au serveur au moment
+du rejeu (`g2-t7`) contenait donc, par construction de
+`to_gemini_contents()` (§14.1), le texte littéral
+`"[appel outil] recall(query=...)"` sous `role="model"`, au moins deux fois.
+
+### 15.2 Et pourtant, aucune fuite ne s'est produite au tour suivant
+
+Le tour `g2-t8` (« Quel est mon prénom ? », la vraie question S6) montre :
+
+```
+TOOL_CALL_EXECUTED turn_id=g2-t8 session_generation=2 name=recall conversation_turn=8
+GEMINI_ASSISTANT_TRANSCRIPT text=Votre prénom
+GEMINI_ASSISTANT_TRANSCRIPT text= est Simon.
+TURN_COMPLETE had_content=True has_user_text=True has_model_content=True
+```
+
+Le modèle a exécuté un **nouvel appel RÉEL** à `recall` (confirmé par
+`TOOL_CALL_EXECUTED`, pas une supposition) et a répondu normalement, sans
+aucune trace du marqueur `[appel outil]` dans la transcription.
+
+### 15.3 Conséquence pour la classification du §14.5
+
+**Ce résultat affine la conclusion B+D du §14.5 sans la contredire** : la
+présence du texte `"[appel outil] recall(...)"` dans le rejeu est
+**confirmée nécessaire au mécanisme (§14.1, prouvé par construction du
+code) mais démontrée ici comme NON SUFFISANTE à elle seule pour provoquer
+la fuite** — un rejeu contenant exactement ce texte peut être suivi d'un
+tour parfaitement normal. Ceci est cohérent avec l'hypothèse déjà formulée
+au §14.5 : la fuite observée en test 4 nécessite probablement la
+**coïncidence** entre (a) la présence de ce texte dans l'historique rejoué
+ET (b) le même phénomène de troncature prématurée de génération déjà
+documenté en §11.3/§13.1 (le modèle commence à produire du contenu, imite
+le style qu'il vient de "lire" dans son propre historique rejoué au lieu de
+formuler une réponse naturelle, puis est coupé au milieu — d'où le mot
+isolé « exquisitely » en test 4). Sans cette coïncidence (le cas présent),
+le modèle utilise normalement le contenu rejoué comme contexte silencieux,
+exactement comme il est censé le faire.
+
+**Aucune conclusion plus forte ne peut être tirée de ce seul run PASS** —
+conformément à la consigne de ne pas conclure sur une occurrence unique. Ce
+qui est acquis : l'instrumentation du §14.4 fonctionne correctement en
+conditions réelles (aucune erreur, aucun surcoût visible, les trois
+nouveaux événements se comportent comme prévu), et le prochain run qui
+reproduit la fuite permettra, pour la première fois, de vérifier
+directement si `CONTEXT_REPLAY_TOOL_ENTRIES` contenait bien `recall` à la
+reconnexion précédente — ce qui, cette fois, serait la confirmation A
+complète et sans ambiguïté.
+
+### 15.4 Décision
+
+Aucun changement de comportement. Aucune correction. Pas de merge, pas de
+release. En attente d'un nouveau run reproduisant la fuite pour trancher
+définitivement entre A et C.
