@@ -9,6 +9,8 @@ from google.genai import types
 
 from .conversation import (
     ConversationContext,
+    KIND_TOOL_CALL,
+    KIND_TOOL_RESULT,
     get_default_conversation_context,
     is_new_conversation_command,
     to_gemini_contents,
@@ -630,6 +632,22 @@ class GeminiLive:
         turns = to_gemini_contents(messages)
         if not turns:
             return False
+        # v1.7.5 sexies (instrumentation, lecture seule, investigation §14) :
+        # avant de rejouer, on journalise EXPLICITEMENT la présence
+        # éventuelle d'appels/résultats d'outils dans l'historique local
+        # rejoué -- c'est la seule façon de trancher sans ambiguïté, sur une
+        # trace future, si une chaîne « [appel outil] ... » entendue plus
+        # tard provient réellement de ce rejeu (présente ici) ou d'ailleurs
+        # (absente ici). Ne journalise que le nom de l'outil et son rôle
+        # Gemini (jamais les arguments -- potentiellement une requête de
+        # mémoire personnelle).
+        tool_call_names = [m.name or "" for m in messages if m.kind == KIND_TOOL_CALL]
+        tool_result_names = [m.name or "" for m in messages if m.kind == KIND_TOOL_RESULT]
+        self._record_trace(
+            "CONTEXT_REPLAY_TOOL_ENTRIES",
+            tool_call_names=tool_call_names,
+            tool_result_names=tool_result_names,
+        )
         # Exigence 2.x : le seed doit se terminer par un tour user. L'historique
         # de Jarvis se termine normalement par une réponse assistant.
         if turns and turns[-1].get("role") != "user":
@@ -1462,6 +1480,35 @@ class GeminiLive:
                         self._turn_model_content_seen = True
                         self._turn_model_text.append(str(out_text))
                         self._record_trace("GEMINI_ASSISTANT_TRANSCRIPT", text=str(out_text))
+                        # v1.7.5 sexies (instrumentation, lecture seule,
+                        # investigation §14) : si Gemini prononce
+                        # littéralement l'un de nos propres marqueurs
+                        # internes de rejeu d'outil (« [appel outil] »,
+                        # « [résultat outil] », cf. conversation.py
+                        # to_gemini_contents), c'est un signal fort et
+                        # non ambigu -- quasi impossible à produire par
+                        # coïncidence -- qu'il faut pouvoir repérer sans
+                        # relire la transcription à l'œil. On vérifie le
+                        # texte ACCUMULÉ du tour (``_turn_model_text``), pas
+                        # seulement ce fragment : la transcription arrive par
+                        # morceaux et le marqueur peut être coupé pile entre
+                        # deux fragments (ex. « [appel » puis « outil]
+                        # recall... »), ce qu'un test de régression dédié a
+                        # mis en évidence -- d'où la vérification sur le texte
+                        # accumulé plutôt que sur le seul fragment courant.
+                        # Jamais le texte complet journalisé ici (déjà
+                        # présent dans GEMINI_ASSISTANT_TRANSCRIPT ci-dessus) ;
+                        # un tour avec plusieurs fragments après l'apparition
+                        # du marqueur peut journaliser l'événement plus d'une
+                        # fois -- sans conséquence pour un événement de
+                        # diagnostic rare.
+                        _accumulated = " ".join(self._turn_model_text)
+                        for _marker in ("[appel outil]", "[résultat outil]"):
+                            if _marker in _accumulated:
+                                self._record_trace(
+                                    "TRANSCRIPT_TOOL_MARKER_LEAK",
+                                    marker=_marker,
+                                )
                         self._notify(
                             self.on_assistant_transcript,
                             " ".join(self._turn_model_text).strip(),
@@ -1789,6 +1836,26 @@ class GeminiLive:
                         # résultat (jamais le payload JSON complet) pour que
                         # « lance le deuxième » reste résoluble au tour suivant.
                         self.conversation.add_tool_interaction(c.name, args, result)
+                        # v1.7.5 sexies (instrumentation, lecture seule,
+                        # investigation §14 — fuite suspectée de
+                        # « [appel outil] » vers la voix) : événement
+                        # dédié, découplé de ``on_tool_start``/``on_tool_end``,
+                        # pour qu'une trace future permette de répondre sans
+                        # ambiguïté à « un appel outil RÉEL a-t-il eu lieu
+                        # dans cette session avant ce tour ? » sans avoir à
+                        # déduire la réponse de ``tool_active`` (qui redevient
+                        # False après l'outil et ne dit donc rien de
+                        # l'historique). Ne journalise que le nom de l'outil
+                        # et le tour courant -- jamais les arguments bruts
+                        # (potentiellement sensibles, ex. requêtes de
+                        # mémoire).
+                        self._record_trace(
+                            "TOOL_CALL_EXECUTED",
+                            name=c.name,
+                            conversation_turn=self.conversation.get_messages()[-1].turn
+                            if self.conversation.get_messages()
+                            else 0,
+                        )
 
                         responses.append(
                             types.FunctionResponse(

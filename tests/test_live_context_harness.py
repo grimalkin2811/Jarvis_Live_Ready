@@ -685,6 +685,131 @@ class InstrumentationTests(_HarnessCase):
         self.assertIn("assistant", ctx_text)
 
 
+# ---------------------------------------------------------------------------
+# I. Investigation dédiée (RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md §14) :
+# fuite suspectée du marqueur interne « [appel outil] ... » vers la voix.
+#
+# Lors d'un run réel (« test 4 »), le modèle a prononcé littéralement
+# « [appel outil] recall(query='prénom') exquisitely » alors qu'aucun
+# ``tool_active=True`` n'apparaissait dans la trace à ce moment. Ces tests
+# répondent, de façon déterministe et reproductible (donc sans dépendre
+# d'une seule capture réelle), à la question posée par la mission : CE
+# chemin de données (replay de l'historique local après une reconnexion
+# sans handle) peut-il matériellement produire cette chaîne exacte, et
+# seulement si un appel d'outil RÉEL a eu lieu dans la session ?
+# ---------------------------------------------------------------------------
+
+
+def _fake_recall(**kwargs):
+    return {"success": True, "memories": []}
+
+
+class ToolCallReplaySignatureTests(_HarnessCase):
+    async def test_I_appel_reel_de_recall_est_rejoue_tel_quel_apres_reconnexion(self) -> None:
+        """Preuve positive : un VRAI ``recall`` exécuté avant la coupure
+        apparaît, verbatim, sous la forme ``[appel outil] recall(...)`` dans
+        le contenu EXACTEMENT envoyé à Gemini lors du rejeu suivant."""
+        server = self.make_server()
+        patcher = mock.patch.dict(gl.TOOL_FUNCTIONS, {"recall": _fake_recall})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        server.suppress_resumption_updates = True
+        server.next_tool_script = (
+            r"souviens.*pr[eé]nom",
+            "recall",
+            {"query": "prénom"},
+        )
+        harness = await self.make_harness(server)
+
+        # (1) le tool call est RÉELLEMENT exécuté par le code de production
+        # (pas simulé côté test) : la nouvelle instrumentation doit le
+        # confirmer sans ambiguïté.
+        await harness.speak("Est-ce que tu te souviens de mon prénom ?")
+        executed = [
+            e
+            for e in harness.gemini.trace_events()
+            if e["kind"] == "TOOL_CALL_EXECUTED" and e.get("name") == "recall"
+        ]
+        self.assertEqual(len(executed), 1, "le vrai recall doit être journalisé exactement une fois")
+
+        # (2) reconnexion SANS handle : le chemin de rejeu local est exercé
+        # (cf. _seed_context -- pas de court-circuit par restauration serveur).
+        server.drop_connection()
+        await harness.wait_sessions(2)
+        await harness.wait_ready()
+
+        # (3) l'instrumentation dédiée au rejeu confirme que CET appel
+        # d'outil fait bien partie de l'historique rejoué.
+        replay_entries = [
+            e for e in harness.gemini.trace_events() if e["kind"] == "CONTEXT_REPLAY_TOOL_ENTRIES"
+        ]
+        self.assertTrue(replay_entries, "le rejeu doit être journalisé")
+        self.assertIn("recall", replay_entries[-1]["tool_call_names"])
+
+        # (4) preuve matérielle sur le câble : la chaîne EXACTE entendue en
+        # test 4 est bien ce qui est physiquement envoyé à Gemini, sous
+        # role="model" -- jamais sous un rôle "tool" dédié (qui n'existe pas
+        # côté Live API).
+        seed = server.client_content_events(generation=2)
+        self.assertEqual(len(seed), 1)
+        model_turns = [c for c in seed[0].contents if c.get("role") == "model"]
+        all_model_text = " ".join(
+            part.get("text", "") for c in model_turns for part in c.get("parts", [])
+        )
+        self.assertIn("[appel outil] recall(query='prénom')", all_model_text)
+
+    async def test_I_sans_appel_reel_aucune_trace_du_marqueur_dans_le_rejeu(self) -> None:
+        """Contrôle négatif : sans AUCUN appel d'outil réel dans la session,
+        le marqueur ``[appel outil]`` ne peut structurellement pas apparaître
+        dans le rejeu -- s'il apparaît quand même dans une future capture
+        réelle sans qu'aucun ``TOOL_CALL_EXECUTED`` ne le précède, ce ne peut
+        pas être ce chemin de données qui en est la source."""
+        server = self.make_server()
+        server.suppress_resumption_updates = True
+        harness = await self.make_harness(server)
+        await harness.speak("Mon prénom est Simon.")
+        server.drop_connection()
+        await harness.wait_sessions(2)
+        await harness.wait_ready()
+
+        executed = [e for e in harness.gemini.trace_events() if e["kind"] == "TOOL_CALL_EXECUTED"]
+        self.assertEqual(executed, [], "aucun outil n'a été appelé dans ce scénario")
+
+        replay_entries = [
+            e for e in harness.gemini.trace_events() if e["kind"] == "CONTEXT_REPLAY_TOOL_ENTRIES"
+        ]
+        self.assertTrue(replay_entries)
+        self.assertEqual(replay_entries[-1]["tool_call_names"], [])
+        self.assertEqual(replay_entries[-1]["tool_result_names"], [])
+
+        seed = server.client_content_events(generation=2)
+        self.assertEqual(len(seed), 1)
+        self.assertNotIn("[appel outil]", seed[0].all_text())
+
+    async def test_I_marqueur_dans_la_transcription_assistant_est_detecte(self) -> None:
+        """Preuve de l'instrumentation de détection elle-même (lecture seule) :
+        si Gemini prononce un jour ce marqueur interne (rejeu ou
+        hallucination -- peu importe la cause), l'événement dédié
+        ``TRANSCRIPT_TOOL_MARKER_LEAK`` doit apparaître dans la trace sans
+        qu'il soit nécessaire de relire la transcription à l'œil."""
+        server = self.make_server()
+        server.suppress_resumption_updates = True
+        server.oracle.register(
+            r"déclenche le marqueur",
+            lambda visible: "[appel outil] recall(query='test')",
+        )
+        harness = await self.make_harness(server)
+        await harness.speak("Déclenche le marqueur, stp.")
+        leaks = [
+            e for e in harness.gemini.trace_events() if e["kind"] == "TRANSCRIPT_TOOL_MARKER_LEAK"
+        ]
+        # La transcription arrive par fragments (cf. commentaire
+        # d'implémentation) : le marqueur, une fois apparu dans le texte
+        # accumulé, peut être signalé plus d'une fois sur les fragments
+        # suivants du même tour -- seule l'apparition d'au moins un
+        # événement, avec le bon marqueur, est garantie.
+        self.assertTrue(leaks, "le marqueur doit être détecté au moins une fois")
+        self.assertTrue(all(leak["marker"] == "[appel outil]" for leak in leaks))
 
 
 # ---------------------------------------------------------------------------

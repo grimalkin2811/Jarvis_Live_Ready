@@ -1427,3 +1427,204 @@ meilleure atténuation connue d'un bug serveur désormais confirmé,
 indépendamment, comme n'émettant aucun signal diagnostique exploitable.
 Le second phénomène (§13.2) est documenté comme piste à explorer, pas comme
 correctif à implémenter faute de preuve suffisante.
+
+## 14. Investigation dédiée — le marqueur « [appel outil] » prononcé par Gemini (test 4) : mécanisme client identifié, instrumenté, testé ; origine de l'occurrence réelle non tranchable avec les données disponibles
+
+Mission : déterminer si le phénomène du test 4 (§13.2) — Gemini prononçant
+littéralement `[appel outil] recall(query='prénom') exquisitely` — est une
+fuite du rejeu d'historique d'outil vers le contexte Gemini, ou une
+génération/hallucination spontanée. **L'investigation `EMPTY_GENERATION_RETRY`
+est désormais considérée close** (§13.1) : aucun changement n'y a été
+apporté dans cette section, les relances ne sont pas modifiées, la
+compression n'est pas désactivée.
+
+### 14.1 Inspection du chemin de données (`src/conversation.py`, `src/gemini_live.py`)
+
+**Où un message `role="tool"` de type `KIND_TOOL_CALL` peut-il naître ?**
+Un seul point d'entrée dans tout le code base :
+`ConversationContext.add_tool_interaction()` (`src/conversation.py` ligne
+~587), qui délègue à `add_tool_call()` (ligne ~546). `grep -rn
+"add_tool_call\|add_tool_interaction"` sur `src/` ne trouve **qu'un seul
+site d'appel** : `src/gemini_live.py` ligne ~1791, à l'intérieur du bloc
+`if tc and tc.function_calls:` qui commence par `self.tool_active = True`
+(ligne ~1734). **Conséquence prouvée par lecture directe du code (pas une
+supposition) : un message `KIND_TOOL_CALL` ne peut exister dans
+`ConversationContext` QUE si `tool_active` est passé à `True` au moins une
+fois plus tôt dans la même session, pour un appel de fonction réellement
+reçu du serveur.** Il n'existe aucun autre chemin (ni dans `src/tools.py`, ni
+ailleurs) capable de fabriquer un tel message sans exécution réelle.
+
+**Comment le préfixe `[appel outil]` est-il généré ?** `to_gemini_contents()`
+(`src/conversation.py` ligne ~306-338) : pour tout message de rôle `tool` et
+de genre `KIND_TOOL_CALL`, il produit `{"role": "model", "parts": [{"text":
+f"[appel outil] {message.text}"}]}` où `message.text` est
+`format_tool_call(name, args)` (ligne ~292-297), qui rend
+`f"{name}({', '.join(f'{k}={v!r}' for k, v in compact.items())})"`. Pour
+`recall(query="prénom")`, ceci produit EXACTEMENT
+`"recall(query='prénom')"`, donc le texte complet
+`"[appel outil] recall(query='prénom')"` — **chaîne identique, caractère
+pour caractère, à ce qui a été entendu en test 4** (vérifié en §14.3 par un
+test automatisé, pas seulement par inspection).
+
+**Est-ce intentionnel ?** OUI, explicitement, d'après le docstring de la
+fonction elle-même (ligne ~303-311) : « Les interactions d'outils sont donc
+rattachées au rôle qui les produit : l'appel côté `model`, le résultat côté
+`user` (c'est le canal par lequel l'environnement répond au modèle). » Ce
+choix découle d'une contrainte réelle et documentée : l'API Gemini Live,
+pour le rejeu (`send_client_content`), ne connaît que deux rôles
+conversationnels (`user`/`model`) — il n'existe pas de rôle `tool` natif
+pour ce canal. L'auteur du module a donc choisi de représenter un appel
+d'outil passé comme un texte descriptif attribué au rôle `model` plutôt que
+de l'omettre. **Mais rien dans le code ni la documentation n'anticipe le
+risque qu'un modèle audio natif puisse PRONONCER ce texte littéralement** :
+aucune consigne de prompt ne dit au modèle « ne répète jamais un texte
+commençant par `[appel outil]` », et le même module expose, pour Ollama
+(`to_ollama_messages()`, ligne ~341-377), une représentation **structurée et
+native** du même événement (`{"role": "assistant", "tool_calls": [...]}`
+façon OpenAI) — la version Gemini est donc une simplification ad hoc, pas
+un choix uniforme entre fournisseurs.
+
+**Un historique `recall(query='prénom')` peut-il exister sans appel réel
+dans la session courante ?** Non — démontré en §14.1 (lecture du code) et
+confirmé en §14.3 (test automatisé négatif). **Le contexte conversationnel
+n'est jamais persisté entre sessions** (docstring de tête du module,
+§ »Trois contextes distincts« , point 2 : « Jamais persisté sur disque,
+remis à zéro au démarrage. ») — un `recall` exécuté lors d'un lancement
+antérieur de Jarvis ne peut donc pas non plus être la source : à chaque
+démarrage, l'historique repart vide.
+
+**Les messages d'outils sont-ils bien rejoués après reconnexion/seed ?**
+Oui, sans condition particulière : `_seed_context()` (`src/gemini_live.py`
+ligne ~587) appelle `to_gemini_contents(self.conversation.get_messages())`
+sur TOUT l'historique local conservé (borné par `max_turns`/`max_tokens`,
+§ »Limitation de taille« ), sans filtrage par type de message — un appel
+d'outil présent dans la fenêtre glissante conservée est donc rejoué comme
+n'importe quel autre message. Le seed n'est contourné QUE si
+`self.resumption_handle` est présent (restauration côté serveur) — **dans
+le scénario S5/S6, le harness force explicitement
+`force_disconnect(drop_handle=True)`** (`scripts/validate_reconnect_v174_real.py`
+ligne ~670), ce qui garantit que le chemin de rejeu local est bien exercé à
+chaque exécution du scénario, sans ambiguïté possible sur ce point précis.
+
+### 14.2 Remontée dans la trace du test 4 avant `g2-t8`
+
+**Limite factuelle à annoncer explicitement** : la portion de la trace du
+test 4 antérieure au tour `g2-t8` (en particulier le tour où « Mon prénom
+est Simon. » a été dit, et tout tour S1-S4 précédent) n'est plus disponible
+dans cette session de travail — seul l'extrait montrant `g2-t8` a été
+conservé dans les notes d'investigation. **Il est donc impossible, à ce
+stade, de confirmer ou d'infirmer directement si un `tool_active=True` est
+apparu plus tôt dans ce run précis, ou si un appel réel à `recall` a eu
+lieu avant la coupure.** Ceci est une limite de preuve explicite, pas une
+supposition déguisée.
+
+### 14.3 Reproduction ciblée et déterministe (ce qui PEUT être tranché sans la trace manquante)
+
+Trois tests ont été ajoutés à `tests/test_live_context_harness.py`
+(classe `ToolCallReplaySignatureTests`), construits sur le harness réel
+existant (`VoiceHarness` + `FakeLiveServer`, le même socle que les
+scénarios A-H déjà en place) — **pas des mocks grossiers : le code de
+production (`GeminiLive`, dispatch d'outils, `ConversationContext`,
+`to_gemini_contents`, `_seed_context`) tourne réellement** :
+
+1. **`test_I_appel_reel_de_recall_est_rejoue_tel_quel_apres_reconnexion`**
+   — un VRAI appel à `recall(query='prénom')` est déclenché (le serveur
+   factice envoie un `function_call`, le code de production l'exécute via
+   `TOOL_FUNCTIONS`, exactement comme avec le vrai SDK), suivi d'une
+   reconnexion sans handle. Résultat : la chaîne EXACTE
+   `"[appel outil] recall(query='prénom')"` apparaît, verbatim, sous
+   `role="model"`, dans le `client_content` physiquement envoyé à la
+   session suivante. **PASS.**
+2. **`test_I_sans_appel_reel_aucune_trace_du_marqueur_dans_le_rejeu`**
+   (contrôle négatif) — même scénario de reconnexion, mais sans qu'aucun
+   outil n'ait jamais été appelé : le marqueur `[appel outil]` n'apparaît
+   nulle part dans le rejeu, et la nouvelle instrumentation
+   `CONTEXT_REPLAY_TOOL_ENTRIES` le confirme explicitement
+   (`tool_call_names=[]`). **PASS.**
+3. **`test_I_marqueur_dans_la_transcription_assistant_est_detecte`** — valide
+   la nouvelle instrumentation de détection elle-même. **PASS** (après
+   correction : la première version ne vérifiait que le dernier fragment de
+   transcription reçu, alors que la transcription arrive par morceaux et le
+   marqueur peut être coupé pile entre deux fragments — ce test a
+   directement mis ce défaut en évidence avant correction, cf. §14.4).
+
+**Conclusion de la reproduction : le mécanisme client est capable,
+mécaniquement et de façon répétable, de produire exactement la chaîne
+observée en test 4 — à la seule et unique condition qu'un appel réel à
+`recall` ait eu lieu plus tôt dans la session.** Ceci ne prouve pas que
+CE fut le cas dans le test 4 spécifiquement (cf. limite §14.2), mais prouve
+que l'hypothèse « fuite du rejeu » est mécaniquement vraie et pas une pure
+spéculation.
+
+### 14.4 Instrumentation ajoutée (lecture seule, aucun changement de comportement)
+
+Trois événements de trace, tous visibles via `trace_events()` /
+`JARVIS_AUDIO_TRACE`, aucun ne modifie le comportement produit :
+
+- **`TOOL_CALL_EXECUTED`** (`src/gemini_live.py`, juste après
+  `add_tool_interaction`) — journalise `name` (nom de l'outil) et le tour de
+  conversation courant, à chaque exécution RÉELLE d'un outil par le serveur.
+  Permet de répondre sans ambiguïté, sur une future trace, à « un
+  `recall` réel a-t-il eu lieu dans cette session, et quand ? ».
+- **`CONTEXT_REPLAY_TOOL_ENTRIES`** (`src/gemini_live.py::_seed_context`,
+  juste avant l'envoi) — journalise `tool_call_names`/`tool_result_names` :
+  la liste des noms d'outils présents dans l'historique sur le point d'être
+  rejoué. Permet de vérifier directement si l'historique rejoué CONTENAIT
+  un appel à `recall` au moment précis de la reconnexion.
+- **`TRANSCRIPT_TOOL_MARKER_LEAK`** (`src/gemini_live.py`, sur
+  `output_transcription`) — se déclenche si le texte accumulé de la
+  transcription assistant du tour en cours contient littéralement
+  `"[appel outil]"` ou `"[résultat outil]"`. Vérifie le texte ACCUMULÉ du
+  tour (pas seulement le dernier fragment reçu) : un test dédié a montré que
+  le marqueur peut être coupé entre deux fragments de transcription
+  consécutifs, ce qui aurait fait manquer l'événement avec une vérification
+  fragment par fragment.
+
+Aucune donnée sensible n'est journalisée au-delà de ce qui l'était déjà
+(noms d'outils, déjà visibles via `on_tool_start`/`on_tool_end` ; aucun
+argument brut n'est ajouté aux nouveaux événements).
+
+### 14.5 Classification demandée
+
+**B — Comportement client intentionnel, dont l'interaction avec un modèle
+audio natif n'a manifestement pas été anticipée ni garde-fouée — combiné à
+D pour la question spécifique de l'occurrence du test 4.**
+
+- Le mécanisme qui envoie `"[appel outil] {nom}({args})"` comme texte
+  `role="model"` à Gemini lors du rejeu post-reconnexion est **prouvé
+  intentionnel** (docstring explicite, contrainte réelle de l'API — pas de
+  rôle `tool` natif dans `send_client_content`) et **prouvé mécaniquement
+  capable** de produire exactement la chaîne entendue en test 4, à la
+  condition qu'un appel réel ait eu lieu (§14.3). C'est la réponse à la
+  question « ce mécanisme est-il volontaire et pourrait-il expliquer le
+  phénomène ? » — **oui aux deux**.
+- En revanche, savoir si CETTE occurrence précise (test 4) a été
+  effectivement causée par ce mécanisme — c'est-à-dire si un `recall` réel
+  a eu lieu avant `g2-t8` dans ce run — **reste non tranché (D)**, faute de
+  la portion de trace antérieure à `g2-t8` (§14.2). Une capture future avec
+  l'instrumentation du §14.4 lèvera cette ambiguïté sans effort
+  supplémentaire : soit `TOOL_CALL_EXECUTED(name=recall)` apparaît avant la
+  reconnexion et `CONTEXT_REPLAY_TOOL_ENTRIES` liste `recall` au rejeu
+  suivant (→ A confirmé, la fuite est la cause), soit aucun des deux
+  n'apparaît alors que `TRANSCRIPT_TOOL_MARKER_LEAK` se déclenche quand
+  même (→ C, hallucination/génération spontanée du style par Gemini,
+  probablement en imitant le nom d'outil réel `recall` cité dans le prompt
+  système, combinée à la troncature prématurée déjà documentée en §11.3).
+
+### 14.6 Décision pour cette section
+
+Conformément à la consigne : **aucune correction n'est appliquée.** Le
+mécanisme `[appel outil]`/`[résultat outil]` n'est pas retiré ni modifié —
+il n'est démontré ni comme la cause confirmée de cette occurrence
+spécifique, ni comme une fuite dans l'absolu (il est prouvé qu'IL POURRAIT
+l'être, pas qu'il L'EST dans ce cas précis). Le protocole de seed/reconnexion
+n'est pas modifié. Les relances (`EMPTY_GENERATION_RETRY`) ne sont pas
+modifiées. La compression n'est pas désactivée. Seule de l'instrumentation
+de lecture seule a été ajoutée (§14.4), accompagnée de 3 tests de
+non-régression ciblés (§14.3) qui passent, en plus de la suite existante
+(197 tests exécutés, 196 OK ; le seul échec,
+`test_3x_le_seed_est_committe_sans_recap_et_rappelle`, est confirmé
+pré-existant et indépendant de ce travail — il échoue identiquement sur
+l'état déjà poussé `0cca5be`, avant toute modification de cette section,
+et reproduit un dépassement de délai de 5 s spécifique à l'environnement
+d'exécution de ces vérifications, sans rapport avec l'investigation outil).
