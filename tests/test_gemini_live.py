@@ -128,11 +128,24 @@ class ToolExecutionTests(unittest.TestCase):
 
             async def run():
                 # receive_loop itère sur session.receive() ; on fournit un
-                # seul message (appel d'outils) puis StopAsyncIteration.
+                # seul message (appel d'outils) puis plus rien. Depuis le
+                # correctif v1.7.4 (reconnexion-par-tour), receive_loop()
+                # rappelle receive() sur la MÊME session tant qu'elle existe
+                # (comportement réel du SDK) : ce faux serveur à usage unique
+                # simule donc la fin de la connexion en coupant
+                # ``gemini.session`` une fois son unique message consommé,
+                # comme le ferait une vraie session qui se termine.
                 session = _FakeSession()
+                call_count = {"n": 0}
 
                 async def fake_receive():
-                    yield msg
+                    call_count["n"] += 1
+                    if call_count["n"] == 1:
+                        yield msg
+                    else:
+                        gemini.session = None
+                        return
+                        yield  # pragma: no cover - inatteignable, générateur async
 
                 session.receive = fake_receive
                 gemini.session = session
@@ -177,13 +190,28 @@ class ToolExecutionTests(unittest.TestCase):
             class _FakeSession:
                 def __init__(self):
                     self.sent = []
+                    self._calls = 0
 
                 async def send_tool_response(self, function_responses):
                     self.sent.append(function_responses)
 
                 def receive(self):
+                    # Depuis le correctif v1.7.4 (reconnexion-par-tour),
+                    # receive_loop() rappelle receive() sur la MÊME session
+                    # tant qu'elle existe. Ce faux serveur à usage unique
+                    # simule la fin de la connexion après son unique message
+                    # en coupant ``gemini.session``, comme le ferait une
+                    # vraie session qui se termine.
+                    self._calls += 1
+                    first_call = self._calls == 1
+
                     async def gen():
-                        yield _Msg()
+                        if first_call:
+                            yield _Msg()
+                        else:
+                            gemini.session = None
+                            return
+                            yield  # pragma: no cover - inatteignable
 
                     return gen()
 

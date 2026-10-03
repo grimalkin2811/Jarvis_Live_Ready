@@ -9,6 +9,580 @@ Les notes détaillées de chaque version sont publiées dans les
 [GitHub Releases](https://github.com/grimalkin2811/Jarvis_Live_Ready/releases)
 et résumées ci-dessous.
 
+## [Non publié] — correctif S6 (mémoire après reconnexion), en attente de validation réelle
+
+**Ne pas fusionner/publier avant confirmation.** Voir
+`docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` §10 pour l'investigation
+complète, la cause racine et le protocole avant/après.
+
+### Corrigé
+
+- **`GeminiLive`** : après une reconnexion sans session resumption valide,
+  le rejeu local du contexte (`_seed_context`) ouvrait la porte micro dès
+  l'écriture réseau du rejeu (`context_seeded=True`), sans jamais vérifier
+  que le serveur avait réellement fini de le traiter. Sur les modèles audio
+  « 2.x », ce tour de rejeu déclenche côté serveur une courte reprise orale
+  (son propre tour, son propre `turn_complete`) : si le tour utilisateur
+  suivant arrivait pendant que le serveur générait encore cette reprise, il
+  pouvait recevoir une réponse vide/hors-sujet — symptôme observé en
+  validation réelle (scénario S6 : « Quel est mon prénom ? » -> réponse
+  vide). Nouveau flag `context_seed_confirmed` et méthode
+  `_await_seed_commit()` : la porte micro n'est désormais ouverte qu'après
+  avoir observé la confirmation serveur du rejeu (bornée par
+  `SEED_COMMIT_TIMEOUT_SECONDS`, défaut 5 s, override
+  `JARVIS_LIVE_SEED_COMMIT_TIMEOUT`) ; sur un modèle à commit silencieux
+  (3.x + `historyConfig`), ce délai expire normalement sans bloquer le
+  micro. `SESSION_READY` journalise désormais `context_seeded` et
+  `context_seed_confirmed` séparément.
+- **`scripts/validate_reconnect_v174_real.py`** : la synthèse TTS locale via `pyttsx3`/SAPI5 est désormais exécutée dans un processus enfant avec un timeout dur de 30 s par prompt. Un blocage de `runAndWait()` ne peut plus figer le harness ; le fichier WAV et le PCM sont vérifiés avant de poursuivre, puis le fallback Gemini est utilisé si le backend local échoue. Cette correction reste confinée au harnais de validation.
+- **`scripts/validate_reconnect_v174_real.py`** : le scénario S3 (trois
+  tours consécutifs) utilisait un délai fixe de 2 s entre les tours, qui
+  pouvait expirer (`TimeoutError`, « NON TESTABLE ») alors que Jarvis
+  jouait encore sa réponse précédente ou n'avait pas encore rouvert sa
+  porte micro — sans rapport avec un bug de contexte/session. Remplacé par
+  une attente explicite de disponibilité réelle (`can_send()` et
+  `not speaking`). N'affecte que le harnais de validation, pas le produit.
+
+### Ajouté (tests)
+
+- `tests/test_session_lifecycle.py` : 6 nouveaux tests de non-régression
+  (items C, E, G de l'audit v1.7.5) prouvant que la porte micro bloque
+  jusqu'à l'ack serveur réel du rejeu (et seulement jusque-là), qu'elle
+  s'ouvre en mode dégradé après un délai borné sans ack, qu'aucune attente
+  n'a lieu sans rejeu (historique vide ou session reprise), et que deux
+  reconnexions réelles successives ne dupliquent ni ne perdent le contexte
+  (la seconde reprend via handle au lieu de rejouer une seconde fois).
+- `tests/test_live_context_harness.py` : deux tests existants renforcés
+  pour lire l'état post-rejeu seulement après la fin réelle de l'attente de
+  confirmation.
+
+### Corrigé (harnais de validation réelle — S6 toujours FAIL en conditions
+réelles après le correctif ci-dessus ; deux bugs du harnais, pas du
+produit, en étaient la cause — voir §11 du rapport)
+
+- **Fuite de variable d'environnement de test vers un script réel** :
+  `tests/__init__.py` positionnait `JARVIS_LIVE_SEED_COMMIT_TIMEOUT=1.5`
+  (marge réservée aux tests contre le faux serveur). Comme ce module
+  s'exécute dès qu'on importe quoi que ce soit depuis le paquet `tests`,
+  `scripts/validate_reconnect_v174_real.py` (qui fait
+  `from tests.real_gemini_harness import ...`) héritait silencieusement de
+  ce délai de 1,5 s au lieu du défaut produit de 5 s — confirmé dans une
+  trace réelle (`SEED COMMIT TIMEOUT ... aucune confirmation serveur sous
+  1.5s`). Déplacé vers un nouveau `tests/conftest.py` (chargé uniquement
+  par pytest, jamais par un `import` Python ordinaire du paquet `tests`) ;
+  `tests/__init__.py` ne fait plus aucun `os.environ.setdefault` lié aux
+  tests. Comportement de la suite pytest inchangé (même délai de 1,5 s sous
+  pytest, vérifié par ré-exécution complète de la suite).
+- **Synthèse de secours peu fiable corrompant les prompts réels** :
+  quand `generateContent` (TTS dédié) échoue (`ClientError`, observé dans
+  les deux runs réels), le script se rabat sur
+  `synthesize_all_via_live()`, qui demandait à une session Live
+  conversationnelle de « répéter exactement » chaque prompt. Dérive
+  confirmée en conditions réelles : le modèle répondait parfois AU prompt
+  au lieu de le répéter (« Mon prénom est Simon. » -> audio généré disant
+  « D'accord, Simon. » ; « Quel est mon prénom ? » -> audio généré disant
+  « Même en pleine. »), ce qui corrompait l'entrée audio du scénario S6
+  AVANT même que le mécanisme de contexte/session soit sollicité — un FAIL
+  de S6 dans ces conditions ne prouvait donc rien sur le produit. Corrigé :
+  chaque prompt est désormais synthétisé dans sa PROPRE session Live (plus
+  d'historique partagé pouvant dériver au fil des 5 prompts) et la
+  transcription de sortie (`output_audio_transcription`) est comparée (
+  normalisée : minuscules, sans accents/ponctuation) au texte demandé, avec
+  un nouvel essai en cas de désaccord et un échec explicite (au lieu d'une
+  mise en cache silencieuse d'un audio incorrect) si la synthèse ne
+  reproduit jamais fidèlement le prompt. Le message d'erreur du
+  `ClientError` de `generateContent` est maintenant journalisé (redacté)
+  pour permettre de diagnostiquer sa cause plutôt que de masquer le repli.
+  N'affecte que le harnais de validation, pas le produit.
+
+### Changé (harnais de validation réelle — quota TTS Gemini)
+
+- **`scripts/validate_reconnect_v174_real.py`** : le backend TTS PAR DÉFAUT
+  pour synthétiser l'audio d'entrée (les 5 `PROMPTS`) est désormais une
+  synthèse vocale **locale** (`pyttsx3` -> SAPI5 sur Windows, NSSS sur
+  macOS, espeak sur Linux), sans appel réseau ni quota Gemini. Signalé par
+  l'utilisateur : `gemini-2.5-flash-preview-tts` via `generateContent` est
+  limité sur le palier disponible à **3 requêtes/minute ET 10
+  requêtes/jour** — un quota épuisé en une seule exécution du script (5
+  prompts), ce qui expliquait aussi en partie le repli vers la synthèse
+  Live peu fiable corrigée plus haut. Le backend Gemini (TTS dédié, puis
+  repli conversationnel Live) devient un secours utilisé seulement si
+  aucun moteur local n'est disponible dans l'environnement — espacé de 22 s
+  entre appels et avec un essai supplémentaire sur 429
+  (`RESOURCE_EXHAUSTED`). Tout prompt synthétisé avec succès (quel que soit
+  le backend) est mis en cache sur disque (`scripts/.tts_cache/`, ajouté au
+  `.gitignore`) pour ne plus jamais reconsommer de quota une fois obtenu.
+  Sélection automatique d'une voix française locale si disponible (best
+  effort, continue avec la voix par défaut sinon). Nouvelles variables
+  d'environnement : `JARVIS_VALIDATE_TTS_BACKEND` (`auto`/`local`/`gemini`)
+  et `JARVIS_VALIDATE_TTS_NO_CACHE=1`. `pyttsx3` (+ `pywin32` sur Windows)
+  ajoutés à `requirements-dev.txt` (outil de validation, pas une dépendance
+  produit). N'affecte que le harnais de validation, pas le produit.
+
+### Corrigé (S6 toujours FAIL contre l'API Gemini réelle après les deux
+correctifs ci-dessus : cause racine confirmée côté serveur Google, pas
+Jarvis — voir addendum « génération vide » du rapport)
+
+- **`GeminiLive`** : même avec `context_seed_confirmed=True` (le serveur a
+  bien traité le rejeu AVANT le tour suivant, cf. correctif précédent), une
+  exécution réelle a montré « Quel est mon prénom ? » recevant un
+  `turn_complete` sans la moindre miette de réponse (ni audio, ni
+  `output_transcription`), alors que la transcription utilisateur était
+  bien reçue. Ce n'est pas un défaut de construction du rejeu de contexte :
+  Google confirme un bug serveur connu où le modèle de génération vocale
+  native retourne occasionnellement un `turn_complete` prématuré/vide
+  (issue `googleapis/python-genai#2117`), un symptôme déjà documenté côté
+  client officiel (`google-gemini/live-api-web-console#117`) et déjà
+  contourné architecturalement par d'autres SDK de production
+  (`livekit/agents#4249`/`agents-js#1450`). `_receive_one_turn_cycle`
+  détecte désormais une génération totalement vide survenant pour un VRAI
+  tour utilisateur (texte effectivement transcrit — le tour de rejeu de
+  contexte, qui n'a jamais de transcription utilisateur associée, n'est
+  jamais concerné) et la relance automatiquement en ré-envoyant le même
+  texte déjà transcrit, de façon transparente (aucun `TURN_COMPLETE`/
+  `on_turn_complete` n'est émis pour la tentative avortée — seule la
+  réponse finale, réussie ou en dégradé après épuisement des relances, clôt
+  le tour). Bornée par la nouvelle constante `EMPTY_GENERATION_MAX_RETRIES`
+  (défaut 2, override `JARVIS_LIVE_EMPTY_GENERATION_RETRIES`, `0` désactive
+  la relance) ; une relance abandonnée (interruption locale entre-temps,
+  erreur réseau sur le ré-envoi) referme le tour normalement, sans jamais
+  bloquer ni planter. Chaque tentative est tracée séparément
+  (`EMPTY_GENERATION_RETRY`) pour rester diagnosticable en conditions
+  réelles. **Il s'agit d'une atténuation d'un bug serveur probabiliste, pas
+  d'une élimination garantie** : seule une nouvelle validation réelle peut
+  confirmer sa portée pratique.
+
+### Ajouté (tests)
+
+- `tests/test_empty_generation_retry.py` (4 tests) : relance automatique
+  déclenchée et bornée, aucune régression du tour de rejeu de contexte
+  (jamais relancé), et aucune relance tant qu'une interruption locale est
+  active.
+
+### Corrigé (addendum — bugs A et B, nouvelle validation réelle)
+
+**Ne pas fusionner/publier avant confirmation.** Deux bugs supplémentaires
+révélés par une validation réelle post-correctif S6 ci-dessus (Windows,
+vraie clé Gemini) : S6/S2 restaient instables (« soit en pass soit en
+fail, ça dépend des runs »/« non testable » selon les exécutions).
+
+- **`GeminiLive` (bug A — extinction prématurée)** : rien ne signalait à
+  `AudioIO` qu'un VRAI tour utilisateur était ouvert et en cours de
+  génération *avant* que Gemini produise le moindre octet de réponse.
+  Si la génération prenait plus longtemps que la fenêtre de conversation
+  restante, `_check_timeout()` endormait Jarvis (ou laissait expirer la
+  fenêtre) pendant que la réponse arrivait encore — toute relance posée
+  immédiatement après, sans mot de réveil, était alors silencieusement
+  perdue. Nouveaux callbacks `on_turn_open` (déclenché une fois par VRAI
+  tour, dès la première transcription utilisateur) et `on_turn_resolved`
+  (déclenché inconditionnellement à la clôture de ce tour, quel que soit le
+  contenu produit — pour ne jamais laisser une suspension ouverte côté
+  appelant).
+- **`AudioIO` (bug A, suite)** : nouvelles méthodes `note_turn_open()`/
+  `note_turn_resolved()` (câblées sur les callbacks ci-dessus dans
+  `src/main.py`, `src/ui.py` et les harnais de test) et `_turn_pending()`,
+  désormais vérifiée par `_check_timeout()` en plus de `_voice_audible()` :
+  le minuteur de conversation reste suspendu tant qu'un tour est annoncé
+  ouvert sans être encore résolu, borné par la nouvelle constante
+  `TURN_PENDING_MAX_GRACE_SECONDS` (45 s, filet de sécurité si
+  `on_turn_resolved` n'arrivait jamais — connexion perdue sans
+  notification, par exemple).
+- **`GeminiLive` (bug B — tour fantôme pris pour un vrai tour)** : la
+  traîne tardive d'un tour de rejeu de contexte déjà abandonné (après
+  expiration de `SEED_COMMIT_TIMEOUT_SECONDS`) pouvait arriver bien après
+  l'ouverture dégradée de la porte micro, sous forme d'un message
+  `interrupted`/`turn_complete` totalement vide (ni transcription
+  utilisateur, ni la moindre miette de contenu assistant). Rien ne
+  distinguait alors ce non-évènement d'une vraie fin de tour : un
+  consommateur qui attendait « le prochain tour terminé » recevait ce tour
+  fantôme à la place de la vraie réponse (observé en validation réelle,
+  scénario de contexte après reconnexion). Les callbacks `on_interrupted`
+  et `on_turn_complete` sont désormais filtrés par `had_content` (texte
+  utilisateur transcrit pour CE tour, contenu assistant produit, ou
+  barge-in local en cours — pour ne jamais avaler un VRAI « stop »
+  utilisateur qui n'aurait eu le temps de couper aucun octet audio) :
+  un tour totalement vide clôt toujours proprement le contexte conversationnel
+  en interne (`_finish_turn()` reste inconditionnel), mais ne se fait plus
+  jamais passer pour un échange réel auprès de l'appelant. Nouveaux
+  évènements de trace `INTERRUPTION_CALLBACK_SUPPRESSED_EMPTY` et
+  `TURN_COMPLETE_CALLBACK_SUPPRESSED_EMPTY` pour rester diagnosticable.
+  **Il s'agit de deux correctifs timing/race-dépendants** : seule une
+  nouvelle validation réelle (scénarios S2/S6 de
+  `scripts/validate_reconnect_v174_real.py`) peut confirmer l'élimination
+  effective des deux symptômes.
+
+#### Ajouté (tests)
+
+- `tests/test_turn_callbacks.py` (4 tests) : `on_turn_open`/
+  `on_turn_resolved` se déclenchent en paire pour un vrai tour répondu ;
+  un tour totalement vide (rejeu de contexte ou traîne tardive
+  `interrupted`+`turn_complete`) ne déclenche ni `on_turn_open`,
+  ni `on_interrupted`, ni `on_turn_complete` ; le VRAI tour suivant reste
+  signalé normalement après une traîne fantôme.
+- `tests/test_audio_turn_pending.py` (4 tests) : `_check_timeout()` ne
+  rendort plus Jarvis tant qu'un tour est annoncé ouvert sans réponse ;
+  reprise normale du minuteur une fois le tour résolu ; filet de sécurité
+  `TURN_PENDING_MAX_GRACE_SECONDS` ; non-régression du mode écoute
+  continue.
+- `tests/test_interruption.py`/`tests/test_empty_generation_retry.py` :
+  mis à jour pour refléter le nouveau filtre `had_content` (un barge-in
+  local reste signalé même sans octet audio joué ; un tour de rejeu de
+  contexte totalement vide ne déclenche plus `on_turn_complete`).
+
+### Investigation (addendum — S6 reste FAIL malgré EMPTY_GENERATION_RETRY)
+
+**Ne pas fusionner/publier avant confirmation. S6 n'est PAS corrigé.** Un
+nouveau run réel (après les correctifs bugs A/B ci-dessus) confirme S2 =
+PASS, mais S6 échoue toujours : `EMPTY_GENERATION_RETRY` se déclenche
+2 fois, les 2 relances produisent encore une génération vide, puis la
+tentative finale (épuisée) obtient bien un `TTS_START` mais sans
+`GEMINI_ASSISTANT_TRANSCRIPT` ni audio. Investigation trace-first complète
+dans `docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` §11 : la cause est un
+bug serveur Gemini documenté et toujours non résolu
+(`googleapis/python-genai#2117`, « Premature turnComplete », ~40
+confirmations indépendantes), **aggravé par la taille du contexte après
+rejeu et par `context_window_compression`** (facteurs explicitement cités
+par Google/la communauté) — pas par une confusion de `turn_id`/
+`session_generation` ni par un bug de bookkeeping des relances (les deux
+sont vérifiés sains par les nouveaux tests ci-dessous). Augmenter
+`EMPTY_GENERATION_MAX_RETRIES` ne réglerait rien : chaque relance
+supplémentaire a statistiquement la même probabilité d'échouer tant que le
+contexte reste dans cet état aggravant. Aucun changement de comportement
+par défaut n'a été appliqué : le seul levier identifié sous notre contrôle
+(`JARVIS_LIVE_COMPRESSION=0`, kill-switch déjà existant mais jamais testé)
+nécessite une validation réelle avant toute décision, car il a un coût
+propre (protection contre la coupure de session Live à ~15 min).
+
+#### Ajouté (tests)
+
+- `tests/test_s6_persistent_empty_generation.py` (2 tests) : rejoue la
+  signature exacte du run réel (3 tentatives vides consécutives, la
+  dernière avec un `model_turn` creux déclenchant `TTS_START`) et prouve
+  que le fallthrough actuel est le comportement attendu, pas un bug de
+  bookkeeping ; confirme l'identité stable de `turn_id`/`session_generation`
+  sur les 3 tentatives.
+- `tests/test_live_context_harness.py` : nouveau test confirmant que le
+  kill-switch `JARVIS_LIVE_COMPRESSION=0` retire bien
+  `context_window_compression` de la configuration envoyée au serveur
+  (jamais vérifié jusqu'ici), sans affecter les autres protections.
+
+### Investigation (addendum 2 — `JARVIS_LIVE_COMPRESSION=0` ne corrige PAS
+S6 ; cause encore non prouvée, instrumentation ajoutée)
+
+**Ne pas fusionner/publier avant confirmation. S6 n'est toujours PAS
+corrigé.** Un nouveau run réel avec `JARVIS_LIVE_COMPRESSION=0` confirme
+S1/S2/S3/S4/S5 = PASS mais **S6 échoue encore, avec exactement la même
+signature** que sans le kill-switch (`EMPTY_GENERATION_RETRY` 1/2 puis
+2/2, 3ᵉ tentative avec `TTS_START` + `TURN_COMPLETE had_content=True` mais
+toujours aucun `GEMINI_ASSISTANT_TRANSCRIPT`). Ceci démontre que
+`context_window_compression` n'est **pas** la cause (unique ou
+suffisante) : **aucun changement de comportement par défaut sur ce point
+n'est fait** (le kill-switch reste disponible mais désactivé par défaut).
+
+Le fichier de trace réel annoncé pour cette investigation n'a en pratique
+jamais été transmis à l'agent (recherché sur l'ensemble du système de
+fichiers, absent). En l'absence de cette preuve, et conformément à la
+consigne explicite de ne PAS implémenter de correctif/contournement
+spéculatif tant que la cause n'est pas démontrée, seule de
+l'instrumentation en lecture seule a été ajoutée (aucun comportement
+produit modifié — confirmé par la suite de 98 tests ciblés, tous verts) :
+
+- **`GeminiLive._live_diagnostics()`** (nouveau) : lit quatre champs
+  officiels du SDK `google-genai` jamais exploités jusqu'ici —
+  `turn_complete_reason` (énumération incluant notamment
+  `RESPONSE_REJECTED`, `NEED_MORE_INPUT`, `MALFORMED_FUNCTION_CALL`,
+  `MAX_REGENERATION_REACHED`), `generation_complete`,
+  `interaction_status` (`IN_PROGRESS`/`REQUIRES_ACTION`/`IDLE`) et
+  `waiting_for_input`. Si Gemini indique explicitement pourquoi une
+  génération n'a rien produit, ces champs sont le seul moyen actuel de le
+  voir. Nouvel évènement de trace `LIVE_DIAGNOSTIC_FIELDS` (capture ces
+  champs même sur un message isolé, sans `model_turn` ni `turn_complete` —
+  comportement documenté du SDK pour `generation_complete`).
+- **`MODEL_TURN_RECEIVED`** (nouveau) : trace `parts_count`,
+  `has_inline_audio` et `has_text_part` pour chaque `model_turn` reçu,
+  avant toute logique d'interruption/contenu — teste l'hypothèse que
+  Gemini enverrait un `part.text` actuellement ignoré (seul
+  `part.inline_data` est consommé).
+- **`TURN_COMPLETE`** : le booléen agrégé `had_content` (valeur et
+  logique en aval strictement inchangées) est désormais accompagné de ses
+  trois composantes explicites `has_user_text`, `has_model_content`,
+  `has_local_interrupt` — pour qu'une lecture future de la trace ne
+  suppose jamais que `had_content=True` prouve qu'une réponse assistant
+  exploitable a été reçue (seul `has_model_content=True` le prouve).
+- **`INTERRUPTION`** : enrichie des mêmes champs `live_diag`.
+
+Observation manquante, explicitement : il faut un nouveau run réel
+reproduisant S6 **avec cette instrumentation** (ou le fichier de trace
+réel déjà évoqué mais jamais reçu) pour savoir si
+`turn_complete_reason`/`interaction_status`/`waiting_for_input` se
+remplissent pendant les tentatives vides de S6, et si `has_user_text`
+(et non `has_model_content`) est bien ce qui rend `had_content=True`
+dans ce cas précis.
+
+#### Ajouté (tests)
+
+- Aucun nouveau test : changement purement additif sur la forme des
+  évènements de trace, vérifié par la suite existante (notamment
+  `tests/test_s6_persistent_empty_generation.py`,
+  `tests/test_turn_callbacks.py`, `tests/test_interruption.py`,
+  `tests/test_live_context_harness.py`) sans aucune modification.
+
+## [1.7.5] — 2026-10-01
+
+**Validation approfondie du correctif v1.7.4 + nouvelle instrumentation de
+cycle de vie.** Poursuite de la mission v1.7.4 : audit complet des points
+d'entrée de reconnexion, régressions supplémentaires contre le faux serveur
+(preuve que le bug est RÉEL et que les tests le détectent — pas un artefact
+du mock), et mise en place de l'infrastructure de validation contre l'API
+Gemini Live réelle. Rapport complet :
+`docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` (section de suivi v1.7.5).
+
+### Ajouté
+
+- **`GeminiLive`** : nouvel évènement de trace `SESSION_READY`, émis
+  exactement quand une session (neuve ou reprise) devient autorisée à
+  recevoir de l'audio (`_session_ready = True`, après la fin du rejeu de
+  contexte). Permet de prouver, trace à l'appui, qu'aucun bloc audio
+  n'atteint jamais une session avant la fin de son initialisation —
+  purement additif, aucun comportement existant modifié.
+- **`tests/real_gemini_harness.py`** : harness d'intégration qui exécute le
+  VRAI pipeline Jarvis (`AudioIO` + pont micro + `GeminiLive`, boucle
+  `connect()`/`receive_loop()` identique à `src/main.py`) contre l'API
+  Gemini Live RÉELLE, alimenté par de la parole humaine synthétisée (TTS) —
+  pas une tonalité factice — rejouée dans une fausse carte son (mêmes
+  threads temps réel qu'`EchoLab`).
+- **`scripts/validate_reconnect_v174_real.py`** : script de validation
+  réelle ciblé sur le bug « reconnexion-par-tour » (scénarios S1 à S6 de
+  l'audit : tour unique + silence, deux tours rapides, trois tours,
+  expiration de fenêtre, reconnexion réseau réelle, mémoire contextuelle
+  réelle). Clé lue uniquement depuis `GEMINI_API_KEY`/`GOOGLE_API_KEY`,
+  jamais journalisée.
+- **`.github/workflows/validate-gemini-live.yml`** : nouvelle étape qui
+  exécute ce script en CI (si le secret `GEMINI_API_KEY` est configuré) et
+  publie son verdict en commentaire de PR, en plus de la validation v1.7.1
+  existante.
+- **`tests/test_session_lifecycle.py`** : quatre tests supplémentaires —
+  une vraie coupure réseau déclenche bien une reconnexion jamais attribuée
+  à `turn_complete` ; aucun audio n'atteint une session neuve avant
+  `SESSION_READY` ; le contexte local survit à une reconnexion réelle et
+  est effectivement rejoué sur le câble ; et un test de contrôle qui
+  réintroduit le comportement PRÉ-v1.7.4 pour prouver que le bug est réel
+  (pas un artefact d'un mock aligné sur l'implémentation).
+
+## [1.7.4] — 2026-09-30
+
+**Correctif critique : reconnexion après chaque tour normal (« Je vous
+écoute » périodique).** Après une interaction normale (réveil → phrase →
+réponse), et SANS aucune nouvelle parole, Jarvis répétait « Je vous
+écoute. »/« Je suis prêt... » à intervalles réguliers pendant (et au-delà
+de) la fenêtre de suivi de 8 secondes, avec une tempête de `SESSION
+CREATED` dans le journal. Cause racine démontrée et corroborée par Google
+(issue googleapis/python-genai#1224, résolue) : `session.receive()` du SDK
+Gemini Live se termine NATURELLEMENT à la fin de CHAQUE tour — ce n'est pas
+un signal que la connexion est morte. `src/main.py`/`src/ui.py`
+traitaient ce retour normal comme la fin de la session et rouvraient un
+WebSocket neuf après CHAQUE tour, ce qui déclenchait à tort le rejeu de
+contexte (`GeminiLive._seed_context`) : celui-ci clôt le rejeu par un tour
+« user » synthétique, provoquant une brève réponse du modèle persistée
+comme message assistant orphelin, qui réarmait elle-même la fenêtre de 8 s
+— boucle auto-entretenue. Rapport complet :
+`docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md`.
+
+### Corrigé
+
+- **`GeminiLive._receive_loop`** boucle maintenant en interne sur LA MÊME
+  session (`session.receive()` rappelé pour chaque tour suivant) tant
+  qu'aucune vraie raison de reconnecter n'est apparue (GoAway, erreur,
+  reset explicite du contexte, changement de voix). `src/main.py`/
+  `src/ui.py` ne changent pas : leur reconnexion ne se déclenche plus qu'aux
+  VRAIES fins de session.
+- **Instrumentation** : `_reconnect_reason` distingue désormais dans les
+  traces une reconnexion volontaire (`context_reset`, `voice_change`) d'une
+  reconnexion technique (`goaway`, `error`) ou du démarrage (`startup`) ;
+  toute reconnexion non attribuée à l'une de ces causes connues
+  (`unexpected_after_normal_turn`) signalerait une régression. Un nouvel
+  événement `SESSION_REUSED_NEXT_TURN` prouve qu'un tour suivant a été reçu
+  sur la session déjà ouverte, sans reconnexion.
+- **Fidélité des harnais de test** (`tests/live_harness.py` et plusieurs
+  faux serveurs locaux) : `receive()` se termine désormais après chaque
+  tour comme le SDK réel, au lieu de tourner indéfiniment jusqu'à `close()`
+  — cette différence masquait complètement la classe de bug corrigée ici,
+  malgré une suite de tests déjà verte.
+- Deux nouveaux tests de régression (`tests/test_session_lifecycle.py`)
+  reproduisent le scénario exact rapporté (réveil → phrase → réponse →
+  silence → fenêtre de 8 s) et vérifient qu'un VRAI enchaînement reste
+  traité normalement, sur la même session.
+
+## [1.7.3] — 2026-09-29
+
+**Correctif critique : double cycle superposé (« Dis-moi tout » en écho).**
+Après v1.7.2, une seule phrase pouvait déclencher DEUX tours logiques en
+parallèle : la réponse correcte ET une réponse générique (« Dis-moi tout »)
+superposée. Cause racine démontrée par reproduction déterministe et
+corroborée par l'historique Git (commit `1fd75ff`, qui avait déjà observé
+la même course sur CI Windows et l'avait tolérée au lieu de la corriger) :
+le pont micro (`mic()`) vérifie `can_send()` sur le THREAD AUDIO puis
+planifie `send_audio()` via `run_coroutine_threadsafe` SANS jamais la
+revérifier. Si la boucle asyncio met du temps à exécuter cette coroutine
+(callback de lecture audio synchrone, traitement d'un message serveur),
+Gemini peut avoir commencé à répondre entre-temps — le bloc, capturé
+alors que c'était encore permis, est quand même envoyé et ouvre un second
+tour fantôme dans la session déjà en train de répondre. Rapport complet :
+`docs/RAPPORT_DOUBLE_CYCLE_v1.7.3.md`.
+
+### Corrigé
+
+- **Revalidation à l'exécution** (`GeminiLive.send_audio`) : la décision
+  « puis-je envoyer ? » n'est plus figée au moment de la capture — elle est
+  ré-exécutée sur la boucle asyncio, juste avant l'écriture réseau, seul
+  endroit où l'état ne peut pas changer sous les pieds du code.
+- **`capture_generation`** : un bloc capturé pour une session qui a été
+  remplacée par une reconnexion avant son exécution est abandonné, même si
+  l'état local semble à nouveau cohérent.
+- **`capture_turn_epoch`** (le plus fin des trois garde-fous) : un bloc
+  capturé pendant un tour, mais exécuté après que ce tour a été clos, est
+  abandonné même quand Jarvis est redevenu totalement idle entre-temps — un
+  état indiscernable d'un vrai suivi pour un simple contrôle de `speaking`.
+  `turn_epoch` n'avance qu'aux fermetures de tour réelles, ce qui lève
+  l'ambiguïté sans jamais bloquer un follow-up authentique.
+- **Instrumentation du cycle de tour** (`JARVIS_AUDIO_TRACE=1`, partagée
+  avec celle d'`AudioIO`) : `TURN_OPEN`/`TURN_CLOSE`, `GEMINI_USER_
+  TRANSCRIPT`/`GEMINI_ASSISTANT_TRANSCRIPT`, `TTS_START`, `INTERRUPTION`,
+  `TURN_COMPLETE`, `AUDIO_SENT_TO_GEMINI`, `AUDIO_SEND_DROPPED_STALE`,
+  `SESSION_CONNECT`/`SESSION_RESUME` — chaque bloc micro envoyé ou
+  abandonné est désormais explicable après coup.
+
+### Résiduel (documenté, non corrigé par ce correctif)
+
+- Une fenêtre de latence réseau pure reste ouverte : de l'audio capturé
+  *avant même* que le serveur n'informe le client de la fin du tour (donc
+  sans qu'aucun état local n'ait encore changé) peut légitimement partir et
+  être interprété comme un second tour par la VAD serveur elle-même. Voir
+  « Risques restants » du rapport pour le détail et les pistes.
+
+### Tests
+
+- 10 nouveaux tests dédiés `tests/test_turn_race.py` (unitaires
+  déterministes sur `GeminiLive.send_audio` + intégration sur le vrai
+  pipeline `AudioIO`/pont micro/`GeminiLive`, Tests D/E/H du plan de
+  diagnostic) : aucun n'échoue sans le correctif, tous passent avec.
+- Suite `tests/test_echo_loop.py` (20 tests) et `tests/test_interruption.py`
+  (25 tests) toujours vertes après le correctif (hors un test connu instable
+  au chronométrage, déjà présent avant ce correctif — voir le rapport).
+
+## [1.7.2] — 2026-09-29
+
+**Correctif critique : fin de la boucle d'écho « Je vous écoute ».**
+Après une requête, Jarvis pouvait répéter « Je vous écoute » toutes les ~2
+secondes sans aucune parole humaine, la fenêtre d'écoute de 8 secondes étant
+réarmée en boucle. Cause racine démontrée par harness dédié : à
+`turn_complete` (fin de *génération* serveur), le micro se rouvrait alors que
+la file de sortie contenait encore jusqu'à plusieurs secondes de voix de
+Jarvis — le serveur entendait l'écho des haut-parleurs, sa VAD commitait un
+tour « utilisateur » fantôme, le modèle répondait, et chaque `turn_complete`
+réarmait la fenêtre : boucle stable. Rapport complet :
+`docs/RAPPORT_BOUCLE_ECHO_v1.7.2.md`.
+
+### Corrigé
+
+- **Porte micro anti-écho** (`AudioIO._mic_gate_open`) : le micro n'est pas
+  transmis à Gemini tant que de la voix reste à jouer (nouvelles primitives
+  `output_pending_bytes/seconds`) ou que la traîne acoustique (0,25 s) n'est
+  pas écoulée. La détection d'interruption locale n'est pas concernée : elle
+  lit le micro brut et rouvre la porte en vidant la sortie.
+- **Interruption vocale pendant la traîne de lecture** : « stop » fonctionne
+  désormais tant que la voix est *audible* (génération ou lecture), plus
+  seulement pendant la génération — avant, seule la fenêtre entre les deux
+  laissait le micro ouvert, sans possibilité de couper la parole.
+- **Fenêtre de conversation suspendue tant que la voix est audible** : le
+  timeout ne compte plus pendant la traîne de lecture (le commentaire
+  historique « on ne retourne en veille que lorsque la réponse est finie »
+  est enfin implémenté à la lettre).
+- **Comptage de file corrigé** : `_queued_bytes` était décompté deux fois par
+  octet ; le plafond de 5 s d'avance audio fonctionne à nouveau.
+- **Callbacks résiduels neutralisés** : `clear_output`/`extend_listening`
+  sont ignorés quand Jarvis est endormi — un vieux callback ne peut plus
+  rouvrir l'écoute ni armer la fenêtre.
+- **Réveil anti-rebond en écoute continue** : un Jarvis rendu endormi (perte
+  de connexion) n'est plus réveilli à chaque bloc de 80 ms.
+- **Instrumentation pérenne** (`JARVIS_AUDIO_TRACE=1`) : chaque réarmement du
+  timer de 8 s est numéroté et journalisé avec sa raison, son thread, l'état,
+  l'énergie micro et l'audio restant en sortie — plus aucun réarmement
+  inexpliqué.
+
+### Tests
+
+- Nouveau harness `tests/echo_loop_harness.py` (vraie `AudioIO` + vraie
+  `GeminiLive` + carte son factice threadée + écho acoustique modélisé +
+  VAD serveur simulée) et 20 tests de régression `tests/test_echo_loop.py` :
+  silence 20 s → 0 redémarrage ; deux phrases ; TTS ≠ entrée ; interruption ;
+  follow-up ; sans follow-up ; reconnexion pendant la lecture ; stabilité
+  30/30/60 s à compteurs exacts ; performance de la porte.
+
+## [1.7.1] — 2026-09-28
+
+**Correctif : le contexte conversationnel survit réellement aux reconnexions.**
+Jarvis comptait bien les tours, mais le modèle oubliait tout dès que la session
+Live était recréée : l'historique était envoyé au serveur en `clientContent`
+**jamais clôturé** (`turn_complete=False`) — un contenu en attente que les
+tours audio suivants ne rappellent pas (limite documentée des modèles audio
+2.x, reproduite et confirmée). « Mon prénom est Simon » → reconnexion →
+« Quel est mon prénom ? » échouait. Rapport complet :
+`docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md`.
+
+### Corrigé
+
+- **Rejeu du contexte en un `clientContent` clôturé** (`turn_complete=True`)
+  se terminant par un tour utilisateur (tour vide si l'historique finit par
+  une réponse) : l'historique devient **committé** et les tours audio suivants
+  le rappellent. La reprise de session par handle reste le chemin primaire
+  (aucun rejeu inutile, aucun doublon).
+- **Handle de reprise expiré** (erreur 1007) : le handle est abandonné et une
+  session neuve + rejeu rétablissent la conversation en une reconnexion
+  (auparavant : boucle de reconnexion infinie).
+- **Course audio/rejeu** : plus aucun audio n'est envoyé pendant la fenêtre de
+  rejeu (porte `_session_ready`).
+- **Changement de voix** : le handle est abandonné (la reprise conservait
+  l'ancienne voix) ; session neuve avec la nouvelle voix + rejeu du contexte.
+- **`GoAway`** : reconnexion silencieuse immédiate avec handle conservé
+  (auparavant : traceback + 5 s d'attente).
+- **Seed dupliqué** : un seul rejeu par session, avant tout audio, sans
+  duplication des tours.
+
+### Ajouté
+
+- **Compression de fenêtre glissante** (`sliding_window`) par défaut : les
+  sessions audio ne sont plus terminées à 15 min côté serveur.
+- **`HistoryConfig.initial_history_in_client_content`** pour les modèles 3.x
+  (commit silencieux du seed, sans inférence de reprise).
+- **Instrumentation structurée** du pipeline (SESSION CREATED/RESUMED, CONTEXT
+  REPLAY START/END, TURN START/COMPLETE…) sans jamais journaliser de contenu
+  ni de secret.
+- **Kill-switchs** : `JARVIS_LIVE_SEED_MODE` (`commit` par défaut, `pending`
+  = ancien protocole), `JARVIS_LIVE_HISTORY_CONFIG`, `JARVIS_LIVE_COMPRESSION`.
+- **33 tests sémantiques** (`tests/test_live_context_harness.py`) sur le
+  chemin vocal complet avec assertions sur le câble (rappel, anaphores,
+  outils, interruption, reconnexion, resumption, modes/voix, providers,
+  arêtes sémantiques, protocole exact du seed re-sérialisé par le SDK),
+  plus un faux serveur Live fidèle au protocole (`tests/live_harness.py`)
+  et un harness vocal (`tests/voice_harness.py`).
+- **Diagnostics** : `scripts/diag_conversation_context.py` (scénarios
+  rejouables), `scripts/perf_context_replay.py` (coût du rejeu : ~0,07 ms
+  et 6 Ko pour 20 tours), `scripts/dump_wire_protocol.py` (dump exact du
+  câble sérialisé par le SDK) et `scripts/validate_real_gemini.py`
+  (validation Windows sur l'API réelle, clé requise — 5 verdicts).
+
+### Modifié
+
+- Contexte conversationnel : **20 tours / 4096 tokens** par défaut (12/3000
+  avant) — une conversation longue reste restituable après reconnexion
+  (`JARVIS_CONTEXT_MAX_TURNS` / `JARVIS_CONTEXT_MAX_TOKENS` inchangés).
+
+### Inchangé
+
+- Desktop Mode v1.7, mémoire persistante (toujours distincte du contexte),
+  providers, outils, audio, UI. Aucun test supprimé ni affaibli.
+
 ## [1.7.0] — 2026-09-27
 
 **Desktop Mode : une vraie présence sur le bureau.** Jusqu'ici le cadre
