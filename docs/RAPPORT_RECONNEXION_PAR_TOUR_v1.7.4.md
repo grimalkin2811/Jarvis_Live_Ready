@@ -1709,3 +1709,58 @@ complète et sans ambiguïté.
 Aucun changement de comportement. Aucune correction. Pas de merge, pas de
 release. En attente d'un nouveau run reproduisant la fuite pour trancher
 définitivement entre A et C.
+
+## 16. Second run réel avec l'instrumentation du §14 — S6 en échec, mais pour une raison déjà fermée (§13), pas une fuite
+
+Un second run réel (`s6_real_trace_2.txt`) a été exécuté juste après celui du
+§15, toujours avec l'instrumentation du §14 active. Cette fois **S6 est en
+échec** (`rÚponse=''`), mais **ni le marqueur `[appel outil]` ni aucun
+nouveau comportement client ne sont en cause** : la trace montre sans
+ambiguïté une récidive de `EMPTY_GENERATION_RETRY`, le bug serveur déjà
+caractérisé et fermé au §13.
+
+### 16.1 Ce qui s'est passé
+
+```
+[GEMINI] EMPTY_GENERATION_RETRY ... attempt=1 max_attempts=2
+   gen=2 : gÚnÚration vide confirmÚe par le serveur ... relance 1/2
+          (bug serveur Gemini connu, googleapis/python-genai#2117)
+[GEMINI] EMPTY_GENERATION_RETRY ... attempt=2 max_attempts=2
+   gen=2 : gÚnÚration vide confirmÚe par le serveur ... relance 2/2
+[GEMINI] TURN_COMPLETE ... has_model_content=False
+   [rÚponse]  (sans transcription)
+```
+
+À la différence des occurrences précédentes (où la relance finissait par
+aboutir), **les deux tentatives de relance ont échoué** et le tour s'est
+terminé sans contenu modèle, provoquant un FAIL réel du scénario S6. C'est
+exactement le scénario « pire cas » déjà anticipé au §13.3 (le correctif
+de relance atténue le problème sans le supprimer, car la cause est
+server-side) — observé ici pour la première fois en conditions réelles.
+
+### 16.2 Vérification croisée : pas de fuite dans cette trace non plus
+
+- `CONTEXT_REPLAY_TOOL_ENTRIES` à la reconnexion S5→S6 de ce run liste
+  `['get_local_time', 'remember', 'recall', 'get_local_time']` (4 entrées
+  au lieu de 5 dans le run du §15) — différence normale et attendue : dans
+  ce run, le tour `g1-t7` (« Mon prénom est Simon » après la coupure) a été
+  répondu par le modèle directement depuis le contexte conversationnel
+  immédiat (« Je m'en souviens, Simon. Merci de le rappeler. ») **sans
+  invoquer `recall`** (aucun `TOOL_CALL_EXECUTED` à ce tour), alors que
+  dans le run du §15 le modèle avait choisi d'appeler `recall` à ce même
+  point. Pure variabilité de décision du modèle, pas un comportement
+  client différent.
+- Aucun événement `TRANSCRIPT_TOOL_MARKER_LEAK` dans toute la trace.
+- L'échec provient uniquement de `has_model_content=False` après
+  épuisement des deux relances — rien à voir avec le texte replayé.
+
+### 16.3 Décision
+
+Conformément à la clôture explicite de l'investigation `EMPTY_GENERATION_RETRY`
+(§13, confirmée par l'utilisateur), **aucune correction n'est apportée** :
+ni aux relances, ni ailleurs. Cette occurrence est consignée ici uniquement
+à titre de donnée confirmant que le risque documenté au §13.3 (un FAIL réel
+possible malgré la relance, car bug serveur) est bien réel et peut se
+produire en pratique, sans remettre en cause la fermeture de ce chantier ni
+la classification B+D du §14 pour la fuite `[appel outil]` (qui n'est, une
+fois de plus, pas observée dans cette trace).
