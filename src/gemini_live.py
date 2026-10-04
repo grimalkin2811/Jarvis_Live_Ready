@@ -250,6 +250,21 @@ class GeminiLive:
         self.session = None
         self.ctx = None
         self.speaking = False
+        # CORRECTIF (cause racine S6, cf. ``_receive_one_turn_cycle`` /
+        # ``EMPTY_GENERATION_RETRY``) : vrai pendant tout l'aller-retour d'une
+        # relance de génération vide, DÉLIBÉRÉMENT distinct de ``self.speaking``
+        # (qui pilote aussi la notification ``on_speaking``/``TTS_START`` -- la
+        # réutiliser ici resterait correct pour fermer ``can_send()`` mais
+        # supprimerait à tort ``TTS_START`` si la tentative suivante est la
+        # PREMIÈRE à recevoir un ``model_turn``, cf. test de non-régression
+        # ``test_s6_persistent_empty_generation.py``). Lu par
+        # ``_can_send_now()`` pour empêcher le pont micro de transmettre de
+        # l'audio temps réel sur CETTE session pendant qu'un ``clientContent``
+        # de relance est en vol -- le mélanger avec de l'audio réel pendant que
+        # le serveur doit encore répondre à cette relance est précisément ce
+        # que la trace réelle (g2-t8) montre juste avant chaque génération
+        # vide suivante.
+        self._regeneration_pending = False
         self.tool_active = False
         self.resumption_handle = None
         # Traçabilité de session (instrumentation du contexte conversationnel) :
@@ -775,6 +790,14 @@ class GeminiLive:
             return False, "outil en cours"
         if not self._session_ready:
             return False, "session pas prete"
+        # CORRECTIF (cause racine S6) : une relance de génération vide est en
+        # vol sur CETTE session -- le micro ne doit pas transmettre de l'audio
+        # temps réel pendant que le serveur doit encore répondre au
+        # ``clientContent`` de relance (cf. ``_regeneration_pending``). Comme
+        # pour ``speaking`` juste en dessous, une interruption RÉELLE reste
+        # prioritaire : l'utilisateur doit toujours pouvoir couper court.
+        if self._regeneration_pending and not self.interrupt_active():
+            return False, "relance de generation en cours"
         # Pendant une interruption, le micro doit passer : c'est ainsi que
         # Gemini entend « stop » et arrête réellement son tour.
         if self.speaking and not self.interrupt_active():
@@ -1251,8 +1274,18 @@ class GeminiLive:
 
         allowed, reason = self._can_send_now()
         if not allowed:
-            if reason in ("jarvis parle", "outil en cours"):
-                # Ces deux raisons signifient que l'état a changé APRÈS la
+            if reason in (
+                "jarvis parle",
+                "outil en cours",
+                # CORRECTIF (cause racine S6) : une relance de génération
+                # vide est en vol sur cette session -- exactement la même
+                # course que "jarvis parle" (l'état a changé APRÈS que le
+                # pont micro a décidé d'envoyer), avec la même conséquence
+                # potentielle si on la laissait passer (cf.
+                # ``tests/test_empty_generation_retry_mic_gate.py``).
+                "relance de generation en cours",
+            ):
+                # Ces raisons signifient que l'état a changé APRÈS la
                 # capture (sinon le pont micro n'aurait pas planifié cet
                 # envoi) : c'est la course décrite ci-dessus, pas un
                 # fonctionnement normal — on la compte et on la trace.
@@ -1305,6 +1338,10 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_closed = False
+        # Une session qui s'arrête pendant une relance de génération vide ne
+        # doit pas laisser la porte micro fermée indéfiniment pour la session
+        # SUIVANTE (même instance ``GeminiLive`` réutilisée à la reconnexion).
+        self._regeneration_pending = False
 
     async def _receive_loop(self):
         """Reçoit les messages Gemini pour TOUS les tours de la session.
@@ -1669,9 +1706,53 @@ class GeminiLive:
                         self.session_generation, pending_user_text,
                         next_attempt, EMPTY_GENERATION_MAX_RETRIES,
                     )
-                    self.speaking = False
+                    # CORRECTIF (cause racine S6, validation réelle g2-t8) :
+                    # la relance envoie le texte déjà transcrit via UN SECOND
+                    # ``send_client_content`` DANS LA MÊME session, pendant que
+                    # le pont micro (``main.py``/``ui.py``) continue, lui, de
+                    # tourner sur le thread audio temps réel et de planifier
+                    # des ``send_audio()`` dès que ``can_send()`` redevient
+                    # vrai (VAD serveur : le micro transmet en continu, cf.
+                    # §5 item 5 du rapport v1.7.4). L'ANCIEN code mettait
+                    # ``speaking=False`` ICI, ce qui rouvre exactement cette
+                    # porte : la trace réelle (3 tentatives g2-t8, docs/
+                    # RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md §13.1) montre
+                    # systématiquement des évènements ``AUDIO_SENT_TO_GEMINI
+                    # speaking=False`` intercalés ENTRE chaque
+                    # ``EMPTY_GENERATION_RETRY`` et le ``model_turn`` (vide)
+                    # suivant -- du PCM micro réel (bruit ambiant ou parole)
+                    # atteint donc le serveur, sur CETTE session, en même
+                    # temps qu'un ``clientContent`` texte « turn_complete » qui
+                    # lui demande de régénérer une réponse pour le tour
+                    # précédent. Mélanger une clôture de tour texte avec de
+                    # l'audio temps réel qui arrive pendant que le serveur doit
+                    # encore répondre à cette clôture est exactement le genre
+                    # d'ambiguïté de tour qui peut lui faire clore la
+                    # génération sans contenu (la nouvelle trace ne distingue
+                    # alors plus « réponds au texte renvoyé » de « l'utilisateur
+                    # recommence à parler, abandonne »).
+                    #
+                    # On ferme donc la porte via ``_regeneration_pending``
+                    # (lu par ``_can_send_now()``), DÉLIBÉRÉMENT PAS via
+                    # ``self.speaking`` : si cette relance est la toute
+                    # première à recevoir un ``model_turn`` exploitable,
+                    # ``self.speaking`` doit encore valoir False À CE
+                    # MOMENT-LÀ pour que le bloc ``model_turn`` ci-dessus
+                    # déclenche correctement ``on_speaking``/``TTS_START`` --
+                    # les forcer à True ICI romprait cette notification (cf.
+                    # ``test_s6_persistent_empty_generation.py``, qui vérifie
+                    # que ``TTS_START`` se déclenche bien sur la tentative qui
+                    # reçoit enfin un ``model_turn``). ``_regeneration_pending``
+                    # reste vrai à travers l'appel récursif (attribut
+                    # d'instance) jusqu'au dénouement réel du tour (réponse
+                    # obtenue ou relances épuisées, cf. plus bas). Un barge-in
+                    # réel reste possible : ``_can_send_now`` laisse toujours
+                    # passer l'audio si ``interrupt_active()`` devient vrai,
+                    # indépendamment de ``_regeneration_pending``.
+                    self._regeneration_pending = True
                     self._clear_interrupt()
                     self._interrupt_was_active = False
+                    self._record_trace("EMPTY_GENERATION_RETRY_MIC_HELD")
                     try:
                         await self.session.send_client_content(
                             turns=[{"role": "user", "parts": [{"text": pending_user_text}]}],
@@ -1693,6 +1774,11 @@ class GeminiLive:
                         # borné par ``_empty_generation_retries`` qui se
                         # propage à travers l'appel récursif.
                         return await self._receive_one_turn_cycle(next_attempt)
+                # Dénouement réel du tour (réponse obtenue, relances épuisées,
+                # ou échec d'envoi de la relance ci-dessus) : la porte
+                # ``_regeneration_pending`` ouverte par le bloc de relance
+                # ci-dessus, le cas échéant, est refermée ICI -- jamais avant.
+                self._regeneration_pending = False
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
@@ -1874,6 +1960,7 @@ class GeminiLive:
 
     async def _shutdown_session(self) -> None:
         self.speaking = False
+        self._regeneration_pending = False
         self.tool_active = False
         self._clear_interrupt()
         self._interrupt_was_active = False

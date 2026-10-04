@@ -142,6 +142,7 @@ from tests.live_harness import (  # noqa: E402
     msg_user_transcript,
 )
 from tests.live_harness import _Message, _ResumptionUpdate  # noqa: E402
+from tests.live_harness import _ModelTurn, _Part, _ServerContent  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +371,19 @@ class VadLiveServer(FakeLiveServer):
         })
         session.committed.append({"role": "user", "parts": [{"text": text}]})
         await session._emit(msg_user_transcript(text))
+        if kind == "user" and self.empty_generations_remaining > 0:
+            # Bug serveur simulé (cf. FakeLiveServer.empty_generations_remaining,
+            # investigation S6) : la génération déclenchée par CE tour utilisateur
+            # réel revient vide (model_turn texte inexploité, rien committé),
+            # exactement la signature observée en validation réelle -- le micro
+            # continue, lui, de tourner (VAD serveur) pendant que Jarvis relance.
+            self.empty_generations_remaining -= 1
+            empty_content = _ServerContent()
+            empty_content.model_turn = _ModelTurn([_Part(text="(generation vide simulee)")])
+            await session._emit(_Message(empty_content))
+            await asyncio.sleep(self.turn_complete_delay)
+            await session._emit(msg_turn_complete())
+            return
         answer = "Je vous écoute."
         if kind == "user" and self.next_user_answers:
             answer = self.next_user_answers.pop(0)

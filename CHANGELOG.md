@@ -15,6 +15,61 @@ et résumées ci-dessous.
 `docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md` §10 pour l'investigation
 complète, la cause racine et le protocole avant/après.
 
+### Corrigé (cause racine architecturale, mission dédiée S6) — `GeminiLive._receive_one_turn_cycle`/`_can_send_now`
+
+**Cause racine identifiée par preuve directe sur trace réelle (§13.1 du
+rapport), distincte des pistes déjà écartées (compression de contexte,
+fuite de marqueur `[appel outil]`, limite de relances) :** pendant
+`EMPTY_GENERATION_RETRY`, `GeminiLive` mettait `self.speaking = False`
+juste avant de ré-envoyer le texte déjà transcrit via un second
+`send_client_content` dans la MÊME session. Comme `can_send()`/
+`_can_send_now()` n'observent que `self.speaking` (et `_session_ready`/
+`tool_active`) pour décider si le pont micro peut transmettre de l'audio
+temps réel, cela rouvrait exactement la porte censée rester fermée pendant
+une génération en cours. Le pont micro tourne en continu sur le thread
+audio (VAD serveur oblige) : la trace réelle montre systématiquement des
+`AUDIO_SENT_TO_GEMINI speaking=False` intercalés ENTRE chaque
+`EMPTY_GENERATION_RETRY` et le `model_turn` (toujours vide) suivant — du
+PCM micro réel (bruit ambiant au minimum) atteignait donc le serveur, sur
+la session en train de traiter la relance, EN MÊME TEMPS qu'un
+`clientContent` texte lui demandant de régénérer une réponse pour le tour
+précédent. Mélanger une clôture de tour texte avec de l'audio temps réel
+qui arrive pendant que le serveur doit encore y répondre est exactement le
+genre d'ambiguïté de tour qui peut lui faire clore la génération suivante
+sans contenu — une relance censée CORRIGER une génération vide pouvait
+ainsi elle-même entretenir le problème, expliquant l'épuisement répété des
+relances observé en validation réelle (g2-t8 : 3 tentatives identiques,
+toutes vides).
+
+**Correctif :** nouveau drapeau d'instance `GeminiLive._regeneration_pending`,
+DÉLIBÉRÉMENT distinct de `self.speaking` (le réutiliser aurait fermé
+`can_send()` correctement mais aurait supprimé à tort la notification
+`on_speaking`/`TTS_START` si la tentative suivante est la première à
+recevoir un `model_turn` exploitable). Posé à `True` dès qu'une relance de
+génération vide part sur le câble, lu par `_can_send_now()` (nouvelle
+raison de refus `"relance de generation en cours"`, tracée comme
+`AUDIO_SEND_DROPPED_STALE` au même titre que `"jarvis parle"`/`"outil en
+cours"` si le pont micro tente malgré tout un envoi), et remis à `False`
+uniquement au dénouement réel du tour (réponse obtenue, relances épuisées,
+échec d'envoi de la relance, ou fermeture de session). Un barge-in RÉEL
+(`interrupt_active()`) garde la priorité, exactement comme pour `speaking`
+— l'utilisateur peut toujours couper court. Nouvel évènement de trace
+`EMPTY_GENERATION_RETRY_MIC_HELD` à chaque relance, pour une observation
+directe sur une future trace réelle.
+
+**Ce que ce correctif NE prétend PAS :** il supprime une cause
+d'aggravation CLIENT, prouvée sur trace réelle, mais ne garantit pas à lui
+seul l'éradication totale du bug serveur Gemini sous-jacent
+(`googleapis/python-genai#2117`, confirmé par Google, ~40 rapports
+indépendants) — `EMPTY_GENERATION_RETRY` reste nécessaire comme filet de
+sécurité. Validation automatisée complète (harnais factices, voir
+`tests/test_empty_generation_retry_mic_gate.py` et
+`tests/test_s6_reconnection_compression_integration.py`) ; validation
+contre l'API Gemini réelle non exécutable dans cet environnement (pas de
+clé API/matériel audio) — à confirmer via
+`python scripts/validate_reconnect_v174_real.py` sur un poste Windows avec
+une vraie clé `GEMINI_API_KEY`.
+
 ### Corrigé
 
 - **`GeminiLive`** : après une reconnexion sans session resumption valide,

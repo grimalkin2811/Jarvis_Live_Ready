@@ -653,6 +653,17 @@ class FakeLiveSession:
         self, recap: bool = False, answer_override: str | None = None
     ) -> None:
         visible = self.visible()
+        if self.server.empty_generations_remaining > 0:
+            # Bug serveur simulé (cf. FakeLiveServer.empty_generations_remaining) :
+            # un model_turn arrive (TTS_START se déclenche côté client) mais ne
+            # porte ni audio ni transcription exploitable, et rien n'est committé
+            # côté serveur -- Jarvis doit alors relancer avec le même texte.
+            self.server.empty_generations_remaining -= 1
+            empty_content = _ServerContent()
+            empty_content.model_turn = _ModelTurn([_Part(text="(generation vide simulee)")])
+            await self._emit(_Message(empty_content))
+            await self._emit(msg_turn_complete())
+            return
         if recap:
             # Récapitulatif après un seed 2.x (inférence forcée) : le modèle
             # confirme qu'il a le contexte. Réponse déterministe.
@@ -789,6 +800,18 @@ class FakeLiveServer:
         #: N'envoie jamais de session_resumption_update (simule une coupure
         #: avant le premier handle : Jarvis doit alors rejouer son contexte).
         self.suppress_resumption_updates = False
+        #: Simule le bug serveur Gemini documenté (googleapis/python-genai#2117,
+        #: cf. CHANGELOG/EMPTY_GENERATION_RETRY) : les N prochaines générations
+        #: DÉCLENCHÉES PAR UN TOUR UTILISATEUR réel (jamais le tour de rejeu de
+        #: contexte, ``recap=True``) renvoient un ``model_turn`` contenant
+        #: seulement une part texte inexploitée (``has_text_part=True``,
+        #: ``has_inline_audio=False``, aucun ``output_transcription``) puis
+        #: ``turn_complete`` SANS rien committer côté serveur -- exactement la
+        #: signature observée en validation réelle (g2-t8, docs/
+        #: RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md §13.1). Décrémenté à chaque
+        #: génération consommée ; 0 par défaut (aucun effet sur les tests
+        #: existants).
+        self.empty_generations_remaining = 0
         self._live: list[FakeLiveSession] = []
 
     def _register(self, session: FakeLiveSession) -> None:
