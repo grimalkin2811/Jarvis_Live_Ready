@@ -27,7 +27,10 @@ def test_api_without_key_is_explicitly_non_testable(monkeypatch):
     report = validation.Report()
     asyncio.run(validation.run_api_validation(report))
     assert report.checks
-    assert all(item.status == "NON_TESTABLE" for item in report.checks)
+    architecture = [item for item in report.checks if item.category == "ARCHITECTURE"]
+    api = [item for item in report.checks if item.category == "API RÉELLE"]
+    assert architecture and architecture[0].status == "PASS"
+    assert api and all(item.status == "NON_TESTABLE" for item in api)
     assert not report.failed()
 
 

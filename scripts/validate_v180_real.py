@@ -190,15 +190,24 @@ async def check_live_model(client, model: str) -> None:
 
 
 async def run_api_validation(report: Report) -> None:
+    models = BackgroundModelConfig.from_env()
+    active_models = (models.router_model, models.simple_model, models.medium_model)
+    architecture_ok = all(model == "gemini-3-flash-preview" for model in active_models)
+    report.add(
+        "ARCHITECTURE",
+        "background Flash Preview classique",
+        "PASS" if architecture_ok and not hasattr(BackgroundModelGateway, "generate_live") else "FAIL",
+        f"router={models.router_model}; simple={models.simple_model}; medium={models.medium_model}; endpoint=generateContent",
+    )
+
     key, source = load_api_key()
     if not key:
-        for name in ("Gemini 2.5 Native Audio", "Gemini 3 Flash Live", "Gemini 3.8 Flash", "Google Search grounding"):
+        for name in ("Gemini 2.5 Native Audio", "Gemini 3 Flash Preview", "Gemini 3.8 Flash", "Google Search grounding"):
             report.add("API RÉELLE", name, "NON_TESTABLE", "aucune clé/configuration Gemini")
         return
 
     from google import genai
     client = genai.Client(api_key=key)
-    models = BackgroundModelConfig.from_env()
     main_model = configured_main_model()
     report.add("API RÉELLE", "clé chargée sans exposition", "PASS", source)
 
@@ -211,7 +220,7 @@ async def run_api_validation(report: Report) -> None:
     router = TaskRouter(client, models)
     router_cases = [
         ("A météo", "Donne-moi la météo de demain.", "simple", models.simple_model),
-        ("B processeurs", "Compare deux processeurs pour choisir lequel acheter.", "medium", models.simple_model),
+        ("B processeurs", "Compare deux processeurs pour choisir lequel acheter.", "medium", models.medium_model),
         ("C moteurs ioniques", "Fais une recherche poussée et une analyse détaillée sur les moteurs ioniques.", "complex", models.complex_model),
     ]
     for title, prompt, expected_complexity, expected_model in router_cases:
@@ -226,14 +235,14 @@ async def run_api_validation(report: Report) -> None:
         except Exception as exc:
             report.add("ROUTER RÉEL", title, "FAIL", f"{type(exc).__name__}: {exc}")
 
-    # L'outil Search est testé sur Flash Live afin de ne pas consommer un appel
-    # 3.8 supplémentaire. Une réponse non vide prouve setup + outil serveur + tour.
+    # L'outil Search est testé via Generate Content sur Flash Preview afin de
+    # ne pas consommer un appel 3.8. Une réponse non vide valide l'outil serveur.
     try:
         grounded = await asyncio.wait_for(
-            BackgroundModelGateway(client).generate_live(
+            BackgroundModelGateway(client).generate(
                 models.simple_model,
                 "Quelle est la date d'aujourd'hui à Paris ? Donne une source web vérifiable.",
-                system_instruction="Réponds brièvement en français avec la source consultée.",
+                system_instruction="Utilise Google Search et réponds brièvement en français avec la source consultée.",
                 tools=[{"google_search": {}}],
             ),
             timeout=90,
@@ -259,7 +268,7 @@ async def run_background_scenarios(report: Report, key: str, models: BackgroundM
             report.add("BACKGROUND", "soumission non bloquante", "PASS" if submission < 0.25 else "FAIL", f"{submission:.3f}s; statut initial={simple.status.value}")
             simple_done = await wait_terminal(manager, simple.id)
             simple_ok = simple_done.status is TaskStatus.COMPLETED and simple_done.model == models.simple_model and bool(simple_done.result)
-            report.add("BACKGROUND", "tâche simple Gemini 3 Flash Live", "PASS" if simple_ok else "FAIL", _task_detail(simple_done))
+            report.add("BACKGROUND", "tâche simple Gemini 3 Flash Preview classique", "PASS" if simple_ok else "FAIL", _task_detail(simple_done))
             unread = any(item.id == simple.id for item in manager.list_unread_completed_tasks())
             result = manager.get_task_result(simple.id, mark_seen=True)
             seen = manager.get_task(simple.id).seen

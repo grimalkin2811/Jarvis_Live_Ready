@@ -188,8 +188,8 @@ class TaskManager:
                 self._mutate(task_id, status=TaskStatus.RUNNING, started_at=utc_now(), progress=5, current_step="Routage de la tâche")
                 route = await self.router.route(task.title, task.description, task.priority)
                 self._mutate(
-                    task_id, complexity=route.complexity, model=route.model,
-                    priority=route.priority, routing_reason=route.reason,
+                    task_id, complexity=route.complexity, task_type=route.task_type,
+                    model=route.model, priority=route.priority, routing_reason=route.reason,
                     total_steps=route.estimated_steps, progress=10, current_step="Plan validé",
                 )
 
@@ -285,7 +285,8 @@ class TaskManager:
             "summary": task.summary, "result": task.result, "files": task.files,
             "error": task.error, "partial_errors": task.partial_errors,
             "model": task.model, "complexity": task.complexity.value if task.complexity else None,
-            "routing_reason": task.routing_reason, "steps": task.total_steps, "seen": task.seen,
+            "task_type": task.task_type, "routing_reason": task.routing_reason,
+            "steps": task.total_steps, "seen": task.seen,
         }
 
     def quota_status(self) -> dict:

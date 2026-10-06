@@ -7,8 +7,8 @@ Utilisateur
   → Gemini 2.5 Flash Native Audio (conversation principale, inchangée)
   → outil start_background_task (retour immédiat)
   → Task Manager (thread + boucle asyncio dédiés)
-  → Router Gemini 3 Flash Live (décision JSON validée)
-  → Gemini 3 Flash Live [simple/medium]
+  → Router Gemini 3 Flash Preview (décision JSON validée)
+  → Gemini 3 Flash Preview [simple/medium]
        ou Gemini 3.8 Flash [complex]
   → état/résultat/fichier dans le Task Manager
   → notification visuelle silencieuse
@@ -28,8 +28,10 @@ donc jamais exécutés dans cette boucle.
   Audio**. Son architecture Live n’est pas remplacée. Six outils lui donnent
   accès au gestionnaire central.
 - `src/background_tasks/config.py` : identifiants de modèles et limites.
-- `router.py` : appel Gemini 3 Flash Live, schéma JSON strict, mapping de
-  complexité indépendant du Manager.
+- `gateway.py` : unique transport background, exclusivement
+  `client.aio.models.generate_content` (API classique, aucun WebSocket Live).
+- `router.py` : appel Gemini 3 Flash Preview via ce transport classique,
+  schéma JSON strict et mapping centralisé de complexité.
 - `manager.py` : source de vérité, concurrence, persistance, hooks,
   annulation/retry et API publique.
 - `executor.py` : exécution Gemini séparée, Google Search grounding lorsque le
@@ -46,14 +48,16 @@ donc jamais exécutés dans cette boucle.
 | Rôle | Valeur par défaut | Variable |
 |---|---|---|
 | Conversation | `gemini-2.5-flash-native-audio-preview-12-2025` | `GEMINI_MODEL` |
-| Router | `gemini-3-flash-live` | `JARVIS_TASK_ROUTER_MODEL` |
-| Simple/medium | `gemini-3-flash-live` | `JARVIS_TASK_SIMPLE_MODEL` |
+| Router | `gemini-3-flash-preview` | `JARVIS_TASK_ROUTER_MODEL` |
+| Simple | `gemini-3-flash-preview` | `JARVIS_TASK_SIMPLE_MODEL` |
+| Medium | `gemini-3-flash-preview` | `JARVIS_TASK_MEDIUM_MODEL` |
 | Complex | `gemini-3.8-flash` | `JARVIS_TASK_COMPLEX_MODEL` |
 
-Les noms preview peuvent évoluer côté Google : les variables permettent de
-mettre les identifiants autorisés à jour sans modifier le Task Manager. Le
-Router choisit seulement une complexité ; le mapping complexité → modèle est
-centralisé dans `BackgroundModelConfig`.
+Tous les appels background, y compris Router, simple, medium, complexe et
+Google Search grounding, passent par l’API classique asynchrone
+`generate_content`. Seule la conversation principale utilise Gemini Live. Le
+mapping complexité → modèle est centralisé dans `BackgroundModelConfig` et la
+décision JSON incohérente d’un Router est refusée explicitement.
 
 ## États
 

@@ -25,12 +25,24 @@ class TaskExecutionError(RuntimeError):
 
 
 class TaskExecutor:
-    def __init__(self, client, config: BackgroundModelConfig, quota: ComplexModelQuota, output_dir: Path):
+    def __init__(
+        self,
+        client,
+        config: BackgroundModelConfig,
+        quota: ComplexModelQuota,
+        output_dir: Path,
+        gateway=None,
+    ):
         self.client, self.config, self.quota = client, config, quota
-        self.gateway = BackgroundModelGateway(client)
+        self.gateway = gateway or BackgroundModelGateway(client)
         self.output_dir = Path(output_dir)
 
     async def execute(self, task: BackgroundTask, route: RoutingDecision, update) -> ExecutionResult:
+        expected_model = self.config.model_for_complexity(route.complexity)
+        if route.model != expected_model:
+            raise TaskExecutionError(
+                f"Modèle de tâche incohérent: {route.complexity.value} exige {expected_model}."
+            )
         complex_call = route.complexity is TaskComplexity.COMPLEX
         acquired = False
         reservation = 0
@@ -50,14 +62,15 @@ class TaskExecutor:
                 f"TITRE: {task.title}\nDEMANDE: {task.description}"
             )
             update(55, "Analyse et synthèse", max(2, route.estimated_steps - 1), route.estimated_steps)
-            operation = (
-                self.gateway.generate(route.model, prompt, tools=tools, temperature=0.25)
-                if complex_call else
-                self.gateway.generate_live(
-                    route.model, prompt,
-                    system_instruction="Exécuteur interne de tâche. Fournis uniquement le livrable demandé en français.",
-                    tools=tools, temperature=0.25,
-                )
+            operation = self.gateway.generate(
+                route.model,
+                prompt,
+                system_instruction=(
+                    "Tu es l'exécuteur interne d'une tâche Jarvis. "
+                    "Fournis uniquement le livrable demandé en français."
+                ),
+                tools=tools,
+                temperature=0.25,
             )
             response = await asyncio.wait_for(operation, timeout=self.config.timeout_seconds)
             text = response.text.strip()

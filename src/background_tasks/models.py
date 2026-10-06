@@ -43,6 +43,7 @@ class RoutingDecision:
     requires_tools: bool
     estimated_steps: int
     priority: TaskPriority = TaskPriority.NORMAL
+    task_type: str = "general"
 
 
 @dataclass
@@ -56,6 +57,7 @@ class BackgroundTask:
     status: TaskStatus = TaskStatus.QUEUED
     priority: TaskPriority = TaskPriority.NORMAL
     complexity: TaskComplexity | None = None
+    task_type: str | None = None
     model: str | None = None
     progress: int = 0
     current_step: str = "En attente de routage"

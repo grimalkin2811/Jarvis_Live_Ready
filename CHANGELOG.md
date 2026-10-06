@@ -3,7 +3,7 @@
 ## 1.8.0 — Tâches d’arrière-plan asynchrones
 
 - Task Manager central, thread et boucle asyncio indépendants de Gemini Live.
-- Router Gemini 3 Flash Live et exécution Flash Live / Gemini 3.8 selon complexité.
+- Router et tâches simple/medium via Gemini 3 Flash Preview sur Generate Content; tâches complexes Gemini 3.8.
 - États, progression, résultats, fichiers, non-lus, annulation, retry et persistance.
 - Protection du quota 3.8 (RPM/RPD/TPM/concurrence) et erreurs isolées.
 - Six outils conversationnels, dialogue Qt, compteur radial et notifications silencieuses.

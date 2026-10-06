@@ -35,11 +35,11 @@ py -3 scripts\validate_v180_real.py --api
 Cette commande effectue de vraies connexions/requêtes :
 
 - ouverture Gemini 2.5 Flash Native Audio ;
-- les trois décisions Router A/B/C sur Gemini 3 Flash Live ;
-- Google Search grounding sur Flash Live ;
+- les trois décisions Router A/B/C sur Gemini 3 Flash Preview ;
+- Google Search grounding sur Flash Preview via Generate Content ;
 - cycle simple, résultat, non-vu puis vu ;
 - tâche complexe et document avec Gemini 3.8 Flash ;
-- deux tâches simultanées Flash Live/3.8 ;
+- deux tâches simultanées Flash Preview/3.8 ;
 - connexion Gemini 2.5 pendant que les deux tâches sont actives ;
 - compteurs 3.8 et relecture persistante ;
 - refus local à la limite sans consommer d’appel supplémentaire ;

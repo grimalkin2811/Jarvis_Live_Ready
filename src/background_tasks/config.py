@@ -1,7 +1,7 @@
 """Configuration centralisée des modèles de Jarvis v1.8.
 
-Les identifiants sont surchargeables car les noms preview de Gemini peuvent
-évoluer sans qu'une réécriture du Task Manager soit nécessaire.
+La conversation Native Audio et les tâches d'arrière-plan ont des transports
+séparés. Les modèles background utilisent exclusivement ``generateContent``.
 """
 from __future__ import annotations
 
@@ -10,8 +10,9 @@ from dataclasses import dataclass
 
 MAIN_MODEL_ENV = "GEMINI_MODEL"
 DEFAULT_MAIN_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
-DEFAULT_ROUTER_MODEL = "gemini-3-flash-live"
-DEFAULT_SIMPLE_MODEL = "gemini-3-flash-live"
+DEFAULT_ROUTER_MODEL = "gemini-3-flash-preview"
+DEFAULT_SIMPLE_MODEL = "gemini-3-flash-preview"
+DEFAULT_MEDIUM_MODEL = "gemini-3-flash-preview"
 DEFAULT_COMPLEX_MODEL = "gemini-3.8-flash"
 
 
@@ -19,6 +20,7 @@ DEFAULT_COMPLEX_MODEL = "gemini-3.8-flash"
 class BackgroundModelConfig:
     router_model: str = DEFAULT_ROUTER_MODEL
     simple_model: str = DEFAULT_SIMPLE_MODEL
+    medium_model: str = DEFAULT_MEDIUM_MODEL
     complex_model: str = DEFAULT_COMPLEX_MODEL
     max_concurrent_tasks: int = 3
     complex_rpm: int = 5
@@ -26,6 +28,15 @@ class BackgroundModelConfig:
     complex_tpm: int = 250_000
     complex_concurrency: int = 1
     timeout_seconds: float = 180.0
+
+    def model_for_complexity(self, complexity) -> str:
+        """Mapping unique complexité → modèle, indépendant du Router Gemini."""
+        value = getattr(complexity, "value", str(complexity)).lower()
+        if value == "complex":
+            return self.complex_model
+        if value == "medium":
+            return self.medium_model
+        return self.simple_model
 
     @classmethod
     def from_env(cls) -> "BackgroundModelConfig":
@@ -42,6 +53,7 @@ class BackgroundModelConfig:
         return cls(
             router_model=os.getenv("JARVIS_TASK_ROUTER_MODEL", DEFAULT_ROUTER_MODEL).strip() or DEFAULT_ROUTER_MODEL,
             simple_model=os.getenv("JARVIS_TASK_SIMPLE_MODEL", DEFAULT_SIMPLE_MODEL).strip() or DEFAULT_SIMPLE_MODEL,
+            medium_model=os.getenv("JARVIS_TASK_MEDIUM_MODEL", DEFAULT_MEDIUM_MODEL).strip() or DEFAULT_MEDIUM_MODEL,
             complex_model=os.getenv("JARVIS_TASK_COMPLEX_MODEL", DEFAULT_COMPLEX_MODEL).strip() or DEFAULT_COMPLEX_MODEL,
             max_concurrent_tasks=number("JARVIS_TASK_MAX_CONCURRENT", 3),
             complex_rpm=number("JARVIS_TASK_COMPLEX_RPM", 5),

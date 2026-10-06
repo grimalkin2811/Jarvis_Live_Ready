@@ -1387,8 +1387,8 @@ python scripts/make_portable_zip.py --app-dir dist/app --output dist/Jarvis-v1.0
 ## Tâches d’arrière-plan (v1.8)
 
 Jarvis peut lancer une recherche, une analyse ou un document sans bloquer la
-conversation Gemini 2.5 Flash Native Audio. Le Router Gemini 3 Flash Live
-choisit Gemini 3 Flash Live pour les tâches simples/moyennes et Gemini 3.8
+conversation Gemini 2.5 Flash Native Audio. Le Router Gemini 3 Flash Preview via API classique
+choisit Gemini 3 Flash Preview via API classique pour les tâches simples/moyennes et Gemini 3.8
 Flash pour les tâches complexes. L’historique, la progression, les résultats
 non vus et l’annulation sont accessibles depuis le menu Memory et l’icône de
 notification. Voir [l’architecture v1.8](docs/ARCHITECTURE_TASKS_V1.8.md) et la
