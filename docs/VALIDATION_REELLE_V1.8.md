@@ -35,19 +35,21 @@ py -3 scripts\validate_v180_real.py --api
 Cette commande effectue de vraies connexions/requêtes :
 
 - ouverture Gemini 2.5 Flash Native Audio ;
-- les trois décisions Router A/B/C sur Gemini 3 Flash Preview ;
-- Google Search grounding sur Flash Preview via Generate Content ;
+- découverte/validation du modèle Gemini 3 Live puis décisions Router A/B/C ;
+- Google Search grounding sur le modèle Live résolu ;
 - cycle simple, résultat, non-vu puis vu ;
 - tâche complexe et document avec Gemini 3.8 Flash ;
-- deux tâches simultanées Flash Preview/3.8 ;
+- deux tâches simultanées Gemini 3 Live/3.8 ;
 - connexion Gemini 2.5 pendant que les deux tâches sont actives ;
 - compteurs 3.8 et relecture persistante ;
 - refus local à la limite sans consommer d’appel supplémentaire ;
 - erreur API réelle contrôlée vers un modèle volontairement inexistant, puis
   nouvelle connexion du modèle principal.
 
-Le run consomme normalement **au plus deux appels Gemini 3.8**. Il ne tente
-jamais d’épuiser RPM/RPD/TPM. Les données du test sont placées dans un dossier
+Sans retry, le run consomme normalement **au plus deux appels Gemini 3.8**.
+Chaque tentative 429/503 réellement envoyée est toutefois comptée et peut
+augmenter ce total dans les limites configurées. Il ne tente jamais d’épuiser
+volontairement RPM/RPD/TPM. Les données du test sont placées dans un dossier
 temporaire afin de ne pas polluer l’historique utilisateur.
 
 Le rapport JSON est écrit dans le dossier de logs utilisateur. Un autre chemin

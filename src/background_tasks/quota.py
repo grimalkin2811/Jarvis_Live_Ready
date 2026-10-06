@@ -1,4 +1,4 @@
-"""Protection locale et persistante du quota rare Gemini 3.8 Flash."""
+"""Protection persistante et loop-safe du quota Gemini 3.8 Flash."""
 from __future__ import annotations
 
 import asyncio
@@ -12,7 +12,14 @@ from pathlib import Path
 
 
 class QuotaExceededError(RuntimeError):
-    """Quota indisponible : l'appel peut être réessayé ultérieurement."""
+    pass
+
+
+@dataclass
+class QuotaLease:
+    estimated_tokens: int
+    attempts: int = 0
+    released: bool = False
 
 
 @dataclass(frozen=True)
@@ -38,8 +45,20 @@ class ComplexModelQuota:
         self._day = date.today()
         self._calls_today = 0
         self._tokens_today = 0
-        self._semaphore = asyncio.Semaphore(concurrency)
+        # Créée paresseusement sur la boucle qui exécute réellement les tâches.
+        self._semaphore: asyncio.Semaphore | None = None
+        self._async_loop = None
+        self._legacy_leases: collections.deque[QuotaLease] = collections.deque()
         self._load()
+
+    def _ensure_async_primitives(self) -> asyncio.Semaphore:
+        loop = asyncio.get_running_loop()
+        if self._semaphore is None:
+            self._semaphore = asyncio.Semaphore(self.concurrent_limit)
+            self._async_loop = loop
+        elif self._async_loop is not loop:
+            raise RuntimeError("Le quota Gemini 3.8 est utilisé depuis une boucle asyncio différente.")
+        return self._semaphore
 
     def _rollover(self) -> None:
         today = date.today()
@@ -66,7 +85,7 @@ class ComplexModelQuota:
             temporary.write_text(json.dumps(payload), encoding="utf-8")
             temporary.replace(self.storage_path)
         except Exception:
-            pass  # La protection mémoire reste active; jamais casser une tâche pour le journal.
+            pass
 
     def _load(self) -> None:
         if self.storage_path is None or not self.storage_path.exists():
@@ -85,40 +104,75 @@ class ComplexModelQuota:
             self._minute.clear()
             self._minute_tokens.clear()
 
-    async def acquire(self, estimated_tokens: int = 0) -> int:
+    def _check_available(self, estimate: int) -> None:
+        self._rollover()
+        if self._calls_today >= self.rpd:
+            raise QuotaExceededError(f"Quota Gemini 3.8 épuisé ({self.rpd} appels/jour). Réessaie demain.")
+        if len(self._minute) >= self.rpm:
+            raise QuotaExceededError(f"Limite Gemini 3.8 atteinte ({self.rpm} appels/minute). Réessaie plus tard.")
+        if estimate > self.tpm or sum(tokens for _, tokens in self._minute_tokens) + estimate > self.tpm:
+            raise QuotaExceededError(f"Budget Gemini 3.8 de {self.tpm} tokens/minute indisponible. Réessaie plus tard.")
+
+    async def reserve(self, estimated_tokens: int = 0) -> QuotaLease:
         estimate = max(0, int(estimated_tokens or 0))
-        # Refus explicite plutôt qu'une attente cachée d'une minute/journée.
         with self._lock:
-            self._rollover()
-            if self._calls_today >= self.rpd:
-                raise QuotaExceededError(f"Quota Gemini 3.8 épuisé ({self.rpd} appels/jour). Réessaie demain.")
-            if len(self._minute) >= self.rpm:
-                raise QuotaExceededError(f"Limite Gemini 3.8 atteinte ({self.rpm} appels/minute). Réessaie plus tard.")
-            if estimate > self.tpm or sum(tokens for _, tokens in self._minute_tokens) + estimate > self.tpm:
-                raise QuotaExceededError(f"Budget Gemini 3.8 de {self.tpm} tokens/minute indisponible. Réessaie plus tard.")
-        await self._semaphore.acquire()
+            self._check_available(estimate)
+        semaphore = self._ensure_async_primitives()
+        await semaphore.acquire()
+        try:
+            with self._lock:
+                self._check_available(estimate)
+            return QuotaLease(estimate)
+        except Exception:
+            semaphore.release()
+            raise
+
+    def mark_attempt(self, lease: QuotaLease) -> None:
+        """Compte exactement un appel juste avant son envoi au SDK."""
+        if lease.released:
+            raise RuntimeError("Réservation de quota déjà libérée.")
         with self._lock:
-            self._rollover()
-            if self._calls_today >= self.rpd or len(self._minute) >= self.rpm:
-                self._semaphore.release()
-                raise QuotaExceededError("Quota Gemini 3.8 devenu indisponible. Réessaie plus tard.")
+            self._check_available(lease.estimated_tokens)
             now = time.time()
             self._calls_today += 1
             self._minute.append(now)
-            self._minute_tokens.append((now, estimate))
+            self._minute_tokens.append((now, lease.estimated_tokens))
+            lease.attempts += 1
             self._save()
-        return estimate
+
+    def finish(self, lease: QuotaLease, actual_tokens: int = 0) -> None:
+        if lease.released:
+            return
+        actual = max(0, int(actual_tokens or 0))
+        with self._lock:
+            if lease.attempts:
+                # Seul le dernier appel a fourni une métrique réelle. Les
+                # tentatives 503 restent estimées de façon conservatrice.
+                delta = actual - lease.estimated_tokens
+                if delta > 0:
+                    self._minute_tokens.append((time.time(), delta))
+                self._tokens_today += actual
+            lease.released = True
+            self._save()
+        assert self._semaphore is not None
+        self._semaphore.release()
+
+    # Compatibilité API interne antérieure; les nouveaux appels utilisent
+    # reserve/mark_attempt/finish afin de distinguer réservation et envoi réel.
+    async def acquire(self, estimated_tokens: int = 0) -> int:
+        lease = await self.reserve(estimated_tokens)
+        self.mark_attempt(lease)
+        with self._lock:
+            self._legacy_leases.append(lease)
+        return lease.estimated_tokens
 
     def release(self, reserved_tokens: int = 0, actual_tokens: int | None = None) -> None:
-        reserved = max(0, int(reserved_tokens or 0))
-        actual = reserved if actual_tokens is None else max(0, int(actual_tokens or 0))
         with self._lock:
-            # La réservation compte déjà dans le TPM; n'ajouter que l'écart réel.
-            if actual > reserved:
-                self._minute_tokens.append((time.time(), actual - reserved))
-            self._tokens_today += actual
-            self._save()
-        self._semaphore.release()
+            if not self._legacy_leases:
+                return
+            lease = self._legacy_leases.popleft()
+        actual = reserved_tokens if actual_tokens is None else actual_tokens
+        self.finish(lease, actual)
 
     def snapshot(self) -> QuotaSnapshot:
         with self._lock:

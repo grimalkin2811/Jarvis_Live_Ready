@@ -284,7 +284,7 @@ def synthesize_all_local(prompts: list[str]) -> dict[str, bytes] | None:
     """Synthesize locally with a hard per-prompt timeout; never hang the harness."""
     import tempfile
     try:
-        import pyttsx3
+        import pyttsx3  # noqa: F401
     except ImportError:
         safe_print(
             "[entrée] pyttsx3 non installé — synthèse locale indisponible "
@@ -440,7 +440,6 @@ async def _synthesize_one_via_live(client, model: str, prompt: str) -> tuple[byt
     la sortie (``output_audio_transcription``) comparée au prompt demandé,
     avec un nouvel essai si elle ne correspond pas.
     """
-    import numpy as np
     from google.genai import types
 
     config = types.LiveConnectConfig(

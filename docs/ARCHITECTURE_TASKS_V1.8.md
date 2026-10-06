@@ -1,144 +1,105 @@
 # Jarvis v1.8 — tâches d’arrière-plan
 
-## Flux et séparation des responsabilités
+## Flux
 
 ```text
 Utilisateur
-  → Gemini 2.5 Flash Native Audio (conversation principale, inchangée)
-  → outil start_background_task (retour immédiat)
+  → Gemini 2.5 Flash Native Audio (conversation principale inchangée)
+  → start_background_task (retour immédiat)
   → Task Manager (thread + boucle asyncio dédiés)
-  → Router Gemini 3 Flash Preview (décision JSON validée)
-  → Gemini 3 Flash Preview [simple/medium]
-       ou Gemini 3.8 Flash [complex]
-  → état/résultat/fichier dans le Task Manager
-  → notification visuelle silencieuse
-  → dialogue ou consultation vocale
+  → découverte models.list + validation Live réelle
+  → Router Gemini 3 Live résolu (BidiGenerateContent)
+  → Gemini 3 Live résolu [simple/medium]
+       ou Gemini 3.8 Flash Generate Content [complex]
+  → résultat / document / notification / consultation
 ```
 
-`MAIN LOOP ≠ BACKGROUND TASK LOOP` est une contrainte structurelle :
-`TaskManager` crée le thread `jarvis-background-tasks` et sa propre boucle
-`asyncio`. `create_task()` persiste l’état `QUEUED`, soumet une coroutine avec
-`run_coroutine_threadsafe`, puis revient. Il n’attend ni le Router ni
-l’exécuteur. La réception Live, le micro, le TTS et les callbacks audio ne sont
-donc jamais exécutés dans cette boucle.
+Le nom du modèle Gemini 3 Live n’est pas codé en dur. `LiveModelResolver` liste
+les modèles visibles par la clé, conserve uniquement Gemini 3 avec l’action
+`bidiGenerateContent`, préfère une version stable et standard récente, puis
+ouvre réellement une connexion Live. Le résultat `(model, transport,
+validated)` est mémorisé en mémoire pour le processus. Un hint
+`JARVIS_TASK_LIVE_MODEL` peut changer l’ordre des candidats, jamais contourner
+la validation. Sans candidat utilisable, la tâche échoue explicitement.
+
+## Isolation asyncio
+
+`MAIN LOOP ≠ BACKGROUND TASK LOOP`. Le client GenAI background, le resolver,
+les sémaphores, le Router et l’Executor sont tous construits par une coroutine
+exécutée dans `jarvis-background-tasks`. Aucun client ou primitive asyncio de
+l’UI/harness n’est transféré au worker. Les entrées externes utilisent
+`run_coroutine_threadsafe`; les hooks UI utilisent les signaux Qt queued.
+
+Chaque opération modèle a un timeout et chaque tâche un timeout global. Une
+annulation ferme les context managers Live et libère les réservations. Une
+tâche bloquée/échouée passe à `FAILED` ou `CANCELLED` sans arrêter la boucle ni
+les autres tâches.
 
 ## Modules
 
-- `src/gemini_live.py` : cerveau conversationnel **Gemini 2.5 Flash Native
-  Audio**. Son architecture Live n’est pas remplacée. Six outils lui donnent
-  accès au gestionnaire central.
-- `src/background_tasks/config.py` : identifiants de modèles et limites.
-- `gateway.py` : unique transport background, exclusivement
-  `client.aio.models.generate_content` (API classique, aucun WebSocket Live).
-- `router.py` : appel Gemini 3 Flash Preview via ce transport classique,
-  schéma JSON strict et mapping centralisé de complexité.
-- `manager.py` : source de vérité, concurrence, persistance, hooks,
-  annulation/retry et API publique.
-- `executor.py` : exécution Gemini séparée, Google Search grounding lorsque le
-  Router demande des outils, timeout, document Markdown éventuel.
-- `quota.py` : protection Gemini 3.8 (RPM, RPD, TPM estimé, concurrence).
-- `models.py` : états et objets sérialisables.
-- `UI/background_tasks_dialog.py` : liste, compteurs, détail, lecture et
-  annulation. Les hooks backend passent par un `Signal` Qt en connexion queued.
-- `src/notifications.py` / `UI/notification_bridge.py` : fin de tâche visible
-  mais silencieuse, sans prise du micro ni interruption de la voix.
+- `config.py` : limites, modèle principal constant, modèle complexe et hint
+  Live facultatif.
+- `discovery.py` : liste, filtre de capacité Bidi, classement, connexion de
+  validation et cache par empreinte non réversible de clé.
+- `gateway.py` : cycle Live complet pour Router/simple/medium; Generate Content
+  pour le complexe; retry borné 429/503.
+- `router.py` : protocole JSON strict robuste aux fragments/fences, validation
+  des champs et du modèle.
+- `executor.py` : outils, progression, timeout, synthèse et document Markdown.
+- `manager.py` : source de vérité, thread/loop, concurrence, persistance,
+  annulation, lecture/non-lu et résultats.
+- `quota.py` : réservation loop-safe et compte des appels 3.8 effectivement
+  tentés.
 
-## Modèles
+## Modèles et transports
 
-| Rôle | Valeur par défaut | Variable |
+| Rôle | Modèle | Transport |
 |---|---|---|
-| Conversation | `gemini-2.5-flash-native-audio-preview-12-2025` | `GEMINI_MODEL` |
-| Router | `gemini-3-flash-preview` | `JARVIS_TASK_ROUTER_MODEL` |
-| Simple | `gemini-3-flash-preview` | `JARVIS_TASK_SIMPLE_MODEL` |
-| Medium | `gemini-3-flash-preview` | `JARVIS_TASK_MEDIUM_MODEL` |
-| Complex | `gemini-3.8-flash` | `JARVIS_TASK_COMPLEX_MODEL` |
+| Conversation | `gemini-2.5-flash-native-audio-preview-12-2025` | Live principal existant |
+| Router | Gemini 3 Live découvert et validé | Live/BidiGenerateContent |
+| Simple | même modèle résolu | Live/BidiGenerateContent |
+| Medium | même modèle résolu | Live/BidiGenerateContent |
+| Complex | `gemini-3.8-flash` | `aio.models.generate_content` |
 
-Tous les appels background, y compris Router, simple, medium, complexe et
-Google Search grounding, passent par l’API classique asynchrone
-`generate_content`. Seule la conversation principale utilise Gemini Live. Le
-mapping complexité → modèle est centralisé dans `BackgroundModelConfig` et la
-décision JSON incohérente d’un Router est refusée explicitement.
+Google Search des tâches Live est envoyé comme outil built-in dans la session
+Live. Pour un outil built-in sur le chemin classique complexe, l’AFC client est
+désactivé : l’exécution reste côté serveur et le warning AsyncModels est évité.
 
-## États
+## États et API
 
-`QUEUED → RUNNING → [WAITING_FOR_TOOL → RUNNING] → COMPLETED`
+`QUEUED → RUNNING → [WAITING_FOR_TOOL → RUNNING] → COMPLETED`, avec sorties
+`FAILED` et `CANCELLED`.
 
-Les sorties terminales alternatives sont `FAILED` et `CANCELLED`. Chaque tâche
-contient identifiant UUID, titre, demande, dates, priorité, complexité, modèle,
-progression, étape, résultat/résumé, fichiers, erreur, erreurs partielles,
-usage de tokens et drapeau `seen`. Une tâche chargée après un arrêt alors
-qu’elle était active devient `FAILED` avec une raison réessayable : aucun état
-fantôme `RUNNING` n’est présenté.
+API centrale : `create_task`, `get_task`, `list_tasks`, `list_active_tasks`,
+`list_unread_completed_tasks`, `cancel_task`, `retry_task`,
+`mark_task_as_seen`, `get_task_result`, `quota_status`, `live_model_status` et
+`resolve_live_model`.
 
-## Quotas Gemini 3.8
+## Retry et erreurs externes
 
-Valeurs par défaut : 5 appels/minute, 20 appels/jour, 250k tokens/minute et un
-appel complexe simultané. L’acquisition refuse explicitement un dépassement au
-lieu d’attendre silencieusement. Une tâche complexe effectue un seul appel 3.8
-contrôlé ; il n’existe aucune chaîne automatique d’appels rares. L’usage fourni
-par `usage_metadata.total_token_count` est compté. Une erreur de quota passe la
-tâche à `FAILED`; `retry_background_task` permet un nouvel essai explicite.
-Ces compteurs sont persistés dans `background_quota.json` (y compris la
-fenêtre glissante de la minute) et constituent une protection conservatrice,
-pas le compteur contractuel de Google.
+Les codes 429 et 503 sont réessayés avec backoff exponentiel borné. Après le
+nombre configuré de tentatives, une `BackgroundServiceError` conserve le code
+et signale l’indisponibilité externe; aucun retry infini. Les autres erreurs ne
+sont pas réessayées aveuglément. Le harness les distingue d’une erreur de code.
 
-## API interne
+## Quota 3.8
 
-```python
-manager.create_task(title, description, priority="normal")
-manager.get_task(task_id)
-manager.list_tasks(status=None)
-manager.list_active_tasks()
-manager.list_completed_tasks()
-manager.list_unread_completed_tasks()
-manager.cancel_task(task_id)
-manager.retry_task(task_id)
-manager.mark_task_as_seen(task_id)
-manager.get_task_result(task_id, mark_seen=True)
-manager.quota_status()
+Valeurs par défaut : 5 RPM, 20 RPD, 250k TPM, concurrence 1. `reserve()` prend
+la place concurrente sans compter d’appel. `mark_attempt()` est invoqué juste
+avant chaque appel SDK réel, y compris un retry 503 : chaque tentative envoyée
+est comptée. Une réservation annulée avant envoi ne consomme aucun appel.
+`finish()` libère exactement une fois et ajuste les tokens connus. Les compteurs
+et la fenêtre minute sont persistés dans `background_quota.json`.
+
+## Validation
+
+```powershell
+py -3 scripts\validate_v180_real.py --preflight
+py -3 scripts\validate_v180_real.py --api
 ```
 
-Les objets retournés sont des copies : seul le Manager modifie l’état. Les
-écritures JSON sont atomiques (`.tmp` puis remplacement). Les résultats de
-session survivent aussi au changement Blob/Desktop et, en pratique, au
-redémarrage.
-
-## Interface et commandes naturelles
-
-Le dialogue est accessible depuis l’icône de notification (« Tâches
-d’arrière-plan… ») et le menu radial Memory (« Background Tasks »). Il affiche
-actives, progression, étape, modèle, ancienneté, nouvelles tâches terminées,
-détail, résultat et fichiers. Ouvrir un résultat le marque vu.
-
-Les outils vocaux sont `start_background_task`, `list_background_tasks`,
-`get_background_task_result`, `cancel_background_task`,
-`retry_background_task`, `get_background_quota`. Gemini Live reçoit des
-consignes explicites pour confirmer immédiatement le lancement et ne jamais
-inventer un état.
-
-## Tests
-
-```bash
-python -m pytest -q tests/test_background_tasks.py
-python -m pytest -q
-python -m ruff check .
-python -m src.main --smoke-test
-```
-
-Le fichier dédié couvre création, transitions, routage simple/complexe,
-validation JSON, non-blocage, concurrence, lecture/non-lu, échec isolé,
-annulation, retry, quotas, notification/hook, résultat, fichier et persistance.
-La validation API réelle nécessite une clé autorisant les trois identifiants et
-la validation audio réelle nécessite micro/haut-parleur.
-
-## Limites connues
-
-- Le grounding exploite l’outil Google Search natif du modèle ; il ne fournit
-  pas un navigateur arbitraire ni des connecteurs privés.
-- Les compteurs sont locaux à cette installation et persistants ; ils ne voient
-  pas les appels réalisés avec la même clé depuis une autre application. Le
-  fournisseur reste l’autorité finale.
-- L’annulation est coopérative : le SDK peut finir une requête réseau déjà
-  envoyée, mais son résultat est ignoré et l’état reste annulé.
-- Les documents v1.8 sont Markdown. Les formats bureautiques pourront être
-  ajoutés comme exécuteurs sans changer le Manager.
+Le rapport affiche le modèle réellement résolu, le transport, la validation,
+les Router A/B/C, grounding, simple, complexe, concurrence, document, quota,
+Gemini principal pendant le background et récupération après erreur. Un 429 ou
+503 épuisé est `NON_TESTABLE / external service unavailable`, jamais un faux
+PASS. Voir `docs/VALIDATION_REELLE_V1.8.md`.

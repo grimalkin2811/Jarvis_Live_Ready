@@ -1,4 +1,4 @@
-"""Exécution isolée des tâches routées, sans dépendance à Gemini Live principal."""
+"""Exécution asynchrone et bornée des tâches routées."""
 from __future__ import annotations
 
 import asyncio
@@ -7,9 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .config import BackgroundModelConfig
+from .discovery import LiveModelResolver
 from .gateway import BackgroundModelGateway
 from .models import BackgroundTask, RoutingDecision, TaskComplexity
-from .quota import ComplexModelQuota
+from .quota import ComplexModelQuota, QuotaLease
 
 
 @dataclass
@@ -25,32 +26,43 @@ class TaskExecutionError(RuntimeError):
 
 
 class TaskExecutor:
-    def __init__(
-        self,
-        client,
-        config: BackgroundModelConfig,
-        quota: ComplexModelQuota,
-        output_dir: Path,
-        gateway=None,
-    ):
+    def __init__(self, client, config: BackgroundModelConfig, quota: ComplexModelQuota, output_dir: Path, resolver: LiveModelResolver, gateway=None):
         self.client, self.config, self.quota = client, config, quota
-        self.gateway = gateway or BackgroundModelGateway(client)
+        self.resolver = resolver
+        self.gateway = gateway or BackgroundModelGateway(
+            client,
+            retry_attempts=config.retry_attempts,
+            retry_base_delay=config.retry_base_delay,
+        )
         self.output_dir = Path(output_dir)
 
     async def execute(self, task: BackgroundTask, route: RoutingDecision, update) -> ExecutionResult:
-        expected_model = self.config.model_for_complexity(route.complexity)
+        if route.complexity is TaskComplexity.COMPLEX:
+            expected_model = self.config.complex_model
+        else:
+            try:
+                resolution = await asyncio.wait_for(
+                    self.resolver.resolve(), timeout=self.config.timeout_seconds
+                )
+            except asyncio.TimeoutError as exc:
+                raise TaskExecutionError("Timeout pendant la résolution du modèle Gemini 3 Live.") from exc
+            except Exception as exc:
+                raise TaskExecutionError(f"Modèle Gemini 3 Live indisponible: {exc}") from exc
+            expected_model = self.config.model_for_complexity(
+                route.complexity, live_model=resolution.model
+            )
         if route.model != expected_model:
             raise TaskExecutionError(
                 f"Modèle de tâche incohérent: {route.complexity.value} exige {expected_model}."
             )
+
         complex_call = route.complexity is TaskComplexity.COMPLEX
-        acquired = False
-        reservation = 0
+        lease: QuotaLease | None = None
         response = None
         try:
             if complex_call:
-                reservation = await self.quota.acquire(estimated_tokens=min(250_000, max(1, len(task.description) // 3)))
-                acquired = True
+                estimate = min(self.config.complex_tpm, max(1, len(task.description) // 3))
+                lease = await self.quota.reserve(estimate)
             update(20, "Préparation de l'analyse", 1, route.estimated_steps)
             tools = [{"google_search": {}}] if route.requires_tools else None
             if tools:
@@ -62,16 +74,23 @@ class TaskExecutor:
                 f"TITRE: {task.title}\nDEMANDE: {task.description}"
             )
             update(55, "Analyse et synthèse", max(2, route.estimated_steps - 1), route.estimated_steps)
-            operation = self.gateway.generate(
-                route.model,
-                prompt,
-                system_instruction=(
-                    "Tu es l'exécuteur interne d'une tâche Jarvis. "
-                    "Fournis uniquement le livrable demandé en français."
-                ),
-                tools=tools,
-                temperature=0.25,
-            )
+            if complex_call:
+                operation = self.gateway.generate_classic(
+                    route.model,
+                    prompt,
+                    system_instruction="Exécuteur interne d'une tâche complexe Jarvis. Fournis le livrable demandé en français.",
+                    tools=tools,
+                    temperature=0.25,
+                    before_attempt=lambda: self.quota.mark_attempt(lease),
+                )
+            else:
+                operation = self.gateway.generate_live(
+                    route.model,
+                    prompt,
+                    system_instruction="Exécuteur interne d'une tâche Jarvis. Fournis uniquement le livrable demandé en français.",
+                    tools=tools,
+                    temperature=0.25,
+                )
             response = await asyncio.wait_for(operation, timeout=self.config.timeout_seconds)
             text = response.text.strip()
             if not text:
@@ -83,12 +102,14 @@ class TaskExecutor:
                 update(85, "Génération du document", route.estimated_steps, route.estimated_steps)
                 self.output_dir.mkdir(parents=True, exist_ok=True)
                 slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", task.title).strip("-")[:48] or "resultat"
-                path = self.output_dir / f"{slug}-{task.id[:8]}.md"
+                path = (self.output_dir / f"{slug}-{task.id[:8]}.md").resolve()
                 path.write_text(f"# {task.title}\n\n{text}\n", encoding="utf-8")
                 files.append(str(path))
             return ExecutionResult(text=text, summary=summary, files=files, tokens=response.total_tokens)
         except asyncio.TimeoutError as exc:
-            raise TaskExecutionError(f"Délai d'exécution dépassé ({self.config.timeout_seconds:.0f} s). Réessaie plus tard.") from exc
+            raise TaskExecutionError(
+                f"Délai d'exécution dépassé ({self.config.timeout_seconds:.0f} s); la session a été annulée et fermée."
+            ) from exc
         finally:
-            if acquired:
-                self.quota.release(reservation, response.total_tokens if response is not None else 0)
+            if lease is not None:
+                self.quota.finish(lease, response.total_tokens if response is not None else 0)

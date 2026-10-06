@@ -27,11 +27,15 @@ def test_api_without_key_is_explicitly_non_testable(monkeypatch):
     report = validation.Report()
     asyncio.run(validation.run_api_validation(report))
     assert report.checks
-    architecture = [item for item in report.checks if item.category == "ARCHITECTURE"]
-    api = [item for item in report.checks if item.category == "API RÉELLE"]
-    assert architecture and architecture[0].status == "PASS"
-    assert api and all(item.status == "NON_TESTABLE" for item in api)
+    discovery = [item for item in report.checks if item.category == "DÉCOUVERTE LIVE"]
+    assert discovery and discovery[0].status == "NON_TESTABLE"
     assert not report.failed()
+
+
+def test_external_service_status_is_not_reported_as_code_failure():
+    assert validation.external_status("429 RESOURCE_EXHAUSTED") == "NON_TESTABLE"
+    assert validation.external_status("503 UNAVAILABLE high demand") == "NON_TESTABLE"
+    assert validation.external_status("JSON invalide") == "FAIL"
 
 
 def test_json_report_contains_no_secret(tmp_path):

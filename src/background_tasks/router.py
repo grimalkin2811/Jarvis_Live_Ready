@@ -1,9 +1,11 @@
-"""Router Gemini 3 Flash Preview via l'API classique Generate Content."""
+"""Router background sur le modèle Gemini 3 Live découvert et validé."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from .config import BackgroundModelConfig
+from .discovery import LiveModelResolver
 from .gateway import BackgroundModelGateway
 from .models import RoutingDecision, TaskComplexity, TaskPriority
 
@@ -12,74 +14,108 @@ class RoutingError(RuntimeError):
     pass
 
 
+def parse_json_object(text: str) -> dict:
+    """Extrait un objet JSON strict d'une réponse Live éventuellement streamée."""
+    raw = str(text or "").strip()
+    start = raw.find("{")
+    if start < 0:
+        raise RoutingError("Le Router Live n'a renvoyé aucun objet JSON.")
+    try:
+        value, _end = json.JSONDecoder().raw_decode(raw[start:])
+    except json.JSONDecodeError as exc:
+        raise RoutingError(f"JSON du Router Live invalide: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RoutingError("La décision du Router Live n'est pas un objet JSON.")
+    return value
+
+
 class TaskRouter:
-    def __init__(self, client, config: BackgroundModelConfig, gateway=None):
-        self.client, self.config = client, config
-        self.gateway = gateway or BackgroundModelGateway(client)
+    def __init__(self, client, config: BackgroundModelConfig, resolver: LiveModelResolver, gateway=None):
+        self.client, self.config, self.resolver = client, config, resolver
+        self.gateway = gateway or BackgroundModelGateway(
+            client,
+            retry_attempts=config.retry_attempts,
+            retry_base_delay=config.retry_base_delay,
+        )
 
     async def route(self, title: str, description: str, priority: TaskPriority) -> RoutingDecision:
-        allowed_models = sorted({
-            self.config.simple_model,
-            self.config.medium_model,
-            self.config.complex_model,
-        })
-        schema = {
-            "type": "object",
-            "properties": {
-                "complexity": {"type": "string", "enum": ["simple", "medium", "complex"]},
-                "task_type": {"type": "string"},
-                "reasoning": {"type": "string"},
-                "model": {"type": "string", "enum": allowed_models},
-                "requires_tools": {"type": "boolean"},
-                "estimated_steps": {"type": "integer", "minimum": 1, "maximum": 12},
-                "priority": {"type": "string", "enum": ["low", "normal", "high"]},
-            },
-            "required": [
-                "complexity", "task_type", "reasoning", "model",
-                "requires_tools", "estimated_steps", "priority",
-            ],
-        }
+        try:
+            resolution = await asyncio.wait_for(
+                self.resolver.resolve(), timeout=self.config.timeout_seconds
+            )
+        except asyncio.TimeoutError as exc:
+            raise RoutingError(
+                f"Découverte/validation du modèle Live interrompue après {self.config.timeout_seconds:.0f}s."
+            ) from exc
+        except Exception as exc:
+            raise RoutingError(f"Découverte/validation du modèle Live impossible: {exc}") from exc
         prompt = (
-            "Analyse uniquement le routage de cette tâche. "
-            "Utilise complex seulement pour une recherche/production réellement longue, "
-            "multi-sources ou multi-étapes; medium pour une comparaison ou analyse modérée; "
-            "simple pour une demande courte. Une météo actuelle nécessite Google Search.\n"
-            f"Mapping obligatoire: simple={self.config.simple_model}; "
-            f"medium={self.config.medium_model}; complex={self.config.complex_model}.\n"
+            "Analyse uniquement le routage de cette tâche. Réponds par UN objet JSON, sans markdown, avec exactement: "
+            '"complexity" (simple|medium|complex), "task_type" (texte court), "reasoning" (texte), '
+            f'"model" ("{resolution.model}" pour simple/medium, "{self.config.complex_model}" pour complex), '
+            '"requires_tools" (booléen), "estimated_steps" (entier 1..12), "priority" (low|normal|high). '
+            "Utilise complex seulement pour une recherche/production longue, multi-sources ou multi-étapes; "
+            "medium pour une comparaison ou analyse modérée; simple pour une demande courte. "
+            "Une météo actuelle nécessite un outil de recherche.\n"
             f"Titre: {title}\nPriorité demandée: {priority.value}\nDemande: {description}"
         )
         try:
-            response = await self.gateway.generate(
-                self.config.router_model,
-                prompt,
-                system_instruction=(
-                    "Tu es le routeur interne de Jarvis. Tu ne réponds jamais à l'utilisateur. "
-                    "Retourne exclusivement l'objet JSON conforme au schéma."
+            response = await asyncio.wait_for(
+                self.gateway.generate_live(
+                    resolution.model,
+                    prompt,
+                    system_instruction=(
+                        "Tu es le routeur interne de Jarvis. Tu ne réponds jamais à l'utilisateur. "
+                        "Émets uniquement la décision JSON demandée."
+                    ),
+                    temperature=0.1,
                 ),
-                temperature=0.1,
-                response_json_schema=schema,
+                timeout=self.config.timeout_seconds,
             )
-            text = response.text.strip()
-            if not text:
-                raise RoutingError("Le router Gemini a renvoyé une réponse vide.")
-            data = json.loads(text)
-            complexity = TaskComplexity(data["complexity"])
-            expected_model = self.config.model_for_complexity(complexity)
-            returned_model = str(data["model"])
+            data = parse_json_object(response.text)
+            required = {
+                "complexity", "task_type", "reasoning", "model",
+                "requires_tools", "estimated_steps", "priority",
+            }
+            missing = required - set(data)
+            extra = set(data) - required
+            if missing:
+                raise RoutingError(f"Décision Router incomplète: {sorted(missing)}")
+            if extra:
+                raise RoutingError(f"Décision Router avec champs inattendus: {sorted(extra)}")
+            for field in ("complexity", "task_type", "reasoning", "model", "priority"):
+                if not isinstance(data[field], str) or not data[field].strip():
+                    raise RoutingError(f"{field} doit être une chaîne non vide.")
+            complexity = TaskComplexity(data["complexity"].lower())
+            expected_model = self.config.model_for_complexity(
+                complexity, live_model=resolution.model
+            )
+            returned_model = str(data["model"]).removeprefix("models/")
             if returned_model != expected_model:
                 raise RoutingError(
-                    f"Plan de routage incohérent: {complexity.value} doit utiliser {expected_model}, pas {returned_model}."
+                    f"Plan incohérent: {complexity.value} exige {expected_model}, pas {returned_model}."
                 )
+            if isinstance(data["estimated_steps"], bool) or not isinstance(data["estimated_steps"], int):
+                raise RoutingError("estimated_steps doit être un entier.")
+            steps = data["estimated_steps"]
+            if not 1 <= steps <= 12:
+                raise RoutingError("estimated_steps doit être compris entre 1 et 12.")
+            if not isinstance(data["requires_tools"], bool):
+                raise RoutingError("requires_tools doit être un booléen.")
             return RoutingDecision(
                 complexity=complexity,
                 model=expected_model,
                 reason=str(data["reasoning"])[:1000],
-                requires_tools=bool(data["requires_tools"]),
-                estimated_steps=max(1, min(12, int(data["estimated_steps"]))),
-                priority=TaskPriority(data.get("priority", priority.value)),
+                requires_tools=data["requires_tools"],
+                estimated_steps=steps,
+                priority=TaskPriority(str(data["priority"]).lower()),
                 task_type=str(data["task_type"])[:100],
             )
+        except asyncio.TimeoutError as exc:
+            raise RoutingError(
+                f"Le cycle Live du Router n'a pas produit de turn_complete sous {self.config.timeout_seconds:.0f}s."
+            ) from exc
         except RoutingError:
             raise
         except Exception as exc:
-            raise RoutingError(f"Routage Gemini impossible: {exc}") from exc
+            raise RoutingError(f"Routage Gemini Live impossible: {exc}") from exc

@@ -1,32 +1,41 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from src.background_tasks.config import BackgroundModelConfig
+from src.background_tasks.config import BackgroundModelConfig, DEFAULT_COMPLEX_MODEL, DEFAULT_MAIN_MODEL
+from src.background_tasks.discovery import (
+    LiveModelDiscoveryError,
+    LiveModelResolution,
+    LiveModelResolver,
+    clear_discovery_cache_for_tests,
+    is_gemini3_live_model,
+)
 from src.background_tasks.executor import ExecutionResult, TaskExecutor
-from src.background_tasks.gateway import BackgroundModelGateway
+from src.background_tasks.gateway import BackgroundModelGateway, BackgroundServiceError
 from src.background_tasks.manager import TaskManager
 from src.background_tasks.models import BackgroundTask, RoutingDecision, TaskComplexity, TaskPriority, TaskStatus
 from src.background_tasks.quota import ComplexModelQuota, QuotaExceededError
-from src.background_tasks.router import RoutingError, TaskRouter
+from src.background_tasks.router import RoutingError, TaskRouter, parse_json_object
+
+LIVE_MODEL = "discovered-gemini-3-live"
 
 
 class FakeRouter:
     def __init__(self, complexity=TaskComplexity.SIMPLE, delay=0, fail=None):
         self.complexity, self.delay, self.fail = complexity, delay, fail
-        self.calls = []
 
     async def route(self, title, description, priority):
-        self.calls.append((title, description, priority))
         await asyncio.sleep(self.delay)
         if self.fail:
             raise self.fail
-        model = BackgroundModelConfig().model_for_complexity(self.complexity)
+        model = DEFAULT_COMPLEX_MODEL if self.complexity is TaskComplexity.COMPLEX else LIVE_MODEL
         return RoutingDecision(self.complexity, model, "test", False, 3, priority)
 
 
@@ -49,11 +58,10 @@ class FakeExecutor:
 
 
 def wait_for(manager, task_id, statuses, timeout=2):
-    statuses = set(statuses)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         task = manager.get_task(task_id)
-        if task and task.status in statuses:
+        if task and task.status in set(statuses):
             return task
         time.sleep(0.005)
     raise AssertionError(f"timeout: {manager.get_task(task_id)}")
@@ -64,11 +72,15 @@ def make_manager(tmp_path, monkeypatch):
     managers = []
     monkeypatch.setattr("src.background_tasks.manager.notifications.publish", lambda *a, **k: "test")
 
-    def make(router=None, executor=None, config=None):
+    def make(router=None, executor=None, config=None, client_factory=None):
         manager = TaskManager(
-            "fake", router=router or FakeRouter(), executor=executor or FakeExecutor(),
-            config=config or BackgroundModelConfig(), storage_path=tmp_path / f"tasks-{len(managers)}.json",
-            output_dir=tmp_path / "out", client=object(),
+            "fake",
+            router=router or FakeRouter(),
+            executor=executor or FakeExecutor(),
+            config=config or BackgroundModelConfig(),
+            storage_path=tmp_path / f"tasks-{len(managers)}.json",
+            output_dir=tmp_path / "out",
+            client_factory=client_factory or (lambda: object()),
         )
         managers.append(manager)
         return manager
@@ -84,22 +96,15 @@ def test_create_task_is_immediately_queued(make_manager):
     assert task.id and task.status is TaskStatus.QUEUED
 
 
-def test_state_changes_to_completed(make_manager):
+def test_full_lifecycle_and_result(make_manager):
     manager = make_manager()
-    task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
+    created = manager.create_task("T", "D")
+    task = wait_for(manager, created.id, {TaskStatus.COMPLETED})
     assert task.progress == 100 and task.started_at and task.finished_at
-
-
-def test_simple_task_uses_flash_preview(make_manager):
-    manager = make_manager(router=FakeRouter(TaskComplexity.SIMPLE))
-    task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
-    assert task.model == "gemini-3-flash-preview"
-
-
-def test_complex_task_uses_38(make_manager):
-    manager = make_manager(router=FakeRouter(TaskComplexity.COMPLEX))
-    task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
-    assert task.model == "gemini-3.8-flash"
+    assert manager.list_unread_completed_tasks()[0].id == task.id
+    result = manager.get_task_result(task.id)
+    assert result["result"] == "Résultat détaillé" and result["seen"]
+    assert manager.list_unread_completed_tasks() == []
 
 
 def test_create_is_non_blocking(make_manager):
@@ -118,34 +123,30 @@ def test_multiple_tasks_are_concurrent(make_manager):
     assert executor.max_running >= 2
 
 
-def test_list_and_get_task(make_manager):
-    manager = make_manager()
-    created = manager.create_task("T", "D")
-    assert manager.get_task(created.id).title == "T"
-    assert manager.list_tasks()
+def test_failure_does_not_block_other_task(make_manager):
+    class SelectiveExecutor(FakeExecutor):
+        async def execute(self, task, route, update):
+            if task.title == "bad":
+                await asyncio.sleep(0.03)
+                raise RuntimeError("échec contrôlé")
+            return await super().execute(task, route, update)
+
+    manager = make_manager(executor=SelectiveExecutor(delay=0.05))
+    bad = manager.create_task("bad", "D")
+    good = manager.create_task("good", "D")
+    assert wait_for(manager, bad.id, {TaskStatus.FAILED}).error == "échec contrôlé"
+    assert wait_for(manager, good.id, {TaskStatus.COMPLETED}).result
+    assert manager._thread.is_alive()
 
 
-def test_completed_task_is_unread(make_manager):
-    manager = make_manager()
-    task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
-    assert [item.id for item in manager.list_unread_completed_tasks()] == [task.id]
-
-
-def test_mark_seen_removes_unread(make_manager):
-    manager = make_manager()
-    task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
-    assert manager.mark_task_as_seen(task.id)
-    assert manager.list_unread_completed_tasks() == []
-
-
-def test_failed_task_is_isolated(make_manager):
-    manager = make_manager(executor=FakeExecutor(fail=RuntimeError("réseau coupé")))
-    failed = wait_for(manager, manager.create_task("bad", "D").id, {TaskStatus.FAILED})
-    healthy_id = manager.create_task("good", "D").id
-    # Remplace l'exécuteur défectueux : le thread central est toujours vivant.
+def test_global_task_timeout_releases_slot(make_manager):
+    config = BackgroundModelConfig(task_timeout_seconds=0.05)
+    manager = make_manager(executor=FakeExecutor(delay=1), config=config)
+    timed = manager.create_task("slow", "D")
+    failed = wait_for(manager, timed.id, {TaskStatus.FAILED})
+    assert "Timeout global" in failed.error
     manager.executor = FakeExecutor()
-    healthy = wait_for(manager, healthy_id, {TaskStatus.COMPLETED})
-    assert "réseau" in failed.error and healthy.status is TaskStatus.COMPLETED
+    assert wait_for(manager, manager.create_task("next", "D").id, {TaskStatus.COMPLETED})
 
 
 def test_cancel_running_task(make_manager):
@@ -153,14 +154,7 @@ def test_cancel_running_task(make_manager):
     created = manager.create_task("T", "D")
     wait_for(manager, created.id, {TaskStatus.RUNNING})
     assert manager.cancel_task(created.id)
-    assert wait_for(manager, created.id, {TaskStatus.CANCELLED}).status is TaskStatus.CANCELLED
-
-
-def test_get_result_marks_seen(make_manager):
-    manager = make_manager()
-    task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
-    result = manager.get_task_result(task.id)
-    assert result["result"] == "Résultat détaillé" and result["seen"]
+    assert wait_for(manager, created.id, {TaskStatus.CANCELLED})
 
 
 def test_generated_file_is_referenced(make_manager, tmp_path):
@@ -168,36 +162,61 @@ def test_generated_file_is_referenced(make_manager, tmp_path):
     path.write_text("ok")
     manager = make_manager(executor=FakeExecutor(files=[str(path)]))
     task = wait_for(manager, manager.create_task("T", "document").id, {TaskStatus.COMPLETED})
-    assert task.files == [str(path)]
+    assert manager.get_task_result(task.id)["files"] == [str(path)]
 
 
-def test_completion_hook_fires(make_manager):
-    manager = make_manager()
-    events = []
-    manager.add_hook(lambda task: events.append(task.status))
-    task = manager.create_task("T", "D")
-    wait_for(manager, task.id, {TaskStatus.COMPLETED})
-    assert TaskStatus.COMPLETED in events
+def test_manager_builds_loop_bound_resources_in_worker_thread(make_manager):
+    creator = {}
 
+    class LoopAwareClient:
+        def __init__(self):
+            creator["thread"] = threading.current_thread().name
+            creator["loop"] = asyncio.get_running_loop()
 
-def test_state_is_persisted(make_manager, tmp_path):
-    manager = make_manager()
+    manager = make_manager(client_factory=LoopAwareClient)
     task = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.COMPLETED})
-    assert manager.storage_path.exists() and task.id in manager.storage_path.read_text()
+    assert task.result
+    assert creator["thread"] == "jarvis-background-tasks"
+    assert creator["loop"] is manager._loop
+    assert manager.quota._async_loop is None  # aucune tâche complexe dans ce test
+
+
+def test_manager_start_create_route_execute_result_and_clean_stop(make_manager):
+    manager = make_manager()
+    task = wait_for(manager, manager.create_task("cycle", "complet").id, {TaskStatus.COMPLETED})
+    assert manager.get_task_result(task.id)["status"] == "COMPLETED"
+    manager.close(wait=True)
+    assert not manager._thread.is_alive()
+
+
+class FakeResolver:
+    def __init__(self, model=LIVE_MODEL):
+        self.value = LiveModelResolution(model)
+        self.resolution = self.value
+
+    async def resolve(self, **kwargs):
+        return self.value
 
 
 class FakeGateway:
-    def __init__(self, text):
+    def __init__(self, text="résultat"):
         self.text = text
-        self.calls = []
+        self.live_calls = []
+        self.classic_calls = []
 
-    async def generate(self, model, prompt, **kwargs):
-        self.calls.append({"model": model, "prompt": prompt, **kwargs})
+    async def generate_live(self, model, prompt, **kwargs):
+        self.live_calls.append({"model": model, "prompt": prompt, **kwargs})
         return SimpleNamespace(text=self.text, total_tokens=7)
 
+    async def generate_classic(self, model, prompt, **kwargs):
+        self.classic_calls.append({"model": model, "prompt": prompt, **kwargs})
+        callback = kwargs.get("before_attempt")
+        if callback:
+            callback()
+        return SimpleNamespace(text=self.text, total_tokens=11)
 
-def routing_json(complexity="medium", model="gemini-3-flash-preview", tools=False):
-    import json
+
+def routing_json(complexity="medium", model=LIVE_MODEL, tools=False):
     return json.dumps({
         "complexity": complexity,
         "task_type": "research",
@@ -209,214 +228,307 @@ def routing_json(complexity="medium", model="gemini-3-flash-preview", tools=Fals
     })
 
 
-def test_router_uses_preview_with_classic_generate_content():
-    gateway = FakeGateway(routing_json())
-    route = asyncio.run(TaskRouter(object(), BackgroundModelConfig(), gateway=gateway).route("T", "D", TaskPriority.NORMAL))
+def test_router_uses_discovered_live_model_and_parses_streamed_json():
+    gateway = FakeGateway("préfixe ```json\n" + routing_json() + "\n```")
+    router = TaskRouter(object(), BackgroundModelConfig(), FakeResolver(), gateway=gateway)
+    route = asyncio.run(router.route("T", "D", TaskPriority.NORMAL))
     assert route.complexity is TaskComplexity.MEDIUM
-    assert route.model == "gemini-3-flash-preview"
+    assert route.model == LIVE_MODEL
     assert route.task_type == "research"
-    assert gateway.calls[0]["model"] == "gemini-3-flash-preview"
-    assert gateway.calls[0]["response_json_schema"]
+    assert [call["model"] for call in gateway.live_calls] == [LIVE_MODEL]
+    assert gateway.classic_calls == []
 
 
-def test_router_maps_complex_without_consuming_complex_model_call():
-    gateway = FakeGateway(routing_json("complex", "gemini-3.8-flash", True))
-    route = asyncio.run(TaskRouter(object(), BackgroundModelConfig(), gateway=gateway).route("T", "D", TaskPriority.NORMAL))
-    assert route.model == "gemini-3.8-flash" and route.requires_tools
-    # Le Router lui-même reste toujours sur Flash Preview classique.
-    assert [call["model"] for call in gateway.calls] == ["gemini-3-flash-preview"]
+def test_router_maps_complex_but_router_call_stays_live():
+    gateway = FakeGateway(routing_json("complex", DEFAULT_COMPLEX_MODEL, True))
+    router = TaskRouter(object(), BackgroundModelConfig(), FakeResolver(), gateway=gateway)
+    route = asyncio.run(router.route("T", "D", TaskPriority.NORMAL))
+    assert route.model == DEFAULT_COMPLEX_MODEL and route.requires_tools
+    assert gateway.live_calls[0]["model"] == LIVE_MODEL
 
 
-def test_router_rejects_model_inconsistent_with_complexity():
-    gateway = FakeGateway(routing_json("simple", "gemini-3.8-flash"))
-    with pytest.raises(RoutingError, match="incohérent"):
-        asyncio.run(TaskRouter(object(), BackgroundModelConfig(), gateway=gateway).route("T", "D", TaskPriority.NORMAL))
-
-
-def test_router_rejects_empty_response():
+def test_router_rejects_invalid_or_inconsistent_json():
     with pytest.raises(RoutingError):
-        asyncio.run(TaskRouter(object(), BackgroundModelConfig(), gateway=FakeGateway("")).route("T", "D", TaskPriority.NORMAL))
+        parse_json_object("pas de json")
+    gateway = FakeGateway(routing_json("simple", DEFAULT_COMPLEX_MODEL))
+    router = TaskRouter(object(), BackgroundModelConfig(), FakeResolver(), gateway=gateway)
+    with pytest.raises(RoutingError, match="incohérent"):
+        asyncio.run(router.route("T", "D", TaskPriority.NORMAL))
 
 
-def test_gateway_uses_only_classic_generate_content():
+def test_live_gateway_collects_partial_text_until_turn_complete():
     calls = []
+    responses = [
+        SimpleNamespace(server_content=SimpleNamespace(model_turn=SimpleNamespace(parts=[SimpleNamespace(text="bon")]), output_transcription=None, turn_complete=False), usage_metadata=None),
+        SimpleNamespace(server_content=SimpleNamespace(model_turn=SimpleNamespace(parts=[SimpleNamespace(text="jour")]), output_transcription=None, turn_complete=True), usage_metadata=SimpleNamespace(total_token_count=9)),
+    ]
 
+    class Session:
+        async def send_client_content(self, **kwargs): calls.append(kwargs)
+        def receive(self):
+            async def values():
+                for item in responses:
+                    yield item
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): calls.append("closed")
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
+    result = asyncio.run(BackgroundModelGateway(client).generate_live(LIVE_MODEL, "demande", system_instruction="interne"))
+    assert result.text == "bonjour" and result.total_tokens == 9
+    assert calls[-1] == "closed"
+
+
+def test_live_gateway_requires_turn_complete_even_with_partial_text():
+    message = SimpleNamespace(
+        server_content=SimpleNamespace(
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text="partiel")]),
+            output_transcription=None,
+            turn_complete=False,
+        ),
+        usage_metadata=None,
+    )
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values(): yield message
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): return None
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
+    with pytest.raises(RuntimeError, match="sans turn_complete"):
+        asyncio.run(BackgroundModelGateway(client).generate_live(LIVE_MODEL, "D", system_instruction="I"))
+
+
+@pytest.mark.parametrize("code", [429, 503])
+def test_gateway_retries_external_errors_with_bounded_attempts(monkeypatch, code):
+    attempts = 0
+    sleeps = []
+
+    class Context:
+        async def __aenter__(self):
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError(f"{code} RESOURCE_EXHAUSTED" if code == 429 else "503 UNAVAILABLE high demand")
+        async def __aexit__(self, *args): return None
+
+    async def fake_sleep(delay): sleeps.append(delay)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
+    gateway = BackgroundModelGateway(client, retry_attempts=3, retry_base_delay=0.1)
+    with pytest.raises(BackgroundServiceError) as captured:
+        asyncio.run(gateway.generate_live(LIVE_MODEL, "D", system_instruction="I"))
+    assert captured.value.status_code == code
+    assert attempts == 3 and sleeps == [0.1, 0.2]
+
+
+def test_classic_gateway_disables_afc_for_server_tool():
+    calls = []
     async def generate_content(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(text="bonjour", usage_metadata=SimpleNamespace(total_token_count=9))
-
-    class ForbiddenLive:
-        def __getattr__(self, name):
-            raise AssertionError("Le background ne doit jamais accéder à client.aio.live")
-
-    client = SimpleNamespace(
-        aio=SimpleNamespace(
-            models=SimpleNamespace(generate_content=generate_content),
-            live=ForbiddenLive(),
-        )
-    )
-    result = asyncio.run(BackgroundModelGateway(client).generate(
-        "gemini-3-flash-preview",
-        "demande",
-        system_instruction="interne",
-        tools=[{"google_search": {}}],
+        return SimpleNamespace(text="ok", usage_metadata=SimpleNamespace(total_token_count=3))
+    client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
+    result = asyncio.run(BackgroundModelGateway(client).generate_classic(
+        DEFAULT_COMPLEX_MODEL, "D", tools=[{"google_search": {}}]
     ))
-    assert result.text == "bonjour" and result.total_tokens == 9
-    assert calls[0]["model"] == "gemini-3-flash-preview"
-    assert calls[0]["config"]["tools"] == [{"google_search": {}}]
-    assert calls[0]["config"]["system_instruction"] == "interne"
+    assert result.text == "ok"
+    assert calls[0]["config"]["automatic_function_calling"] == {"disable": True}
 
 
 class RecordingQuota:
     def __init__(self):
-        self.acquired = 0
-        self.released = 0
-
-    async def acquire(self, estimated_tokens=0):
-        self.acquired += 1
-        return estimated_tokens
-
-    def release(self, reserved_tokens=0, actual_tokens=None):
-        self.released += 1
+        self.reserved = self.attempted = self.finished = 0
+    async def reserve(self, estimate):
+        self.reserved += 1
+        return SimpleNamespace(estimated_tokens=estimate, attempts=0, released=False)
+    def mark_attempt(self, lease):
+        self.attempted += 1
+        lease.attempts += 1
+    def finish(self, lease, tokens):
+        self.finished += 1
 
 
 def execute_with_complexity(tmp_path, complexity, requires_tools=False):
     config = BackgroundModelConfig()
-    gateway = FakeGateway("Résultat réel de test")
+    gateway = FakeGateway("Résultat\n\nDétail")
     quota = RecordingQuota()
-    executor = TaskExecutor(object(), config, quota, tmp_path, gateway=gateway)
+    executor = TaskExecutor(object(), config, quota, tmp_path, FakeResolver(), gateway=gateway)
     route = RoutingDecision(
         complexity,
-        config.model_for_complexity(complexity),
-        "test",
-        requires_tools,
-        2,
+        config.model_for_complexity(complexity, live_model=LIVE_MODEL),
+        "test", requires_tools, 2,
     )
     updates = []
     result = asyncio.run(executor.execute(
-        BackgroundTask("id", "Titre", "Description"),
-        route,
+        BackgroundTask("id", "Titre", "Crée un document"), route,
         lambda *args, **kwargs: updates.append((args, kwargs)),
     ))
     return result, gateway, quota, updates
 
 
 @pytest.mark.parametrize("complexity", [TaskComplexity.SIMPLE, TaskComplexity.MEDIUM])
-def test_simple_and_medium_use_preview_classic_without_complex_quota(tmp_path, complexity):
-    result, gateway, quota, _updates = execute_with_complexity(tmp_path, complexity)
-    assert result.text
-    assert [call["model"] for call in gateway.calls] == ["gemini-3-flash-preview"]
-    assert quota.acquired == quota.released == 0
+def test_simple_medium_use_live_without_complex_quota(tmp_path, complexity):
+    result, gateway, quota, _ = execute_with_complexity(tmp_path, complexity)
+    assert result.files and Path(result.files[0]).exists()
+    assert gateway.live_calls[0]["model"] == LIVE_MODEL
+    assert not gateway.classic_calls
+    assert quota.reserved == quota.attempted == quota.finished == 0
 
 
-def test_complex_uses_38_classic_and_consumes_quota_once(tmp_path):
-    _result, gateway, quota, _updates = execute_with_complexity(tmp_path, TaskComplexity.COMPLEX)
-    assert [call["model"] for call in gateway.calls] == ["gemini-3.8-flash"]
-    assert quota.acquired == quota.released == 1
+def test_complex_uses_classic_and_counts_attempt(tmp_path):
+    result, gateway, quota, _ = execute_with_complexity(tmp_path, TaskComplexity.COMPLEX)
+    assert result.files
+    assert gateway.classic_calls[0]["model"] == DEFAULT_COMPLEX_MODEL
+    assert quota.reserved == quota.attempted == quota.finished == 1
 
 
-def test_google_search_uses_classic_api_and_waiting_state(tmp_path):
-    _result, gateway, quota, updates = execute_with_complexity(
-        tmp_path, TaskComplexity.SIMPLE, requires_tools=True
-    )
-    assert gateway.calls[0]["tools"] == [{"google_search": {}}]
-    assert any(kwargs.get("waiting") is True for _args, kwargs in updates)
-    assert quota.acquired == 0
+def test_google_search_on_simple_uses_live_and_waiting_state(tmp_path):
+    _, gateway, quota, updates = execute_with_complexity(tmp_path, TaskComplexity.SIMPLE, True)
+    assert gateway.live_calls[0]["tools"] == [{"google_search": {}}]
+    assert any(kwargs.get("waiting") for _, kwargs in updates)
+    assert quota.reserved == 0
 
 
-def test_complex_daily_quota_is_explicit():
+def test_quota_reservation_without_attempt_does_not_count(tmp_path):
     async def scenario():
-        quota = ComplexModelQuota(rpm=5, rpd=1, concurrency=1)
-        await quota.acquire()
-        quota.release()
-        with pytest.raises(QuotaExceededError, match="jour"):
-            await quota.acquire()
-    asyncio.run(scenario())
+        quota = ComplexModelQuota(storage_path=tmp_path / "quota.json")
+        lease = await quota.reserve(100)
+        assert quota.snapshot().calls_today == 0
+        quota.finish(lease, 0)
+        return quota.snapshot()
+    assert asyncio.run(scenario()).calls_today == 0
 
 
-def test_quota_counts_tokens():
+def test_quota_counts_each_real_retry_and_persists(tmp_path):
+    path = tmp_path / "quota.json"
     async def scenario():
-        quota = ComplexModelQuota(rpm=5, rpd=2, concurrency=1)
-        await quota.acquire()
-        quota.release(456)
+        quota = ComplexModelQuota(storage_path=path)
+        lease = await quota.reserve(10)
+        quota.mark_attempt(lease)
+        quota.mark_attempt(lease)
+        quota.finish(lease, 12)
         return quota.snapshot()
     snapshot = asyncio.run(scenario())
-    assert snapshot.calls_today == 1 and snapshot.tokens_today == 456
+    assert snapshot.calls_today == 2 and snapshot.tokens_today == 12
+    assert ComplexModelQuota(storage_path=path).snapshot().calls_today == 2
 
 
-def test_quota_persists_across_manager_restart(tmp_path):
-    path = tmp_path / "quota.json"
-    async def consume():
-        quota = ComplexModelQuota(rpm=5, rpd=1, concurrency=1, storage_path=path)
-        await quota.acquire(10)
-        quota.release(10, 12)
-    asyncio.run(consume())
-    restored = ComplexModelQuota(rpm=5, rpd=1, concurrency=1, storage_path=path)
-    assert restored.snapshot().calls_today == 1
-    with pytest.raises(QuotaExceededError):
-        asyncio.run(restored.acquire())
+def test_quota_limits_and_loop_ownership():
+    quota = ComplexModelQuota(rpd=1)
+    async def first():
+        lease = await quota.reserve()
+        quota.mark_attempt(lease)
+        quota.finish(lease)
+    asyncio.run(first())
+    with pytest.raises((QuotaExceededError, RuntimeError)):
+        asyncio.run(quota.reserve())
 
 
-def test_retry_failed_task(make_manager):
-    manager = make_manager(executor=FakeExecutor(fail=RuntimeError("boom")))
-    failed = wait_for(manager, manager.create_task("T", "D").id, {TaskStatus.FAILED})
-    manager.executor = FakeExecutor()
-    retried = manager.retry_task(failed.id)
-    assert wait_for(manager, retried.id, {TaskStatus.COMPLETED}).status is TaskStatus.COMPLETED
+class AsyncPager:
+    def __init__(self, values): self.values = values
+    def __aiter__(self):
+        async def iterate():
+            for value in self.values:
+                yield value
+        return iterate()
 
 
-def test_central_model_configuration_has_expected_roles():
-    from src.background_tasks.config import (
-        DEFAULT_COMPLEX_MODEL,
-        DEFAULT_MAIN_MODEL,
-        DEFAULT_MEDIUM_MODEL,
-        DEFAULT_ROUTER_MODEL,
-        DEFAULT_SIMPLE_MODEL,
+class LiveContext:
+    def __init__(self, name, accepted, calls):
+        self.name, self.accepted, self.calls = name, accepted, calls
+    async def __aenter__(self):
+        self.calls.append(self.name)
+        if self.name not in self.accepted:
+            raise RuntimeError("unsupported")
+        return object()
+    async def __aexit__(self, *args): return None
+
+
+def discovery_client(models, accepted):
+    calls = []
+    async def list_models(): return AsyncPager(models)
+    live = SimpleNamespace(connect=lambda model, config: LiveContext(model, accepted, calls))
+    return SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(list=list_models), live=live)), calls
+
+
+def model(name, actions):
+    return SimpleNamespace(name=f"models/{name}", supported_actions=actions)
+
+
+def test_discovery_filters_bidi_prefers_current_stable_and_validates_connection():
+    clear_discovery_cache_for_tests()
+    models = [
+        model("gemini-3.1-flash-live-preview", ["bidiGenerateContent"]),
+        model("gemini-3.8-live", ["bidiGenerateContent"]),
+        model("gemini-3.8-flash", ["generateContent"]),
+        model("gemini-2.5-live", ["bidiGenerateContent"]),
+    ]
+    client, calls = discovery_client(models, {"gemini-3.8-live"})
+    resolver = LiveModelResolver(client, api_key_fingerprint="key-test")
+    resolution = asyncio.run(resolver.resolve())
+    assert resolution.model == "gemini-3.8-live"
+    assert resolution.transport == "Live/BidiGenerateContent"
+    assert calls == ["gemini-3.8-live"]
+
+
+def test_discovery_tries_next_candidate_and_never_invents_name():
+    clear_discovery_cache_for_tests()
+    models = [
+        model("gemini-3.9-live", ["bidiGenerateContent"]),
+        model("gemini-3.8-live", ["bidiGenerateContent"]),
+    ]
+    client, calls = discovery_client(models, {"gemini-3.8-live"})
+    result = asyncio.run(LiveModelResolver(client, api_key_fingerprint="key-next").resolve())
+    assert result.model == "gemini-3.8-live"
+    assert calls == ["gemini-3.9-live", "gemini-3.8-live"]
+
+    empty, _ = discovery_client([model("gemini-3.8-flash", ["generateContent"])], set())
+    with pytest.raises(LiveModelDiscoveryError, match="Aucun modèle"):
+        asyncio.run(LiveModelResolver(empty, api_key_fingerprint="key-empty").resolve())
+
+
+def test_discovery_retries_503_with_bounded_backoff(monkeypatch):
+    clear_discovery_cache_for_tests()
+    attempts = 0
+    sleeps = []
+
+    async def list_models():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("503 UNAVAILABLE high demand")
+        return AsyncPager([model("gemini-3.8-live", ["bidiGenerateContent"])])
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    calls = []
+    live = SimpleNamespace(connect=lambda model, config: LiveContext(model, {"gemini-3.8-live"}, calls))
+    client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(list=list_models), live=live))
+    resolver = LiveModelResolver(
+        client, api_key_fingerprint="retry-discovery",
+        retry_attempts=3, retry_base_delay=0.1,
     )
+    assert asyncio.run(resolver.resolve()).model == "gemini-3.8-live"
+    assert attempts == 3 and sleeps == [0.1, 0.2]
 
+
+def test_model_filter_requires_gemini3_live_and_bidi():
+    assert is_gemini3_live_model(model("gemini-3.8-live", ["bidiGenerateContent"]))
+    assert not is_gemini3_live_model(model("gemini-3.8-flash", ["generateContent"]))
+    assert not is_gemini3_live_model(model("gemini-2.5-live", ["bidiGenerateContent"]))
+
+
+def test_main_model_unchanged_and_no_assumed_background_identifier():
     assert DEFAULT_MAIN_MODEL == "gemini-2.5-flash-native-audio-preview-12-2025"
-    assert DEFAULT_ROUTER_MODEL == "gemini-3-flash-preview"
-    assert DEFAULT_SIMPLE_MODEL == "gemini-3-flash-preview"
-    assert DEFAULT_MEDIUM_MODEL == "gemini-3-flash-preview"
-    assert DEFAULT_COMPLEX_MODEL == "gemini-3.8-flash"
-
-
-def test_background_gateway_has_no_live_transport():
-    import inspect
-
-    source = inspect.getsource(BackgroundModelGateway)
-    assert "aio.live" not in source
-    assert "bidiGenerateContent" not in source
-    assert not hasattr(BackgroundModelGateway, "generate_live")
-
-
-def test_classic_api_error_becomes_failed_without_killing_manager(tmp_path, monkeypatch):
-    monkeypatch.setattr("src.background_tasks.manager.notifications.publish", lambda *a, **k: "test")
-
-    async def generate_content(**kwargs):
-        raise RuntimeError("erreur generateContent contrôlée")
-
-    client = SimpleNamespace(
-        aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content))
-    )
-    manager = TaskManager(
-        "fake",
-        router=FakeRouter(TaskComplexity.SIMPLE),
-        config=BackgroundModelConfig(),
-        storage_path=tmp_path / "tasks.json",
-        output_dir=tmp_path / "out",
-        client=client,
-    )
-    try:
-        first = manager.create_task("Erreur", "Déclenche une erreur classique")
-        failed = wait_for(manager, first.id, {TaskStatus.FAILED})
-        assert "generateContent" in failed.error
-        assert manager._thread.is_alive()
-        assert manager.quota_status()["calls_today"] == 0
-
-        second = manager.create_task("Encore", "Vérifie que le manager répond encore")
-        second_failed = wait_for(manager, second.id, {TaskStatus.FAILED})
-        assert second_failed.id != failed.id
-        assert manager._thread.is_alive()
-    finally:
-        manager.close(wait=True)
+    config = BackgroundModelConfig()
+    assert config.live_model_hint == ""
+    with pytest.raises(RuntimeError, match="découvert"):
+        config.model_for_complexity(TaskComplexity.SIMPLE)

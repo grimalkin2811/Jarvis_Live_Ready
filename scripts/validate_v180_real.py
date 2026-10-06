@@ -37,9 +37,10 @@ sys.path.insert(0, str(ROOT))
 
 from src import paths, settings, wakeword  # noqa: E402
 from src.background_tasks.config import BackgroundModelConfig  # noqa: E402
-from src.background_tasks.gateway import BackgroundModelGateway  # noqa: E402
+from src.background_tasks.discovery import LiveModelResolver  # noqa: E402
+from src.background_tasks.gateway import BackgroundModelGateway, api_status_code  # noqa: E402
 from src.background_tasks.manager import TaskManager  # noqa: E402
-from src.background_tasks.models import TaskPriority, TaskStatus  # noqa: E402
+from src.background_tasks.models import RoutingDecision, TaskComplexity, TaskPriority, TaskStatus  # noqa: E402
 from src.background_tasks.quota import ComplexModelQuota, QuotaExceededError  # noqa: E402
 from src.background_tasks.router import TaskRouter  # noqa: E402
 
@@ -189,21 +190,16 @@ async def check_live_model(client, model: str) -> None:
         return
 
 
-async def run_api_validation(report: Report) -> None:
-    models = BackgroundModelConfig.from_env()
-    active_models = (models.router_model, models.simple_model, models.medium_model)
-    architecture_ok = all(model == "gemini-3-flash-preview" for model in active_models)
-    report.add(
-        "ARCHITECTURE",
-        "background Flash Preview classique",
-        "PASS" if architecture_ok and not hasattr(BackgroundModelGateway, "generate_live") else "FAIL",
-        f"router={models.router_model}; simple={models.simple_model}; medium={models.medium_model}; endpoint=generateContent",
-    )
+def external_status(error: str) -> str:
+    text = str(error or "").lower()
+    return "NON_TESTABLE" if any(marker in text for marker in ("429", "503", "resource_exhausted", "unavailable", "high demand", "external service")) else "FAIL"
 
+
+async def run_api_validation(report: Report) -> None:
+    config = BackgroundModelConfig.from_env()
     key, source = load_api_key()
     if not key:
-        for name in ("Gemini 2.5 Native Audio", "Gemini 3 Flash Preview", "Gemini 3.8 Flash", "Google Search grounding"):
-            report.add("API RÉELLE", name, "NON_TESTABLE", "aucune clé/configuration Gemini")
+        report.add("DÉCOUVERTE LIVE", "modèle Gemini 3", "NON_TESTABLE", "aucune clé/configuration Gemini")
         return
 
     from google import genai
@@ -215,88 +211,124 @@ async def run_api_validation(report: Report) -> None:
         await asyncio.wait_for(check_live_model(client, main_model), timeout=30)
         report.add("API RÉELLE", "Gemini 2.5 Native Audio disponible", "PASS", main_model)
     except Exception as exc:
-        report.add("API RÉELLE", "Gemini 2.5 Native Audio disponible", "FAIL", f"{main_model}: {type(exc).__name__}: {exc}")
+        report.add(
+            "API RÉELLE", "Gemini 2.5 Native Audio disponible",
+            external_status(str(exc)),
+            f"{main_model}: {type(exc).__name__}: {exc}",
+        )
 
-    router = TaskRouter(client, models)
+    resolver = LiveModelResolver(
+        client,
+        api_key_fingerprint=LiveModelResolver.fingerprint(key),
+        hint=config.live_model_hint,
+        retry_attempts=config.retry_attempts,
+        retry_base_delay=config.retry_base_delay,
+    )
+    try:
+        resolution = await resolver.resolve(force=True)
+        report.add(
+            "DÉCOUVERTE LIVE", "modèle Gemini 3",
+            "PASS",
+            f"model={resolution.model}; transport={resolution.transport}; validated={resolution.validated}",
+        )
+    except Exception as exc:
+        report.add(
+            "DÉCOUVERTE LIVE", "modèle Gemini 3",
+            external_status(str(exc)),
+            f"{type(exc).__name__}: {exc}",
+        )
+        return
+
+    gateway = BackgroundModelGateway(
+        client,
+        retry_attempts=config.retry_attempts,
+        retry_base_delay=config.retry_base_delay,
+    )
+    router = TaskRouter(client, config, resolver, gateway=gateway)
     router_cases = [
-        ("A météo", "Donne-moi la météo de demain.", "simple", models.simple_model),
-        ("B processeurs", "Compare deux processeurs pour choisir lequel acheter.", "medium", models.medium_model),
-        ("C moteurs ioniques", "Fais une recherche poussée et une analyse détaillée sur les moteurs ioniques.", "complex", models.complex_model),
+        ("A météo", "Donne-moi la météo de demain.", "simple", resolution.model),
+        ("B processeurs", "Compare deux processeurs pour choisir lequel acheter.", "medium", resolution.model),
+        ("C moteurs ioniques", "Fais une recherche poussée et une analyse détaillée sur les moteurs ioniques.", "complex", config.complex_model),
     ]
     for title, prompt, expected_complexity, expected_model in router_cases:
         try:
-            decision = await asyncio.wait_for(router.route(title, prompt, TaskPriority.NORMAL), timeout=60)
+            decision = await router.route(title, prompt, TaskPriority.NORMAL)
             valid = decision.complexity.value == expected_complexity and decision.model == expected_model
             detail = (
-                f"complexity={decision.complexity.value}; model={decision.model}; priority={decision.priority.value}; "
-                f"steps={decision.estimated_steps}; tools={decision.requires_tools}; reason={decision.reason}"
+                f"complexity={decision.complexity.value}; model={decision.model}; transport=Live/BidiGenerateContent; "
+                f"priority={decision.priority.value}; steps={decision.estimated_steps}; tools={decision.requires_tools}"
             )
             report.add("ROUTER RÉEL", title, "PASS" if valid else "FAIL", detail)
         except Exception as exc:
-            report.add("ROUTER RÉEL", title, "FAIL", f"{type(exc).__name__}: {exc}")
+            report.add("ROUTER RÉEL", title, external_status(str(exc)), f"{type(exc).__name__}: {exc}")
 
-    # L'outil Search est testé via Generate Content sur Flash Preview afin de
-    # ne pas consommer un appel 3.8. Une réponse non vide valide l'outil serveur.
     try:
         grounded = await asyncio.wait_for(
-            BackgroundModelGateway(client).generate(
-                models.simple_model,
-                "Quelle est la date d'aujourd'hui à Paris ? Donne une source web vérifiable.",
+            gateway.generate_live(
+                resolution.model,
+                "Quelle est la météo prévue demain à Paris ? Donne une source web vérifiable.",
                 system_instruction="Utilise Google Search et réponds brièvement en français avec la source consultée.",
                 tools=[{"google_search": {}}],
             ),
-            timeout=90,
+            timeout=config.timeout_seconds,
         )
-        report.add("API RÉELLE", "Google Search grounding", "PASS" if grounded.text else "FAIL", f"réponse={grounded.text[:240]}; tokens={grounded.total_tokens}")
+        report.add("API RÉELLE", "Google Search grounding Live", "PASS" if grounded.text else "FAIL", f"réponse={grounded.text[:240]}; tokens={grounded.total_tokens}")
     except Exception as exc:
-        report.add("API RÉELLE", "Google Search grounding", "FAIL", f"{type(exc).__name__}: {exc}")
+        code = api_status_code(exc)
+        status = "NON_TESTABLE" if code in (429, 503) or external_status(str(exc)) == "NON_TESTABLE" else "FAIL"
+        report.add("API RÉELLE", "Google Search grounding Live", status, f"external service unavailable={status == 'NON_TESTABLE'}; {type(exc).__name__}: {exc}")
 
-    await run_background_scenarios(report, key, models, client, main_model)
+    await run_background_scenarios(report, key, config, client, main_model, resolution.model)
 
 
-async def run_background_scenarios(report: Report, key: str, models: BackgroundModelConfig, client, main_model: str) -> None:
+async def run_background_scenarios(report: Report, key: str, config: BackgroundModelConfig, main_client, main_model: str, live_model: str) -> None:
     with tempfile.TemporaryDirectory(prefix="jarvis-v180-real-") as folder:
         root = Path(folder)
-        manager = TaskManager(key, config=models, storage_path=root / "tasks.json", output_dir=root / "results", client=client)
+        # Important: le Manager crée son propre client dans SON thread. Ne
+        # jamais lui transmettre le client attaché à la boucle du harness.
+        manager = TaskManager(key, config=config, storage_path=root / "tasks.json", output_dir=root / "results")
         events: dict[str, list[str]] = {}
         manager.add_hook(lambda task: events.setdefault(task.id, []).append(task.status.value))
         try:
-            # Tâche simple réelle.
+            resolved = manager.resolve_live_model()
+            report.add("BACKGROUND", "modèle Live dans la boucle worker", "PASS" if resolved["model"] == live_model else "FAIL", repr(resolved))
+
             before = time.monotonic()
             simple = manager.create_task("Résumé validation", "Résume en cinq points les bénéfices d'une sauvegarde régulière.")
             submission = time.monotonic() - before
             report.add("BACKGROUND", "soumission non bloquante", "PASS" if submission < 0.25 else "FAIL", f"{submission:.3f}s; statut initial={simple.status.value}")
-            simple_done = await wait_terminal(manager, simple.id)
-            simple_ok = simple_done.status is TaskStatus.COMPLETED and simple_done.model == models.simple_model and bool(simple_done.result)
-            report.add("BACKGROUND", "tâche simple Gemini 3 Flash Preview classique", "PASS" if simple_ok else "FAIL", _task_detail(simple_done))
+            simple_done = await wait_terminal(manager, simple.id, timeout=config.task_timeout_seconds + 15)
+            simple_ok = simple_done.status is TaskStatus.COMPLETED and simple_done.model == live_model and bool(simple_done.result)
+            simple_status = "PASS" if simple_ok else external_status(simple_done.error)
+            report.add("BACKGROUND", "tâche simple Gemini 3 Live", simple_status, _task_detail(simple_done))
             unread = any(item.id == simple.id for item in manager.list_unread_completed_tasks())
             result = manager.get_task_result(simple.id, mark_seen=True)
             seen = manager.get_task(simple.id).seen
             state_path = events.get(simple.id, [])
             lifecycle = simple.status.value == "QUEUED" and "RUNNING" in state_path and "COMPLETED" in state_path
-            report.add("BACKGROUND", "cycle QUEUED/RUNNING/COMPLETED", "PASS" if lifecycle else "FAIL", " -> ".join(state_path))
-            report.add("BACKGROUND", "non vue puis vue", "PASS" if unread and seen and result and result.get("result") else "FAIL")
+            report.add("BACKGROUND", "cycle QUEUED/RUNNING/COMPLETED", "PASS" if lifecycle else simple_status, " -> ".join(state_path))
+            report.add("BACKGROUND", "non vue puis vue", "PASS" if unread and seen and result and result.get("result") else simple_status)
 
-            # Tâche complexe réelle + quota.
             quota_before = manager.quota_status()
             complex_task = manager.create_task(
                 "Analyse moteurs ioniques",
                 "Fais une recherche poussée, multi-sources et une analyse détaillée sur les moteurs ioniques. Prépare un document Markdown avec les sources.",
                 "high",
             )
-            complex_done = await wait_terminal(manager, complex_task.id)
+            complex_done = await wait_terminal(manager, complex_task.id, timeout=config.task_timeout_seconds + 15)
             quota_after = manager.quota_status()
             quota_delta = quota_after["calls_today"] - quota_before["calls_today"]
-            complex_ok = complex_done.status is TaskStatus.COMPLETED and complex_done.model == models.complex_model and bool(complex_done.result)
-            report.add("BACKGROUND", "tâche complexe Gemini 3.8 Flash", "PASS" if complex_ok else "FAIL", _task_detail(complex_done))
-            report.add("QUOTA", "appel 3.8 comptabilisé", "PASS" if quota_delta == 1 else "FAIL", f"avant={quota_before}; après={quota_after}")
-            report.add("BACKGROUND", "document référencé", "PASS" if complex_done.files and all(Path(item).exists() for item in complex_done.files) else "FAIL", repr(complex_done.files))
+            complex_ok = complex_done.status is TaskStatus.COMPLETED and complex_done.model == config.complex_model and bool(complex_done.result)
+            complex_status = "PASS" if complex_ok else external_status(complex_done.error)
+            report.add("BACKGROUND", "tâche complexe Gemini 3.8 Flash", complex_status, _task_detail(complex_done))
+            # Un 503 après envoi est un appel réel et doit être compté.
+            quota_ok = quota_delta >= 1 if complex_done.model == config.complex_model else quota_delta == 0
+            report.add("QUOTA", "tentative(s) 3.8 comptabilisée(s)", "PASS" if quota_ok else "FAIL", f"delta={quota_delta}; avant={quota_before}; après={quota_after}")
+            document_ok = bool(complex_done.files) and all(Path(item).exists() for item in complex_done.files)
+            report.add("BACKGROUND", "document référencé", "PASS" if document_ok else complex_status, repr(complex_done.files))
 
-            # Deux tâches simultanées, dont une deuxième 3.8. On ne cherche pas
-            # à atteindre les limites RPM/RPD.
             first = manager.create_task("Conseils courts", "Donne cinq conseils simples pour organiser un bureau.")
             second = manager.create_task("Comparatif stockage", "Fais une recherche poussée multi-sources comparant SSD NVMe et stockage cloud pour une PME, avec analyse détaillée.")
-            different = first.id != second.id
             active_together = False
             deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
@@ -306,72 +338,68 @@ async def run_background_scenarios(report: Report, key: str, models: BackgroundM
                     break
                 await asyncio.sleep(0.05)
             try:
-                await asyncio.wait_for(check_live_model(client, main_model), timeout=30)
-                still_active = bool(manager.list_active_tasks())
-                report.add(
-                    "NON-BLOCAGE",
-                    "connexion Gemini 2.5 pendant deux tâches",
-                    "PASS" if still_active else "FAIL",
-                    "WebSocket principal ouvert pendant que le Task Manager restait actif; ce contrôle ne remplace pas le test audio manuel",
-                )
+                await asyncio.wait_for(check_live_model(main_client, main_model), timeout=30)
+                report.add("NON-BLOCAGE", "Gemini 2.5 pendant deux tâches", "PASS" if manager.list_active_tasks() else "FAIL")
             except Exception as exc:
-                report.add("NON-BLOCAGE", "connexion Gemini 2.5 pendant deux tâches", "FAIL", f"{type(exc).__name__}: {exc}")
-            first_done, second_done = await asyncio.gather(wait_terminal(manager, first.id), wait_terminal(manager, second.id))
-            concurrent_ok = different and active_together and first_done.status is TaskStatus.COMPLETED and second_done.status is TaskStatus.COMPLETED
-            model_pair = {first_done.model, second_done.model} == {models.simple_model, models.complex_model}
-            report.add("BACKGROUND", "deux tâches simultanées", "PASS" if concurrent_ok and model_pair else "FAIL", f"{_task_detail(first_done)} | {_task_detail(second_done)}")
+                report.add("NON-BLOCAGE", "Gemini 2.5 pendant deux tâches", external_status(str(exc)), f"{type(exc).__name__}: {exc}")
+            first_done, second_done = await asyncio.gather(
+                wait_terminal(manager, first.id, timeout=config.task_timeout_seconds + 15),
+                wait_terminal(manager, second.id, timeout=config.task_timeout_seconds + 15),
+            )
+            statuses = [external_status(first_done.error), external_status(second_done.error)]
+            both_completed = first_done.status is TaskStatus.COMPLETED and second_done.status is TaskStatus.COMPLETED
+            concurrency_status = "PASS" if active_together and both_completed else ("NON_TESTABLE" if "NON_TESTABLE" in statuses else "FAIL")
+            report.add("BACKGROUND", "deux tâches simultanées indépendantes", concurrency_status, f"{_task_detail(first_done)} | {_task_detail(second_done)}")
 
-            # Persistance réelle du compteur (sans appel supplémentaire).
             restored = ComplexModelQuota(
-                rpm=models.complex_rpm, rpd=models.complex_rpd, tpm=models.complex_tpm,
-                concurrency=models.complex_concurrency, storage_path=root / "background_quota.json",
+                rpm=config.complex_rpm, rpd=config.complex_rpd, tpm=config.complex_tpm,
+                concurrency=config.complex_concurrency, storage_path=root / "background_quota.json",
             ).snapshot()
             report.add("QUOTA", "compteur persistant", "PASS" if restored.calls_today == manager.quota_status()["calls_today"] else "FAIL", repr(asdict(restored)))
 
-            # Vérifie le refus local sans effectuer ni gaspiller un appel API :
-            # même état persistant, limite de validation fixée au compteur actuel.
-            guard = ComplexModelQuota(
-                rpm=models.complex_rpm,
-                rpd=max(1, restored.calls_today),
-                tpm=models.complex_tpm,
-                concurrency=1,
-                storage_path=root / "background_quota.json",
-            )
+            # Limite locale déterministe, sans requête API ni faux compteur.
+            guard = ComplexModelQuota(rpd=0, storage_path=root / "guard-quota.json")
             try:
-                await guard.acquire()
-                guard.release()
-                report.add("QUOTA", "refus récupérable à la limite", "FAIL", "la garde locale a autorisé un appel au-delà de la limite de validation")
+                lease = await guard.reserve()
+                guard.finish(lease)
+                report.add("QUOTA", "refus récupérable à la limite", "FAIL", "la réservation a été autorisée")
             except Exception as exc:
                 report.add(
-                    "QUOTA",
-                    "refus récupérable à la limite",
+                    "QUOTA", "refus récupérable à la limite",
                     "PASS" if isinstance(exc, QuotaExceededError) else "FAIL",
                     f"{type(exc).__name__}: {exc}",
                 )
         finally:
             manager.close(wait=True)
 
-        # Erreur API contrôlée et isolée : vrai appel vers un identifiant
-        # volontairement inexistant, sans consommer Gemini 3.8.
-        invalid = BackgroundModelConfig(
-            router_model="jarvis-validation-model-intentionally-invalid",
-            simple_model=models.simple_model,
-            complex_model=models.complex_model,
+        class InvalidComplexRouter:
+            async def route(self, title, description, priority):
+                return RoutingDecision(TaskComplexity.COMPLEX, "jarvis-validation-model-intentionally-invalid", "erreur contrôlée", False, 1, priority)
+
+        invalid_config = BackgroundModelConfig(
+            complex_model="jarvis-validation-model-intentionally-invalid",
             timeout_seconds=30,
+            task_timeout_seconds=60,
+            retry_attempts=1,
         )
-        failing = TaskManager(key, config=invalid, storage_path=root / "failed.json", output_dir=root / "failed-results", client=client)
+        failing = TaskManager(
+            key,
+            config=invalid_config,
+            router=InvalidComplexRouter(),
+            storage_path=root / "failed.json",
+            output_dir=root / "failed-results",
+        )
         try:
             bad = failing.create_task("Erreur contrôlée", "Validation d'isolation d'une erreur API.")
-            failed = await wait_terminal(failing, bad.id, timeout=90)
+            failed = await wait_terminal(failing, bad.id, timeout=75)
             report.add("BACKGROUND", "erreur contrôlée vers FAILED", "PASS" if failed.status is TaskStatus.FAILED and bool(failed.error) else "FAIL", _task_detail(failed))
             try:
-                await asyncio.wait_for(check_live_model(client, main_model), timeout=30)
+                await asyncio.wait_for(check_live_model(main_client, main_model), timeout=30)
                 report.add("NON-BLOCAGE", "Gemini principal après erreur background", "PASS")
             except Exception as exc:
-                report.add("NON-BLOCAGE", "Gemini principal après erreur background", "FAIL", f"{type(exc).__name__}: {exc}")
+                report.add("NON-BLOCAGE", "Gemini principal après erreur background", external_status(str(exc)), f"{type(exc).__name__}: {exc}")
         finally:
             failing.close(wait=True)
-
 
 def run_s1_s6(report: Report) -> None:
     key, _source = load_api_key()

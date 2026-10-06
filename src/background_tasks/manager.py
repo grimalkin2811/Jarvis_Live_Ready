@@ -18,7 +18,9 @@ from google import genai
 
 from .. import notifications, paths
 from .config import BackgroundModelConfig
+from .discovery import LiveModelResolver
 from .executor import TaskExecutor
+from .gateway import BackgroundModelGateway
 from .models import BackgroundTask, TERMINAL_STATUSES, TaskPriority, TaskStatus, utc_now
 from .quota import ComplexModelQuota
 from .router import TaskRouter
@@ -37,6 +39,7 @@ class TaskManager:
         router=None,
         executor=None,
         client=None,
+        client_factory=None,
         auto_start: bool = True,
     ):
         self.config = config or BackgroundModelConfig.from_env()
@@ -51,15 +54,33 @@ class TaskManager:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._closing = False
-        self.client = client or genai.Client(api_key=api_key)
-        quota_path = self.storage_path.with_name("background_quota.json") if storage_path else paths.background_quota_file()
-        self.quota = ComplexModelQuota(
-            rpm=self.config.complex_rpm, rpd=self.config.complex_rpd,
-            tpm=self.config.complex_tpm, concurrency=self.config.complex_concurrency,
-            storage_path=quota_path,
+        self._init_error: BaseException | None = None
+        self._api_key = api_key
+        if (
+            client is not None
+            and client_factory is None
+            and client.__class__.__module__.startswith("google.genai")
+        ):
+            raise ValueError(
+                "Un client GenAI réel ne peut pas être transféré entre boucles; "
+                "laisse TaskManager le créer dans son worker."
+            )
+        # `client` reste injectable pour les doubles synchrones historiques.
+        # Un vrai client est toujours construit par la factory dans le worker.
+        self._client_factory = client_factory or (
+            (lambda: client) if client is not None else lambda: genai.Client(api_key=self._api_key)
         )
-        self.router = router or TaskRouter(self.client, self.config)
-        self.executor = executor or TaskExecutor(self.client, self.config, self.quota, self.output_dir)
+        self._provided_router = router
+        self._provided_executor = executor
+        self.client = None
+        self.quota = None
+        self.resolver = None
+        self.router = None
+        self.executor = None
+        self._quota_path = (
+            self.storage_path.with_name("background_quota.json")
+            if storage_path else paths.background_quota_file()
+        )
         self._load()
         if auto_start:
             self.start()
@@ -72,14 +93,54 @@ class TaskManager:
             self._ready.clear()
             self._thread = threading.Thread(target=self._run_loop, name="jarvis-background-tasks", daemon=True)
             self._thread.start()
-        if not self._ready.wait(3.0):
+        if not self._ready.wait(5.0):
             raise RuntimeError("La boucle des tâches d'arrière-plan n'a pas démarré.")
+        if self._init_error is not None:
+            raise RuntimeError(f"Initialisation du Task Manager impossible: {self._init_error}") from self._init_error
+
+    async def _initialize_loop_resources(self) -> None:
+        # Cette coroutine est exécutée par run_until_complete :
+        # get_running_loop() retourne donc bien la boucle propriétaire.
+        self.client = self._client_factory()
+        self.quota = ComplexModelQuota(
+            rpm=self.config.complex_rpm,
+            rpd=self.config.complex_rpd,
+            tpm=self.config.complex_tpm,
+            concurrency=self.config.complex_concurrency,
+            storage_path=self._quota_path,
+        )
+        self.resolver = LiveModelResolver(
+            self.client,
+            api_key_fingerprint=LiveModelResolver.fingerprint(self._api_key),
+            hint=self.config.live_model_hint,
+            retry_attempts=self.config.retry_attempts,
+            retry_base_delay=self.config.retry_base_delay,
+        )
+        gateway = BackgroundModelGateway(
+            self.client,
+            retry_attempts=self.config.retry_attempts,
+            retry_base_delay=self.config.retry_base_delay,
+        )
+        self.router = self._provided_router or TaskRouter(
+            self.client, self.config, self.resolver, gateway=gateway
+        )
+        self.executor = self._provided_executor or TaskExecutor(
+            self.client, self.config, self.quota, self.output_dir,
+            self.resolver, gateway=gateway,
+        )
+        self._task_slots = asyncio.Semaphore(self.config.max_concurrent_tasks)
 
     def _run_loop(self) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
-        self._task_slots = asyncio.Semaphore(self.config.max_concurrent_tasks)
+        try:
+            loop.run_until_complete(self._initialize_loop_resources())
+        except BaseException as exc:
+            self._init_error = exc
+            self._ready.set()
+            loop.close()
+            return
         self._ready.set()
         try:
             loop.run_forever()
@@ -89,6 +150,12 @@ class TaskManager:
                 item.cancel()
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            try:
+                close_client = getattr(getattr(self.client, "aio", None), "aclose", None)
+                if close_client is not None:
+                    loop.run_until_complete(close_client())
+            except Exception:
+                pass
             loop.close()
 
     def close(self, wait: bool = False) -> None:
@@ -181,40 +248,54 @@ class TaskManager:
             raise ValueError("Seule une tâche échouée ou annulée peut être relancée.")
         return self.create_task(f"{old.title} (nouvel essai)", old.description, old.priority)
 
-    async def _run_task(self, task_id: str) -> None:
+    async def _process_task(self, task_id: str) -> None:
         task = self._tasks[task_id]
+        assert self.router is not None and self.executor is not None
+        self._mutate(task_id, status=TaskStatus.RUNNING, started_at=utc_now(), progress=5, current_step="Routage de la tâche")
+        route = await self.router.route(task.title, task.description, task.priority)
+        self._mutate(
+            task_id, complexity=route.complexity, task_type=route.task_type,
+            model=route.model, priority=route.priority, routing_reason=route.reason,
+            total_steps=route.estimated_steps, progress=10, current_step="Plan validé",
+        )
+
+        def update(progress, step, number, total, waiting=False):
+            self._mutate(
+                task_id, status=TaskStatus.WAITING_FOR_TOOL if waiting else TaskStatus.RUNNING,
+                progress=max(0, min(99, int(progress))), current_step=str(step),
+                current_step_number=int(number), total_steps=int(total),
+            )
+
+        result = await self.executor.execute(self._tasks[task_id], route, update)
+        completed = self._mutate(
+            task_id, status=TaskStatus.COMPLETED, finished_at=utc_now(), progress=100,
+            current_step="Terminée", current_step_number=route.estimated_steps,
+            result=result.text, summary=result.summary, files=result.files,
+            token_usage=result.tokens, seen=False,
+        )
         try:
+            notifications.publish("Tâche terminée", f"J'ai terminé : {completed.title}", silent=True)
+        except Exception:
+            pass
+
+    async def _run_task(self, task_id: str) -> None:
+        async def bounded_lifecycle() -> None:
+            # Le timeout englobe aussi l'attente d'un slot, pas seulement les
+            # appels modèle, afin qu'aucune tâche ne reste QUEUED indéfiniment.
             async with self._task_slots:
-                self._mutate(task_id, status=TaskStatus.RUNNING, started_at=utc_now(), progress=5, current_step="Routage de la tâche")
-                route = await self.router.route(task.title, task.description, task.priority)
-                self._mutate(
-                    task_id, complexity=route.complexity, task_type=route.task_type,
-                    model=route.model, priority=route.priority, routing_reason=route.reason,
-                    total_steps=route.estimated_steps, progress=10, current_step="Plan validé",
-                )
+                await self._process_task(task_id)
 
-                def update(progress, step, number, total, waiting=False):
-                    self._mutate(
-                        task_id, status=TaskStatus.WAITING_FOR_TOOL if waiting else TaskStatus.RUNNING,
-                        progress=max(0, min(99, int(progress))), current_step=str(step),
-                        current_step_number=int(number), total_steps=int(total),
-                    )
-
-                result = await self.executor.execute(self._tasks[task_id], route, update)
-                completed = self._mutate(
-                    task_id, status=TaskStatus.COMPLETED, finished_at=utc_now(), progress=100,
-                    current_step="Terminée", current_step_number=route.estimated_steps,
-                    result=result.text, summary=result.summary, files=result.files,
-                    token_usage=result.tokens, seen=False,
-                )
-                try:
-                    notifications.publish("Tâche terminée", f"J'ai terminé : {completed.title}", silent=True)
-                except Exception:
-                    # Une notification est auxiliaire : son backend ne peut
-                    # jamais rétrograder une tâche déjà terminée en FAILED.
-                    pass
+        try:
+            await asyncio.wait_for(
+                bounded_lifecycle(), timeout=self.config.task_timeout_seconds
+            )
         except asyncio.CancelledError:
             self._mutate(task_id, status=TaskStatus.CANCELLED, finished_at=utc_now(), current_step="Annulée", error="Tâche annulée.")
+        except asyncio.TimeoutError:
+            self._mutate(
+                task_id, status=TaskStatus.FAILED, finished_at=utc_now(), current_step="Échec",
+                error=f"Timeout global de la tâche après {self.config.task_timeout_seconds:.0f}s; ressources annulées.",
+            )
         except Exception as exc:
             self._mutate(
                 task_id, status=TaskStatus.FAILED, finished_at=utc_now(), current_step="Échec",
@@ -290,7 +371,29 @@ class TaskManager:
         }
 
     def quota_status(self) -> dict:
+        if self.quota is None:
+            raise RuntimeError("Le quota background n'est pas initialisé.")
         return self.quota.snapshot().__dict__.copy()
+
+    def live_model_status(self) -> dict:
+        resolution = self.resolver.resolution if self.resolver is not None else None
+        return {
+            "model": resolution.model if resolution else None,
+            "transport": resolution.transport if resolution else "Live/BidiGenerateContent",
+            "validated": bool(resolution and resolution.validated),
+        }
+
+    def resolve_live_model(self, timeout: float = 60.0) -> dict:
+        """Déclenche la découverte sur la boucle propriétaire, thread-safe."""
+        self.start()
+        assert self._loop is not None and self.resolver is not None
+        future = asyncio.run_coroutine_threadsafe(self.resolver.resolve(), self._loop)
+        resolution = future.result(timeout=timeout)
+        return {
+            "model": resolution.model,
+            "transport": resolution.transport,
+            "validated": resolution.validated,
+        }
 
 
 _DEFAULT_LOCK = threading.RLock()

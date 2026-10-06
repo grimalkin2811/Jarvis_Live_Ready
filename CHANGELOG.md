@@ -3,9 +3,11 @@
 ## 1.8.0 — Tâches d’arrière-plan asynchrones
 
 - Task Manager central, thread et boucle asyncio indépendants de Gemini Live.
-- Router et tâches simple/medium via Gemini 3 Flash Preview sur Generate Content; tâches complexes Gemini 3.8.
-- États, progression, résultats, fichiers, non-lus, annulation, retry et persistance.
-- Protection du quota 3.8 (RPM/RPD/TPM/concurrence) et erreurs isolées.
+- Découverte dynamique d’un modèle Gemini 3 Live listé puis validé par connexion Bidi pour Router/simple/medium; tâches complexes Gemini 3.8.
+- Client GenAI et primitives asyncio background créés sur la boucle worker dédiée, sans transfert inter-boucles.
+- États, progression, résultats, chemins complets de fichiers, non-lus, annulation, timeouts et persistance.
+- Retry borné 429/503 et diagnostics d’indisponibilité externe conservés.
+- Protection du quota 3.8 (RPM/RPD/TPM/concurrence), comptée à chaque appel SDK réellement tenté.
 - Six outils conversationnels, dialogue Qt, compteur radial et notifications silencieuses.
 - Tests de routage, concurrence, non-blocage, quota, erreurs, fichiers et consultation.
 
