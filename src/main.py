@@ -211,6 +211,7 @@ async def run_headless():
     gemini = None
     audio = None
     scheduler = None
+    task_manager = None
 
     def mic(pcm):
         if gemini is not None and gemini.can_send():
@@ -255,6 +256,15 @@ async def run_headless():
             scheduler = start_default_scheduler()
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
+
+        # v1.8 : boucle dédiée, distincte de la boucle Gemini Live principale.
+        # Une panne de ce sous-système ne doit jamais empêcher la voix de démarrer.
+        try:
+            from .background_tasks import configure_default_task_manager
+
+            task_manager = configure_default_task_manager(config.api_key)
+        except Exception as exc:
+            print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
 
         audio = AudioIO(
             mic,
@@ -339,6 +349,11 @@ async def run_headless():
         if scheduler is not None:
             try:
                 scheduler.stop()
+            except Exception:
+                pass
+        if task_manager is not None:
+            try:
+                task_manager.close(wait=False)
             except Exception:
                 pass
         if audio is not None:

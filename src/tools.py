@@ -2261,6 +2261,101 @@ def create_text_file(text, filename="", request=""):
 
 
 # ===========================================================================
+# TÂCHES D'ARRIÈRE-PLAN (v1.8)
+# ===========================================================================
+
+def _task_manager():
+    from .background_tasks import get_default_task_manager
+    return get_default_task_manager()
+
+
+def _find_background_task(task_id="", query="", *, completed_only=False):
+    manager = _task_manager()
+    if str(task_id or "").strip():
+        return manager.get_task(str(task_id).strip())
+    candidates = manager.list_completed_tasks() if completed_only else manager.list_tasks()
+    needle = _normalize_name(query)
+    if needle:
+        candidates = [task for task in candidates if needle in _normalize_name(task.title + " " + task.description)]
+    return candidates[0] if candidates else None
+
+
+def start_background_task(description, title="", priority="normal"):
+    """Démarre réellement une tâche, puis rend la main sans attendre son résultat."""
+    try:
+        task = _task_manager().create_task(title, description, priority)
+        return _ok(
+            id=task.id, title=task.title, status=task.status.value,
+            message=f"D'accord, je lance « {task.title} » en arrière-plan.",
+        )
+    except Exception as exc:
+        return _err(f"Impossible de lancer la tâche : {exc}")
+
+
+def list_background_tasks(view="all"):
+    """Consulte la source de vérité du Task Manager."""
+    try:
+        manager = _task_manager()
+        normalized = _normalize_name(view)
+        if normalized in {"active", "actives", "en cours", "running"}:
+            tasks = manager.list_active_tasks()
+        elif normalized in {"unread", "non vues", "nouvelles", "new"}:
+            tasks = manager.list_unread_completed_tasks()
+        elif normalized in {"completed", "terminees", "terminées", "done"}:
+            tasks = manager.list_completed_tasks()
+        else:
+            tasks = manager.list_tasks()
+        values = [{
+            "id": task.id, "title": task.title, "status": task.status.value,
+            "progress": task.progress, "step": task.current_step, "model": task.model,
+            "seen": task.seen,
+        } for task in tasks]
+        return _ok(tasks=values, count=len(values), active=len(manager.list_active_tasks()), unread=len(manager.list_unread_completed_tasks()))
+    except Exception as exc:
+        return _err(exc)
+
+
+def get_background_task_result(task_id="", query=""):
+    try:
+        task = _find_background_task(task_id, query, completed_only=not bool(task_id))
+        if task is None:
+            return _err("Tâche introuvable.")
+        result = _task_manager().get_task_result(task.id, mark_seen=True)
+        return _ok(task=result)
+    except Exception as exc:
+        return _err(exc)
+
+
+def cancel_background_task(task_id="", query=""):
+    try:
+        task = _find_background_task(task_id, query)
+        if task is None:
+            return _err("Tâche active introuvable.")
+        if not _task_manager().cancel_task(task.id):
+            return _err("Cette tâche est déjà terminée et ne peut plus être annulée.")
+        return _ok(id=task.id, title=task.title, status="CANCELLED")
+    except Exception as exc:
+        return _err(exc)
+
+
+def retry_background_task(task_id="", query=""):
+    try:
+        task = _find_background_task(task_id, query)
+        if task is None:
+            return _err("Tâche introuvable.")
+        retried = _task_manager().retry_task(task.id)
+        return _ok(id=retried.id, title=retried.title, status=retried.status.value)
+    except Exception as exc:
+        return _err(exc)
+
+
+def get_background_quota():
+    try:
+        return _ok(**_task_manager().quota_status())
+    except Exception as exc:
+        return _err(exc)
+
+# ===========================================================================
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
@@ -2403,6 +2498,13 @@ _RAW_TOOL_FUNCTIONS = {
     "run_protocol": run_protocol,
     "list_protocols": list_protocols,
     "cancel_protocol": cancel_protocol,
+    # Tâches d'arrière-plan v1.8
+    "start_background_task": start_background_task,
+    "list_background_tasks": list_background_tasks,
+    "get_background_task_result": get_background_task_result,
+    "cancel_background_task": cancel_background_task,
+    "retry_background_task": retry_background_task,
+    "get_background_quota": get_background_quota,
     # Écriture
     "write_to_active_field": write_to_active_field,
     "create_text_file": create_text_file,
@@ -3095,6 +3197,26 @@ TOOL_DECLARATIONS = [
         },
         ["text"],
     ),
+    # --- Tâches d'arrière-plan v1.8 ----------------------------------------
+    _decl(
+        "start_background_task",
+        "Lance une recherche, analyse, synthèse ou production longue en arrière-plan et rend la main immédiatement. "
+        "À utiliser si l'utilisateur demande explicitement en arrière-plan/en profondeur, une recherche poussée, "
+        "une comparaison longue ou un document. Ne pas attendre le résultat.",
+        {"description": {**_STR, "description": "Demande complète de l'utilisateur."},
+         "title": {**_STR, "description": "Titre court et distinctif."},
+         "priority": {**_STR, "description": "low, normal ou high."}},
+        ["description"],
+    ),
+    _decl("list_background_tasks", "Liste les tâches du Task Manager (en cours, terminées, non vues ou toutes).",
+          {"view": {**_STR, "description": "all, active, completed ou unread."}}),
+    _decl("get_background_task_result", "Ouvre le résultat d'une tâche et la marque vue.",
+          {"task_id": _STR, "query": {**_STR, "description": "Mots du titre si l'identifiant n'est pas connu."}}),
+    _decl("cancel_background_task", "Annule une tâche d'arrière-plan encore active.",
+          {"task_id": _STR, "query": _STR}),
+    _decl("retry_background_task", "Relance une tâche échouée ou annulée, notamment après quota/réseau.",
+          {"task_id": _STR, "query": _STR}),
+    _decl("get_background_quota", "Donne l'utilisation locale du quota protégé Gemini 3.8 Flash."),
     _decl(
         "create_text_file",
         "Cree un fichier .txt dans le dossier user_content, sans ecraser un fichier existant. "

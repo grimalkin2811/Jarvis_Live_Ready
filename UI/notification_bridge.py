@@ -73,7 +73,10 @@ class NotificationBridge(QObject):
                     area.bottom() - self.popup.height() - 20,
                 )
             self.popup.show()
-            QApplication.beep()
+            # Une fin de tâche reste volontairement silencieuse : elle ne doit
+            # ni couvrir Gemini Native Audio ni prendre le contrôle du micro.
+            if title != "Tâche terminée":
+                QApplication.beep()
         # Sérialiser : deux routines à la même heure ne s'écrasent pas.
         self._timer.start(8500)
 

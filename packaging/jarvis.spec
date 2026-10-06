@@ -40,6 +40,9 @@ hiddenimports += [
 ]
 # Contexte conversationnel (v1.6.0) — importé paresseusement par tools.py
 hiddenimports += ["src.conversation"]
+# Tâches d’arrière-plan v1.8 — modules chargés depuis le thread vocal.
+hiddenimports += collect_submodules("src.background_tasks")
+hiddenimports += ["UI.background_tasks_dialog"]
 # Desktop Mode (v1.7.0) — UI/__init__ et UI/desktop/__init__ exposent leurs
 # symboles par PEP 562 : modulegraph ne peut pas les voir statiquement.
 hiddenimports += [

@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.0 — Tâches d’arrière-plan asynchrones
+
+- Task Manager central, thread et boucle asyncio indépendants de Gemini Live.
+- Router Gemini 3 Flash Live et exécution Flash Live / Gemini 3.8 selon complexité.
+- États, progression, résultats, fichiers, non-lus, annulation, retry et persistance.
+- Protection du quota 3.8 (RPM/RPD/TPM/concurrence) et erreurs isolées.
+- Six outils conversationnels, dialogue Qt, compteur radial et notifications silencieuses.
+- Tests de routage, concurrence, non-blocage, quota, erreurs, fichiers et consultation.
+
 Le projet suit le [versionnage sémantique](https://semver.org/lang/fr/) :
 `MAJOR.MINOR.PATCH`. Une **MINOR** ajoute des fonctionnalités compatibles avec
 l'existant (comme ici), une **PATCH** corrige un bug, une **MAJOR** casse la

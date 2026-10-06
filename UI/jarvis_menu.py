@@ -263,6 +263,7 @@ MENU_SPECS = [
             MenuItemSpec("Long-term Memory", "toggle"),
             MenuItemSpec("Memory Count", "status"),
             MenuItemSpec("Model State", "status"),
+            MenuItemSpec("Background Tasks", "buttonless"),
         ],
         reveal_scale=1.00,
         branch_bias=1.28,
@@ -1807,6 +1808,12 @@ class MorphingOrbWidget(QWidget):
                 manager = get_default_memory_manager()
                 return "On" if manager.enabled and manager.available else "Off"
             return self._cached_status("memory_state", _state)
+        if label == "Background Tasks":
+            def _tasks():
+                from src.background_tasks import get_default_task_manager
+                manager = get_default_task_manager()
+                return f"{len(manager.list_active_tasks())} / {len(manager.list_unread_completed_tasks())} new"
+            return self._cached_status("background_tasks", _tasks)
         return ""
 
     def _menu_value(self, spec: MenuSpec, item: MenuItemSpec) -> str:
@@ -2329,6 +2336,10 @@ class MorphingOrbWidget(QWidget):
                 self._flash(f"Réponses : {self.system_state.response_mode_label}")
             elif name == "System" and label == "Mode Apps":
                 self._open_mode_apps_dialog()
+            elif name == "Memory" and label == "Background Tasks":
+                from .background_tasks_dialog import show_background_tasks_dialog
+                self._close_radial_menu()
+                show_background_tasks_dialog(self)
             elif name == "System" and label == "Reset Settings":
                 self._reset_settings()
             elif name == "System" and label == "Quit":

@@ -167,6 +167,21 @@ def notes_file() -> Path:
     return data_dir() / "notes.json"
 
 
+def background_tasks_file() -> Path:
+    """Historique et état des tâches v1.8 (données utilisateur)."""
+    return data_dir() / "background_tasks.json"
+
+
+def background_quota_file() -> Path:
+    """Compteurs locaux persistants du quota Gemini 3.8."""
+    return data_dir() / "background_quota.json"
+
+
+def background_task_results_dir() -> Path:
+    """Documents produits par les tâches v1.8."""
+    return user_content_dir() / "tasks"
+
+
 def user_content_dir() -> Path:
     """Dossier des fichiers ``.txt`` générés par le système d'écriture.
 

@@ -385,6 +385,7 @@ def _run_voice_loop(
 
     gemini = None
     audio = None
+    task_manager = None
 
     def mic(pcm):
         if gemini is not None and gemini.can_send():
@@ -432,7 +433,7 @@ def _run_voice_loop(
         audio.clear_output()
 
     async def _main():
-        nonlocal gemini, audio
+        nonlocal gemini, audio, task_manager
         # Tant que le modèle wake word n'est pas chargé, l'UI affiche un état
         # « initialisation » : l'utilisateur sait qu'il ne doit pas parler
         # dans le vide.
@@ -458,6 +459,14 @@ def _run_voice_loop(
             start_default_scheduler()
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
+
+        # v1.8 : le Task Manager possède son propre thread et sa propre boucle.
+        try:
+            from .background_tasks import configure_default_task_manager
+
+            task_manager = configure_default_task_manager(config.api_key)
+        except Exception as exc:
+            print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
 
         audio = AudioIO(
             mic,
@@ -559,6 +568,11 @@ def _run_voice_loop(
             get_default_scheduler().stop()
         except Exception:
             pass
+        if task_manager is not None:
+            try:
+                task_manager.close(wait=False)
+            except Exception:
+                pass
         if audio is not None:
             audio.stop()
         loop.close()
@@ -698,6 +712,17 @@ def _build_tray_icon(
 
         routines_action = menu.addAction("Routines…")
         routines_action.triggered.connect(_show_routines_if_allowed)
+
+        def _show_background_tasks() -> None:
+            try:
+                from UI.background_tasks_dialog import show_background_tasks_dialog
+
+                show_background_tasks_dialog()
+            except Exception as exc:
+                print(f"[Tasks] Interface indisponible : {exc}")
+
+        tasks_action = menu.addAction("Tâches d'arrière-plan…")
+        tasks_action.triggered.connect(_show_background_tasks)
 
         def _show_desktop_appearance() -> None:
             """Éditeur d'apparence Desktop — accessible SANS menu radial.

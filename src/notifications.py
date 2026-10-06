@@ -90,8 +90,12 @@ def _windows_worker() -> None:
             _WINDOWS_QUEUE.task_done()
 
 
-def publish(title: str, message: str) -> str:
-    """Publie une notification ; renvoie le canal choisi, pas une preuve de lecture."""
+def publish(title: str, message: str, *, silent: bool = False) -> str:
+    """Publie une notification ; renvoie le canal choisi, pas une preuve de lecture.
+
+    ``silent`` est destiné aux tâches d'arrière-plan : le résultat reste dans
+    l'interface/console sans produire de bip susceptible de couper l'audio Live.
+    """
     global _WINDOWS_WORKER
     title = str(title or "Jarvis").strip()[:63]
     message = str(message).strip()
@@ -110,6 +114,8 @@ def publish(title: str, message: str) -> str:
     if delivered:
         return "interface"
 
+    if silent:
+        return "console"
     _beep()
     if os.name == "nt":
         with _LOCK:
