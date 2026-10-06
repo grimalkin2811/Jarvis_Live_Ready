@@ -1,14 +1,18 @@
-"""Test helpers shared by the unittest suite."""
+"""Test helpers shared by the unittest suite.
+
+IMPORTANT (régression corrigée) : ce module est le ``__init__.py`` du
+paquet ``tests``. Il s'exécute dès qu'ON IMPORTE QUOI QUE CE SOIT depuis
+``tests.*`` — y compris depuis un script de validation RÉELLE qui n'est pas
+lancé par pytest (ex. ``scripts/validate_reconnect_v174_real.py`` fait
+``from tests.real_gemini_harness import ...``). Les overrides
+d'environnement *réservés aux tests au faux serveur* ne doivent donc JAMAIS
+vivre ici : ils fuiteraient silencieusement dans les scripts de validation
+réelle. Ils vivent dans ``tests/conftest.py``, qui n'est chargé que par
+pytest (jamais par un `import` Python ordinaire du paquet ``tests``).
+"""
 
 import gc
-import os
 import tempfile
-
-# Les tests ne doivent JAMAIS télécharger de modèles depuis le réseau :
-# toute résolution/téléchargement via src.wakeword est désactivée par défaut
-# (les tests concernés forcent explicitement `download=True` avec des mocks).
-os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
-
 
 _original_cleanup = tempfile.TemporaryDirectory.cleanup
 

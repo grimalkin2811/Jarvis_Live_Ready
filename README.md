@@ -12,6 +12,24 @@ les **GitHub Releases**, **sans jamais toucher à vos données**.
 
 ---
 
+## 1.7.1 — Correctif contexte conversationnel
+
+* Le contexte **survit réellement** aux reconnexions : l'historique était
+  envoyé en `clientContent` jamais clôturé — invisible pour les tours audio
+  (limite des modèles audio 2.x). Il est désormais rejeu en un seul bloc
+  **committé** (`turn_complete=True`, dernier tour user).
+* Handle de reprise expiré (erreur 1007) : session neuve + rejeu, plus de
+  boucle de reconnexion infinie.
+* Compression de fenêtre glissante par défaut (sessions longues), `HistoryConfig`
+  pour les modèles 3.x, gestion de `GoAway`, changement de voix sans perte.
+* 33 tests sémantiques sur le chemin vocal avec assertions sur le câble
+  (dont le protocole exact re-sérialisé par le SDK).
+* Validation réelle : `scripts/validate_real_gemini.py` (harness Windows avec
+  vraie clé, modes tts/mic/text, `--selftest` intégré).
+* Rapport complet : [`docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md`](docs/RAPPORT_FINAL_CONTEXTE_v1.7.1.md)
+
+---
+
 ## 1.7.0 — Desktop Mode
 
 * Machine d'états visuelle explicite : écoute, réflexion, action, réponse,
@@ -211,10 +229,10 @@ GEMINI_MODEL=gemini-2.5-flash-native-audio-preview-12-2025
 JARVIS_MEMORY_ENABLED=1
 JARVIS_ROUTINES_ENABLED=1
 JARVIS_REMINDERS_ENABLED=1
-# Contexte conversationnel (v1.6.0) — valeurs par défaut
+# Contexte conversationnel (v1.7.1) — valeurs par défaut
 JARVIS_CONTEXT_ENABLED=1
-JARVIS_CONTEXT_MAX_TURNS=12
-JARVIS_CONTEXT_MAX_TOKENS=3000
+JARVIS_CONTEXT_MAX_TURNS=20
+JARVIS_CONTEXT_MAX_TOKENS=4096
 # Deezer (optionnel — playlists personnelles uniquement)
 #DEEZER_ACCESS_TOKEN=
 ```
@@ -448,6 +466,7 @@ Il se tait immédiatement et vous rend la parole.
 
 | Garde-fou | Détail |
 |---|---|
+| **Porte micro anti-écho** (1.7.2) | Tant que la voix de Jarvis sort des haut-parleurs (ou que sa traîne de 0,25 s n'est pas écoulée), le micro n'est **pas transmis** à Gemini : l'écho ne peut plus être pris pour une prise de parole — c'est la fin de la boucle « Je vous écoute » toutes les 2 secondes. |
 | **Plancher de bruit adaptatif** | Le niveau de l'écho des enceintes est appris en continu ; il faut le dépasser d'un bon facteur (2,6×) pour interrompre. Avec un casque, le seuil devient naturellement très bas. |
 | **Période de grâce** | Les 0,6 première seconde d'une réponse ne peuvent pas être coupées (le temps d'apprendre l'écho, et pour ne pas se couper sur la fin de votre propre phrase). |
 | **3 blocs consécutifs** | Un claquement de porte ou un clic de souris ne suffit pas : il faut ~240 ms de parole. |
@@ -504,9 +523,12 @@ seule l'extraction explicite existante (« souviens-toi que… ») écrit dans
   résumés, résultat abrégé (5 éléments et 420 caractères max) — jamais le
   payload JSON complet.
 - À chaque nouvelle session (démarrage, reconnexion, changement de voix), le
-  contexte local est **rejoué** dans la session neuve. Si le serveur reprend
-  lui-même la session (`session_resumption`), aucun rejeu n'est envoyé : pas de
-  doublon.
+  contexte local est **rejoué** dans la session neuve — en un seul
+  `clientContent` **clôturé** (`turn_complete=True`) terminé par un tour user :
+  l'historique devient committé et les tours audio suivants le rappellent
+  (v1.7.1 ; un `clientContent` en attente est invisible pour les modèles
+  audio 2.x). Si le serveur reprend lui-même la session
+  (`session_resumption`), aucun rejeu n'est envoyé : pas de doublon.
 - Un changement de mode (Blob ↔ Desktop, Focus, Jeu, Writing, Musique) **ne
   vide pas** le contexte. Un **redémarrage de Jarvis, si** (le contexte vit en
   mémoire vive, la mémoire persistante survit).
@@ -536,8 +558,8 @@ des **tours entiers**, du plus ancien au plus récent, sans jamais descendre
 sous le tour courant.
 
 ```env
-JARVIS_CONTEXT_MAX_TURNS=12     # tours conservés (défaut 12)
-JARVIS_CONTEXT_MAX_TOKENS=3000  # budget estimé (défaut 3000, ~4 car./token)
+JARVIS_CONTEXT_MAX_TURNS=20     # tours conservés (défaut 20, v1.7.1)
+JARVIS_CONTEXT_MAX_TOKENS=4096  # budget estimé (défaut 4096, ~4 car./token)
 JARVIS_CONTEXT_ENABLED=1        # 0 = comportement d'avant la 1.6.0
 ```
 

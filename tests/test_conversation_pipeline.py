@@ -135,9 +135,27 @@ class _FakeSession:
         self.audio_sent.append(audio)
 
     def receive(self):
+        """Fidélité au protocole réel (v1.7.4) : chaque appel à ``receive()``
+        consomme les messages restants (pas de rejeu) et se termine
+        naturellement à un ``turn_complete``/``interrupted`` — comme le SDK
+        réel (confirmé par Google, googleapis/python-genai#1224 : « the
+        receive() method throws you out of the loop if turn is complete »).
+        Depuis le correctif reconnexion-par-tour, ``GeminiLive`` rappelle
+        ``receive()`` sur la MÊME session pour le tour suivant : un ancien
+        générateur qui rejouait toute la liste à chaque appel bouclerait
+        indéfiniment.
+        """
+
         async def gen():
-            for message in self.messages:
+            while self.messages:
+                message = self.messages.pop(0)
                 yield message
+                server_content = getattr(message, "server_content", None)
+                if server_content is not None and (
+                    getattr(server_content, "turn_complete", False)
+                    or getattr(server_content, "interrupted", False)
+                ):
+                    return
 
         return gen()
 
@@ -247,9 +265,35 @@ class ConnectWiringTests(_PipelineCase):
         self._connect(self.make_gemini(), _FakeLive(_FakeCtx(session)))
         self.assertEqual(len(session.client_content), 1)
         replay = session.client_content[0]
-        self.assertFalse(replay["turn_complete"])
-        self.assertEqual([turn["role"] for turn in replay["turns"]], ["user", "model"])
+        # Protocole v1.7.1 : le rejeu est CLOTURÉ (turn_complete=True) — un
+        # clientContent laissé en attente n'est pas rappelé par le tour audio
+        # suivant sur les modèles audio 2.x (régression corrigée).
+        self.assertTrue(replay["turn_complete"])
+        # Le seed se termine par un tour USER (exigence des modèles 2.x) :
+        # l'historique se termine par une réponse assistant, un tour user vide
+        # est donc ajouté.
+        self.assertEqual(
+            [turn["role"] for turn in replay["turns"]], ["user", "model", "user"]
+        )
         self.assertIn("Italie", replay["turns"][0]["parts"][0]["text"])
+        self.assertIn("Rome", replay["turns"][1]["parts"][0]["text"])
+        self.assertEqual(replay["turns"][2]["parts"][0]["text"], " ")
+
+    def test_rejeu_conserve_un_historique_fini_par_l_utilisateur(self) -> None:
+        # Tour resté sans réponse (échec de session) : le seed se termine
+        # déjà par un tour user, aucun tour vide n'est ajouté.
+        self.context.add_user_message("Mon prénom est Simon.")
+        self.context.add_assistant_message("Enchanté.")
+        self.context.add_user_message("et ma couleur préférée ?")
+        self.context.fail_open_turn("coupure")
+        session = _FakeSession()
+        self._connect(self.make_gemini(), _FakeLive(_FakeCtx(session)))
+        replay = session.client_content[0]
+        self.assertTrue(replay["turn_complete"])
+        self.assertEqual(
+            [turn["role"] for turn in replay["turns"]], ["user", "model", "user"]
+        )
+        self.assertIn("couleur", replay["turns"][2]["parts"][0]["text"])
 
     def test_pas_de_rejeu_quand_le_serveur_reprend_la_session(self) -> None:
         self.context.add_user_message("Quelle est la capitale de l'Italie ?")

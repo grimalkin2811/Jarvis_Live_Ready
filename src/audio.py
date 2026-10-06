@@ -1,4 +1,5 @@
 import collections
+import os
 import queue
 import threading
 import time
@@ -29,6 +30,19 @@ class AudioIO:
     # Durée pendant laquelle Jarvis reste actif après
     # la fin d'une réponse Gemini
     FOLLOW_UP_SECONDS = 8.0
+
+    # v1.7.5 ter (bug A, validation réelle) : durée MAXIMALE pendant laquelle
+    # un tour « ouvert mais pas encore résolu » (``note_turn_open`` appelé,
+    # ``note_turn_resolved`` pas encore reçu) suspend le minuteur de
+    # conversation. Ce n'est volontairement PAS une attente indéfinie : si
+    # ``GeminiLive`` ne clôt jamais le tour (plantage, connexion perdue sans
+    # notification), ce filet de sécurité évite de rester éveillé pour
+    # toujours. Doit rester nettement en-dessous du ``TURN_TIMEOUT`` des
+    # harnais de validation réelle (60 s) tout en couvrant largement le pire
+    # cas des relances S6 (``EMPTY_GENERATION_RETRY``, qui ne déclenchent
+    # ``on_turn_resolved`` qu'une fois épuisées — plusieurs allers-retours
+    # réseau, mais jamais plus de quelques secondes chacun en pratique).
+    TURN_PENDING_MAX_GRACE_SECONDS = 45.0
 
     # Anti-double-détection
     WAKE_COOLDOWN_SECONDS = 1.0
@@ -67,6 +81,20 @@ class AudioIO:
     # Gemini au moment de l'interruption pour qu'il entende le mot complet
     # (« stop ») et pas seulement sa fin.
     BARGE_IN_PREBUFFER_BLOCKS = 8
+
+    # Taille de l'historique de traçage audio (instrumentation du timer de
+    # silence : chaque réarmement doit pouvoir être expliqué a posteriori).
+    TRACE_MAX_EVENTS = 512
+
+    # PORTE MICRO ANTI-ÉCHO (correctif de la boucle « Je vous écoute »).
+    # Après la vidange des haut-parleurs, le micro reste encore fermé pour
+    # Gemini pendant ce délai : réverbération de la pièce et latence du
+    # mixeur système continuent de renvoyer la voix de Jarvis un court
+    # instant après le dernier échantillon joué. Ce n'est PAS un délai
+    # arbitraire : c'est la traîne physique entre « plus rien en file » et
+    # « la pièce est silencieuse ». L'interruption (barge-in) ne la subit
+    # pas : la sortie est vidée, la porte s'ouvre immédiatement.
+    MIC_ECHO_GUARD_SECONDS = 0.25
 
     def __init__(self, on_input, presence_hook=None, voice_hook=None,
                  mic_enabled=None, wake_threshold=None,
@@ -107,6 +135,33 @@ class AudioIO:
         self._last_output_emit = 0.0
         self._last_voice_emit = 0.0
 
+        # =====================================================
+        # INSTRUMENTATION DU TIMER DE SILENCE (v1.7.2)
+        # -----------------------------------------------------
+        # La fenêtre de conversation (``follow_up_until``) n'est PAS un
+        # QTimer : c'est une échéance unique vérifiée par _check_timeout à
+        # chaque tour de _audio_worker. Chaque écriture passe par
+        # _arm_follow_up(), qui numérote le réarmement (epoch) et enregistre
+        # le contexte complet : raison, thread, état, énergie micro, audio
+        # de sortie encore en attente. Objectif : pouvoir répondre à
+        # « pourquoi les 8 secondes se réinitialisent-elles ? » par
+        # l'analyse des événements, pas par devinette.
+        # ``JARVIS_AUDIO_TRACE=1`` affiche chaque événement en console ; la
+        # collecte en mémoire (bornée) est toujours active pour les tests.
+        self._trace = collections.deque(maxlen=self.TRACE_MAX_EVENTS)
+        self._trace_lock = threading.Lock()
+        self._follow_up_epoch = 0
+        self._last_follow_up_arm = 0.0
+        # Porte micro anti-écho : dernier instant où de la voix de Jarvis
+        # était encore en file de sortie, et dernier état de la porte.
+        self._output_last_pending_ts = 0.0
+        self._mic_gate_state: bool | None = None
+        # Dernier bloc micro observé (RMS/peak int16) : contexte audio des
+        # événements déclenchés ailleurs que par un bloc micro.
+        self._last_mic_rms = 0.0
+        self._last_mic_peak = 0
+        self._last_mic_seen = 0.0
+
         self.running = False
         self.awake = False
 
@@ -138,6 +193,25 @@ class AudioIO:
         # Heure limite de la fenêtre de conversation
         self.follow_up_until = 0.0
         self.last_wake_time = 0.0
+
+        # =====================================================
+        # TOUR GEMINI EN ATTENTE (v1.7.5 ter — correctif bug A)
+        # -----------------------------------------------------
+        # ``note_turn_open``/``note_turn_resolved`` sont appelés par
+        # ``GeminiLive`` (callbacks ``on_turn_open``/``on_turn_resolved``,
+        # cf. src/gemini_live.py) pour signaler qu'un VRAI tour utilisateur
+        # est en train d'être généré, indépendamment du contenu déjà produit.
+        # Avant ce correctif, ``_check_timeout`` ne connaissait que
+        # ``_voice_audible()`` (parole déjà émise ou en file) : si Gemini
+        # mettait plusieurs secondes à produire le premier octet de sa
+        # réponse, la fenêtre de conversation pouvait expirer PENDANT la
+        # génération et endormir Jarvis juste avant que la réponse arrive —
+        # perdant alors silencieusement toute relance posée sans mot de
+        # réveil juste après (bug constaté en validation réelle, scénario
+        # « deux questions rapides »).
+        # =====================================================
+        self._turn_pending_since: float | None = None
+        self._turn_pending_lock = threading.Lock()
 
         # =====================================================
         # MICRO
@@ -257,6 +331,134 @@ class AudioIO:
             print('[Jarvis] Dites "Hey Jarvis".')
 
     # =========================================================
+    # TRAÇAGE (instrumentation v1.7.2)
+    # =========================================================
+
+    @staticmethod
+    def _trace_enabled() -> bool:
+        """Affichage console des événements audio (``JARVIS_AUDIO_TRACE``)."""
+        return os.getenv("JARVIS_AUDIO_TRACE", "").strip() not in ("", "0", "false", "non")
+
+    def _record_trace(self, kind: str, **fields) -> None:
+        """Enregistre un événement audio (borné, thread-safe).
+
+        Ne doit JAMAIS être appelé depuis le callback temps réel de la carte
+        son (``_in``/``_out``) : les valeurs micro y sont mémorisées sous
+        forme de simples flottants, l'événement est construit plus tard dans
+        le thread de traitement ou la boucle asyncio.
+        """
+        event = {
+            "ts": time.monotonic(),
+            "kind": kind,
+            "thread": threading.current_thread().name,
+            "awake": self.awake,
+            "speaking": self.speaking,
+            "mic_rms": round(self._last_mic_rms, 1),
+            "mic_peak": self._last_mic_peak,
+            "out_pending_s": round(self.output_pending_seconds(), 3),
+            **fields,
+        }
+        with self._trace_lock:
+            self._trace.append(event)
+        if self._trace_enabled():
+            details = " ".join(
+                f"{key}={value}" for key, value in event.items()
+                if key not in ("ts", "kind", "thread", "awake", "speaking")
+            )
+            print(
+                f"[AUDIO] {kind} id={event.get('id', '-')} {details} "
+                f"awake={int(event['awake'])} speaking={int(event['speaking'])} "
+                f"thread={event['thread']}",
+                flush=True,
+            )
+
+    def trace_events(self) -> list[dict]:
+        """Copie des événements audio collectés (tests et diagnostics)."""
+        with self._trace_lock:
+            return list(self._trace)
+
+    def _arm_follow_up(
+        self,
+        reason: str,
+        *,
+        src: str = "none",
+        vad: str | None = None,
+    ) -> None:
+        """Écriture UNIQUE de l'échéance de conversation.
+
+        Tout réarmement du « timer de 8 secondes » passe ici : réveil,
+        fin de tour Gemini (``extend_listening``), interruption
+        (``clear_output``) et renouvellement du mode écoute continue. Chaque
+        réarmement reçoit un identifiant (epoch) et est journalisé avec sa
+        raison — il n'existe donc pas de réarmement inexpliqué.
+        """
+        now = time.monotonic()
+        self._follow_up_epoch += 1
+        since_last = (
+            round(now - self._last_follow_up_arm, 3)
+            if self._last_follow_up_arm
+            else None
+        )
+        self._last_follow_up_arm = now
+        self.follow_up_until = now + self.FOLLOW_UP_SECONDS
+        self._record_trace(
+            "silence_timer RESET",
+            id=self._follow_up_epoch,
+            reason=reason,
+            src=src,
+            mic_age_s=round(now - self._last_mic_seen, 3) if self._last_mic_seen else None,
+            vad=vad,
+            since_last_reset_s=since_last,
+        )
+
+    def output_pending_bytes(self) -> int:
+        """Octets de voix de Jarvis pas encore sortis des haut-parleurs.
+
+        Somme de la file réseau (``q``) et du tampon déjà délivré à la carte
+        son (``buffer``) : c'est l'avance audio réelle, celle que l'utilisateur
+        entend encore. Primitives utilisées par le traçage et par la porte
+        micro anti-écho.
+        """
+        with self.lock:
+            queued = sum(len(chunk) for chunk in list(self.q.queue))
+            return queued + len(self.buffer)
+
+    def output_pending_seconds(self) -> float:
+        """Secondes de voix de Jarvis encore à jouer (haut-parleurs)."""
+        return self.output_pending_bytes() / float(
+            self.OUTPUT_RATE * self.CHANNELS * self.SAMPLE_WIDTH
+        )
+
+    def _mic_gate_open(self) -> bool:
+        """Le micro peut-il être transmis à Gemini sans risque d'écho ?
+
+        Non tant que de la voix de Jarvis reste à jouer (file + tampon) ou
+        que la traîne acoustique qui suit le dernier échantillon n'est pas
+        écoulée. La détection d'interruption locale (barge-in) n'est PAS
+        concernée : elle lit le micro brut et vide la sortie elle-même, ce
+        qui rouvre la porte immédiatement.
+        """
+        if self.output_pending_bytes() > 0:
+            # Mémorise le dernier instant où de la voix était encore à
+            # jouer : la garde acoustique court à partir de là.
+            self._output_last_pending_ts = time.monotonic()
+            return False
+        if self._output_last_pending_ts <= 0.0:
+            return True
+        return (
+            time.monotonic() - self._output_last_pending_ts
+        ) >= self.MIC_ECHO_GUARD_SECONDS
+
+    def _trace_mic_gate(self, open_now: bool) -> None:
+        """Journalise les transitions de la porte micro (état initial exclu)."""
+        if open_now == self._mic_gate_state:
+            return
+        self._mic_gate_state = open_now
+        self._record_trace(
+            "mic_gate", state=open_now, src="anti-écho"
+        )
+
+    # =========================================================
     # CALLBACK MICRO
     # =========================================================
 
@@ -274,14 +476,20 @@ class AudioIO:
 
         pcm = bytes(indata)
 
-        # Niveau d'entrée (RMS) pour l'énergie vocale de l'UI.
-        # Calcul léger, effectué à chaque bloc de 80 ms.
-        if self.voice_hook is not None and self._is_mic_enabled():
+        # Niveau d'entrée (RMS) pour l'énergie vocale de l'UI, et mémorisé
+        # pour l'instrumentation du timer de silence (contexte audio des
+        # réarmements). Calcul léger, effectué à chaque bloc de 80 ms.
+        if self._is_mic_enabled():
             try:
                 samples = np.frombuffer(indata, dtype=np.int16)
-                rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
-                level = min(1.0, rms / 3000.0)
-                self._emit_voice(level)
+                if samples.size:
+                    self._last_mic_rms = float(
+                        np.sqrt(np.mean(samples.astype(np.float64) ** 2))
+                    )
+                    self._last_mic_peak = int(np.max(np.abs(samples)))
+                    self._last_mic_seen = time.monotonic()
+                if self.voice_hook is not None:
+                    self._emit_voice(min(1.0, self._last_mic_rms / 3000.0))
             except Exception:
                 pass
 
@@ -318,12 +526,25 @@ class AudioIO:
         openWakeWord ne tourne PAS lorsque Jarvis est actif.
         """
 
+        was_output_pending = False
+
         while self.running:
 
             # IMPORTANT :
             # Vérification du timeout à CHAQUE tour,
             # même lorsque le micro produit des blocs silencieux.
             self._check_timeout()
+
+            # Détection de la vidange réelle de la sortie audio (les
+            # haut-parleurs se taisent) : transition > 0 octets -> 0 octet.
+            # Événement clé pour diagnostiquer l'écart entre la fin de tour
+            # SERVEUR (turn_complete) et la fin de voix EFFECTIVEMENT jouée.
+            output_pending = self.output_pending_bytes() > 0 or not self.q.empty()
+            if was_output_pending and not output_pending and self.audio_started:
+                # Observation seule : audio_started reste géré par _out
+                # (prébuffer) et clear_output (interruption).
+                self._record_trace("output_drained", src="haut-parleurs")
+            was_output_pending = output_pending
 
             try:
                 pcm = self.input_queue.get(timeout=0.1)
@@ -361,6 +582,20 @@ class AudioIO:
         else:
             self._remember_recent_block(pcm)
 
+        # PORTE ANTI-ÉCHO — correctif de la boucle « Je vous écoute » :
+        # tant que la voix de Jarvis sort des haut-parleurs (file de sortie
+        # non vide) ou que sa traîne acoustique n'est pas écoulée, le micro
+        # n'est PAS transmis à Gemini. Sans cette porte, la VAD du serveur
+        # entend l'écho de Jarvis, commit un tour « utilisateur » fantôme,
+        # le modèle répond, et chaque turn_complete ré-arme la fenêtre de
+        # 8 secondes : boucle stable d'environ 2 secondes sans parole
+        # humaine. La détection d'interruption ci-dessus reste active :
+        # l'utilisateur qui parle fort vide la sortie et rouvre la porte.
+        if not self._mic_gate_open():
+            self._trace_mic_gate(False)
+            return
+        self._trace_mic_gate(True)
+
         try:
             # Pendant une conversation, le wake word
             # n'est absolument pas analysé.
@@ -372,13 +607,21 @@ class AudioIO:
     def _handle_idle_block(self, pcm) -> None:
         """En veille : réveil automatique (écoute continue) ou wake word."""
         # Écoute continue activée depuis le menu : Jarvis se réveille
-        # tout seul et reste actif sans exiger « Hey Jarvis ».
+        # tout seul et reste actif sans exiger « Hey Jarvis ». Le
+        # réveil respecte le même anti-rebond que le wake word : sans
+        # lui, un Jarvis rendu endormi (perte de connexion, erreur) est
+        # réveilli à CHAQUE bloc de 80 ms — affichage et fenêtre de 8 s
+        # réarmés en rafale, sans aucune parole humaine.
         if self._listen_mode_active():
-            self._wake()
+            if (
+                time.monotonic() - self.last_wake_time
+                >= self.WAKE_COOLDOWN_SECONDS
+            ):
+                self._wake(reason="listen_mode", src="mic")
             return
 
         if self._detect_wake_word(pcm):
-            self._wake()
+            self._wake(reason="wake_word", src="mic")
 
     # =========================================================
     # DÉTECTION DU WAKE WORD
@@ -453,15 +696,69 @@ class AudioIO:
         alpha = 0.35 if rms > self._barge_floor else 0.05
         self._barge_floor += alpha * (rms - self._barge_floor)
 
+    def _voice_audible(self) -> bool:
+        """La voix de Jarvis est audible : génération en cours OU lecture
+        locale pas encore terminée (traîne de la file de sortie).
+
+        C'est l'état pertinent pour l'interruption vocale : l'utilisateur
+        veut couper une voix qu'il ENTEND. Avant v1.7.2, seule la génération
+        (``speaking``) comptait : pendant la traîne de lecture qui suit
+        ``turn_complete`` — plusieurs secondes quand le réseau envoie par
+        rafales — le barge-in vocal était impossible, seul le bouton Stop
+        restait efficace.
+        """
+        with self._speaking_lock:
+            speaking = self.speaking
+        return speaking or self.output_pending_bytes() > 0
+
+    # =========================================================
+    # TOUR GEMINI EN ATTENTE (v1.7.5 ter — correctif bug A)
+    # =========================================================
+
+    def note_turn_open(self) -> None:
+        """Un VRAI tour Gemini vient de s'ouvrir (``GeminiLive.on_turn_open``).
+
+        Appelé dès qu'une transcription utilisateur réelle démarre un
+        nouveau tour — AVANT que la moindre réponse (audio ou texte) ait pu
+        être produite. Suspend ``_check_timeout`` le temps que la génération
+        aboutisse, borné par ``TURN_PENDING_MAX_GRACE_SECONDS``.
+        """
+        with self._turn_pending_lock:
+            self._turn_pending_since = time.monotonic()
+        self._record_trace("turn_pending", state="open")
+
+    def note_turn_resolved(self) -> None:
+        """Le tour en cours vient d'être clos (``GeminiLive.on_turn_resolved``).
+
+        Déclenché inconditionnellement par ``GeminiLive`` (même pour un tour
+        resté sans contenu) : lève la suspension posée par
+        ``note_turn_open`` quel que soit le résultat obtenu.
+        """
+        with self._turn_pending_lock:
+            self._turn_pending_since = None
+        self._record_trace("turn_pending", state="resolved")
+
+    def _turn_pending(self) -> bool:
+        """Vrai si un tour Gemini est en cours de génération sans réponse.
+
+        Filet de sécurité : au-delà de ``TURN_PENDING_MAX_GRACE_SECONDS``
+        sans ``note_turn_resolved``, on cesse de faire confiance au signal
+        (connexion perdue sans notification, par exemple) plutôt que de
+        suspendre le minuteur indéfiniment.
+        """
+        with self._turn_pending_lock:
+            since = self._turn_pending_since
+        if since is None:
+            return False
+        return (time.monotonic() - since) <= self.TURN_PENDING_MAX_GRACE_SECONDS
+
     def _remember_recent_block(self, pcm) -> None:
         """Conserve les derniers blocs micro captés pendant la réponse.
 
         Ils sont réémis vers Gemini au moment de l'interruption : sans cela
         le début du mot « stop » serait perdu (détection en ~240 ms).
         """
-        with self._speaking_lock:
-            speaking = self.speaking
-        if not speaking:
+        if not self._voice_audible():
             if self._barge_prebuffer:
                 with self._barge_lock:
                     self._barge_prebuffer.clear()
@@ -470,12 +767,16 @@ class AudioIO:
             self._barge_prebuffer.append(pcm)
 
     def _detect_barge_in(self, pcm) -> bool:
-        """Vrai si l'utilisateur parle par-dessus la réponse de Jarvis."""
+        """Vrai si l'utilisateur parle par-dessus la réponse de Jarvis.
+
+        La « réponse » inclut sa traîne de lecture locale : tant que la
+        voix sort des haut-parleurs, couper la parole est légitime (v1.7.2).
+        """
+        audible = self._voice_audible()
         with self._speaking_lock:
-            speaking = self.speaking
             since = self._speaking_since
 
-        if not speaking:
+        if not audible:
             self._barge_hits = 0
             return False
 
@@ -515,6 +816,7 @@ class AudioIO:
     def _trigger_barge_in(self, source: str = "voix") -> None:
         """Coupe la réponse en cours et prévient le backend Gemini."""
         self._last_barge_in = time.monotonic()
+        self._record_trace("barge_in", source=source, src="micro/manuel")
 
         # 0. Snapshot AVANT clear_output() : la fin de la parole vide le
         #    pré-tampon, il faut donc le récupérer maintenant.
@@ -605,6 +907,7 @@ class AudioIO:
             # )
 
             if score >= threshold:
+                self._last_wake_score = round(score, 3)
 
                 print(
                     f'\n[Wake Word] "Hey Jarvis" détecté '
@@ -667,7 +970,7 @@ class AudioIO:
     # RÉVEIL DE JARVIS
     # =========================================================
 
-    def _wake(self):
+    def _wake(self, reason: str = "wake", src: str = "mic"):
 
         now = time.monotonic()
 
@@ -677,8 +980,12 @@ class AudioIO:
         self._emit_presence("listening")
 
         # Sécurité : retour en veille si Gemini ne répond pas
-        self.follow_up_until = (
-            now + self.FOLLOW_UP_SECONDS
+        self._arm_follow_up(reason, src=src, vad="reveil")
+
+        self._record_trace(
+            "wake",
+            reason=reason,
+            score_dernier_wake_word=getattr(self, "_last_wake_score", None),
         )
 
         try:
@@ -725,10 +1032,11 @@ class AudioIO:
             self._go_to_sleep("Écoute post-réponse désactivée.")
             return
 
-        self.follow_up_until = (
-            time.monotonic()
-            + self.FOLLOW_UP_SECONDS
-        )
+        # Fin de tour Gemini : la fenêtre de suivi repart de zéro. C'est le
+        # SEUL réarmement déclenché par le serveur — chaque fin de tour
+        # (même sans parole utilisateur) repart d'ici, d'où l'importance
+        # du contexte audio journalisé (micro vs sortie en attente).
+        self._arm_follow_up("turn_complete", src="serveur")
         self._emit_presence("listening")
 
         print(
@@ -756,6 +1064,9 @@ class AudioIO:
             self._barge_hits = 0
             with self._barge_lock:
                 self._barge_prebuffer.clear()
+            self._record_trace(
+                "speaking", value=speaking, src="pipeline audio"
+            )
 
     # =========================================================
     # TIMEOUT / RETOUR EN VEILLE
@@ -766,24 +1077,34 @@ class AudioIO:
         if not self.awake:
             return
 
-        # Pendant que Jarvis parle, la fenêtre de conversation est suspendue :
-        # on ne retourne en veille qu'une fois sa réponse terminée.
-        with self._speaking_lock:
-            if self.speaking:
-                return
+        # Pendant que la voix de Jarvis est audible — génération en cours OU
+        # lecture locale pas encore terminée (v1.7.2 : la traîne de la file
+        # de sortie fait partie de la « réponse pas finie ») — la fenêtre de
+        # conversation est suspendue : on ne retourne en veille qu'une fois
+        # que l'utilisateur n'entend plus Jarvis.
+        if self._voice_audible():
+            return
+
+        # v1.7.5 ter (bug A, validation réelle) : un tour est ouvert
+        # (``note_turn_open``) mais Gemini n'a encore produit NI audio NI
+        # texte — ``_voice_audible()`` est donc faux alors que la réponse
+        # arrive encore. Sans ce garde-fou, la fenêtre de conversation
+        # pouvait expirer pendant la génération et endormir Jarvis juste
+        # avant que la réponse (et toute relance immédiate de
+        # l'utilisateur) n'arrive. Borné par ``TURN_PENDING_MAX_GRACE_SECONDS``
+        # pour ne jamais rester suspendu indéfiniment en cas d'anomalie.
+        if self._turn_pending():
+            return
 
         if time.monotonic() >= self.follow_up_until:
 
             # Écoute continue : la fenêtre de conversation se renouvelle
             # indéfiniment tant que le mode reste actif.
             if self._listen_mode_active():
-                self.follow_up_until = (
-                    time.monotonic()
-                    + self.FOLLOW_UP_SECONDS
-                )
+                self._arm_follow_up("listen_mode_renew", src="aucune (mode)")
                 return
 
-            self._go_to_sleep()
+            self._go_to_sleep("timeout de conversation")
 
     def _go_to_sleep(self, reason: str = "") -> None:
         """Retour en veille : seul « Hey Jarvis » peut réveiller Jarvis.
@@ -794,6 +1115,8 @@ class AudioIO:
         """
         self.awake = False
         self._emit_presence("hidden")
+
+        self._record_trace("sleep", reason=reason or "timeout")
 
         try:
             self.wake_model.reset()
@@ -820,12 +1143,17 @@ class AudioIO:
 
         with self.lock:
 
-            # Remplir le buffer avec les chunks Gemini
+            # Remplir le buffer avec les chunks Gemini.
+            # NOTE comptage (correctif v1.7.2) : ``_queued_bytes`` représente
+            # la file TOTALE (q + buffer). Décompter au passage q -> buffer
+            # ET à la consommation par la carte son reviendrait à compter
+            # deux fois chaque octet : le compteur passait négatif puis était
+            # ramené à 0, ce qui cassait le plafond MAX_QUEUED_SECONDS.
+            # On ne décompte donc QU'À LA SORTIE réelle (outdata).
             while len(self.buffer) < needed:
 
                 try:
                     chunk = self.q.get_nowait()
-                    self._queued_bytes -= len(chunk)
                     self.buffer.extend(chunk)
 
                 except queue.Empty:
@@ -939,10 +1267,21 @@ class AudioIO:
                     break
 
         self.audio_started = False
+        # La sortie est vide : la porte anti-écho s'ouvre immédiatement
+        # (l'utilisateur qui interrompt doit être entendu sans délai).
+        self._output_last_pending_ts = 0.0
         # L'utilisateur a interrompu Jarvis : il ne parle plus.
         self._set_speaking(False)
-        self.follow_up_until = time.monotonic() + self.FOLLOW_UP_SECONDS
-        self._emit_presence("listening")
+        if self.awake:
+            # Uniquement si une conversation est réellement ouverte : une
+            # interruption résiduelle ne doit jamais rouvrir l'écoute d'un
+            # Jarvis endormi (anciens callbacks, arrêt manuel hors tour).
+            self._arm_follow_up("interrupt", src="sortie videe")
+            self._emit_presence("listening")
+        else:
+            self._record_trace(
+                "clear_output ignore", reason="jarvis endormi", src="sortie videe"
+            )
 
     # =========================================================
     # ARRÊT
@@ -952,6 +1291,9 @@ class AudioIO:
 
         self.running = False
         self.audio_started = False
+        # Fin de vie : plus aucune fenêtre de conversation ne doit être
+        # armée par la suite (le clear_output final devient un no-op).
+        self.awake = False
         self._emit_presence("hidden")
 
         # Micro

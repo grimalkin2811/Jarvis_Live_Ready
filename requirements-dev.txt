@@ -3,3 +3,14 @@ ruff>=0.5
 pyinstaller>=6.0
 # Note : la régénération des fixtures tests/fixtures/openwakeword/*.onnx
 # (tests/_make_oww_stubs.py) demande `pip install onnx`, inutile sinon.
+
+# Synthèse vocale LOCALE pour scripts/validate_reconnect_v174_real.py
+# (entrée audio du scénario de validation réelle contre l'API Gemini Live).
+# Remplace la dépendance à l'API Gemini TTS (gemini-2.5-flash-preview-tts),
+# limitée sur le palier disponible à 3 requêtes/minute ET 10 requêtes/jour
+# — un quota épuisé en une seule exécution du script. pyttsx3 pilote le
+# moteur de synthèse déjà présent sur le système (SAPI5 sur Windows, NSSS
+# sur macOS, espeak sur Linux), sans appel réseau ni quota.
+pyttsx3
+pywin32; sys_platform == "win32"
+
