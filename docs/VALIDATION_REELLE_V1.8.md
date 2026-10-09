@@ -36,7 +36,8 @@ Cette commande effectue de vraies connexions/requêtes :
 
 - ouverture Gemini 2.5 Flash Native Audio ;
 - découverte du modèle Gemini 3 Live généraliste et validation par échange réel
-  AUDIO → `output_transcription` non vide → `turn_complete`, puis décisions
+  AUDIO → `output_transcription` non vide → signal terminal officiel
+  (`generation_complete`, `turn_complete` ou `interaction_status=IDLE`), puis décisions
   Router A/B/C ; les variantes transcription/traduction/thinking sont filtrées
   et chaque candidat refusé conserve sa catégorie et son diagnostic ;
 - Google Search grounding sur le modèle Live résolu ;
@@ -63,7 +64,10 @@ Le rapport sépare `EXTERNAL_QUOTA`, `EXTERNAL_SERVICE`,
 `EXTERNAL_QUOTA`; une 1011 avec le seul motif `Resource has been exhausted` est
 `LIVE_RESOURCE_EXHAUSTED`. Aucune limite RPM/TPM/RPD précise n'est inventée. Chaque tâche simultanée inclut sa chronologie.
 Un document ne passe que si le résultat est non vide et si tous les fichiers
-référencés existent et sont non vides.
+référencés existent et sont non vides. Chaque tâche rapporte également le
+transport réellement exécuté (`Live/BidiGenerateContent` ou `GenerateContent`),
+son signal de fin Live et les URI de grounding disponibles. Vérifier dans le
+rapport qu'une décision `complex` annonce bien `transport=GenerateContent`.
 
 Le rapport JSON est écrit dans le dossier de logs utilisateur. Un autre chemin
 peut être donné avec `--report`, jamais avec une clé.

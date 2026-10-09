@@ -3,9 +3,10 @@
 ## 1.8.0 — Tâches d’arrière-plan asynchrones
 
 - Task Manager central, thread et boucle asyncio indépendants de Gemini Live.
-- Découverte dynamique d’un Gemini 3 Live généraliste : variantes transcribe/translate/thinking filtrées, candidats et durée totale bornés, puis validation par tour Bidi AUDIO + transcription + `turn_complete`.
+- Découverte dynamique d’un Gemini 3 Live généraliste : variantes transcribe/translate/thinking filtrées, candidats et durée totale bornés, puis validation par cycle Bidi AUDIO + transcription + signal terminal officiel.
+- Cycle background compatible avec `generation_complete`, `turn_complete` et `interaction_status=IDLE`; interruption et réponse partielle restent des échecs, avec diagnostics du signal reçu.
 - Client GenAI et primitives asyncio background créés sur la boucle worker dédiée, sans transfert inter-boucles.
-- États, progression, résultats, chemins complets de fichiers, non-lus, annulation, timeouts et persistance.
+- États terminaux protégés contre les résultats tardifs, résultats non vides, fichiers réellement présents, sources de grounding, non-lus, annulation, timeouts et persistance après redémarrage.
 - Retry borné 429/503; une unique reprise avec jitter pour une 1011 Live explicitement `Resource has been exhausted`.
 - Classification runtime/harness unifiée : quota explicite en 1011 reconnu comme `EXTERNAL_QUOTA`, trace Live et message fournisseur conservés.
 - Validation de concurrence avec quota local isolé et classification fournisseur/local/code explicite.

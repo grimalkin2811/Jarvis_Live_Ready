@@ -18,10 +18,15 @@ Le nom du modèle Gemini 3 Live n’est pas codé en dur. `LiveModelResolver` li
 les modèles visibles par la clé, conserve uniquement les Gemini 3 généralistes
 avec l’action `bidiGenerateContent` et écarte les variantes spécialisées
 `transcribe`, `translate` ou exigeant une configuration `thinking`. Il préfère
-ensuite une version stable et standard récente, puis exécute un véritable tour
-Live : sortie `AUDIO`, transcription de sortie non vide, `turn_complete` et
-fermeture de session. Le seul handshake WebSocket ne
-suffit jamais à produire `validated=True`. Le résultat `(model, transport,
+ensuite une version stable et standard récente, puis exécute un véritable cycle
+Live : sortie `AUDIO`, transcription de sortie non vide, signal de fin officiel
+(`generation_complete`, `turn_complete` ou `interaction_status=IDLE`) et
+fermeture de session. Le seul handshake WebSocket, un fragment audio ou une transcription partielle ne
+suffisent jamais à produire `validated=True`. Pour le consommateur background,
+`generation_complete` est terminal : la référence Live garantit que la dernière
+transcription de sortie précède ce signal. Attendre ensuite `turn_complete`
+revient à attendre une estimation de lecture audio alors que Jarvis discard ces
+octets. Une interruption reste toujours un échec de protocole. Le résultat `(model, transport,
 validated)` est mémorisé en mémoire pour le processus. Un hint
 `JARVIS_TASK_LIVE_MODEL` peut changer l’ordre des candidats, jamais contourner
 la validation. La découverte teste au plus trois candidats, dans un budget
@@ -97,7 +102,8 @@ une reprise, avec backoff et jitter, dans le timeout global. Une 1011
 sans ce motif n'est pas réessayée. Si la reprise consomme le délai restant, la
 1011 initiale et son message restent la cause classée au lieu d'être masqués par
 un timeout générique. Un diagnostic Live indique phase, tentative,
-messages/audio/transcriptions, `turn_complete`, fermeture, dernier événement et
+messages/audio/transcriptions, `generation_complete`, `turn_complete`, état
+`IDLE`, interruption, signal terminal retenu, fermeture, dernier événement et
 historique récent des erreurs. Le harness réutilise exactement cette classification.
 
 ## Quota 3.8

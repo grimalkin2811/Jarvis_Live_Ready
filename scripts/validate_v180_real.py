@@ -177,7 +177,11 @@ def preflight(report: Report) -> None:
 
 
 def _task_detail(task) -> str:
-    return f"id={task.id}; status={task.status.value}; model={task.model}; progression={task.progress}; erreur={task.error or 'aucune'}"
+    return (
+        f"id={task.id}; status={task.status.value}; model={task.model}; "
+        f"transport={task.transport}; signal_fin={task.completion_signal}; "
+        f"progression={task.progress}; erreur={task.error or 'aucune'}"
+    )
 
 
 def validate_document_artifacts(task) -> tuple[bool, list[Path]]:
@@ -221,6 +225,14 @@ def classify_failure(error) -> tuple[str, str]:
         "LOCAL_QUOTA_GUARD",
     } else "FAIL"
     return status, info.category
+
+
+def execution_transport(complexity: str) -> str:
+    return (
+        "GenerateContent"
+        if str(complexity).lower() == "complex"
+        else "Live/BidiGenerateContent"
+    )
 
 
 def discovery_failure_verdict(category: str) -> str:
@@ -288,7 +300,7 @@ async def run_api_validation(report: Report) -> None:
             "PASS",
             f"classification=VALIDATION_SUCCESS; model={resolution.model}; "
             f"transport={resolution.transport}; validated={resolution.validated}; "
-            "exchange=AUDIO→output_transcription→turn_complete",
+            f"exchange=AUDIO→output_transcription→{resolution.completion_signal}",
         )
     except Exception as exc:
         if isinstance(exc, LiveModelDiscoveryError) and exc.failures:
@@ -329,7 +341,8 @@ async def run_api_validation(report: Report) -> None:
             decision = await router.route(title, prompt, TaskPriority.NORMAL)
             valid = decision.complexity.value == expected_complexity and decision.model == expected_model
             detail = (
-                f"complexity={decision.complexity.value}; model={decision.model}; transport=Live/BidiGenerateContent; "
+                f"complexity={decision.complexity.value}; model={decision.model}; "
+                f"transport={execution_transport(decision.complexity.value)}; "
                 f"priority={decision.priority.value}; steps={decision.estimated_steps}; tools={decision.requires_tools}"
             )
             report.add("ROUTER RÉEL", title, "PASS" if valid else "FAIL", detail)
@@ -396,7 +409,15 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
             submission = time.monotonic() - before
             report.add("BACKGROUND", "soumission non bloquante", "PASS" if submission < 0.25 else "FAIL", f"{submission:.3f}s; statut initial={simple.status.value}")
             simple_done = await wait_terminal(manager, simple.id, timeout=config.task_timeout_seconds + 15)
-            simple_ok = simple_done.status is TaskStatus.COMPLETED and simple_done.model == live_model and bool(simple_done.result)
+            simple_ok = (
+                simple_done.status is TaskStatus.COMPLETED
+                and simple_done.model == live_model
+                and simple_done.transport == "Live/BidiGenerateContent"
+                and simple_done.completion_signal in {
+                    "generation_complete", "turn_complete", "interaction_status=IDLE",
+                }
+                and bool(simple_done.result)
+            )
             simple_status = "PASS" if simple_ok else external_status(simple_done.error)
             report.add("BACKGROUND", "tâche simple Gemini 3 Live", simple_status, _task_detail(simple_done))
             unread = any(item.id == simple.id for item in manager.list_unread_completed_tasks())
@@ -419,7 +440,12 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
             complex_done = await wait_terminal(manager, complex_task.id, timeout=config.task_timeout_seconds + 15)
             quota_after = manager.quota_status()
             quota_delta = quota_after["calls_today"] - quota_before["calls_today"]
-            complex_ok = complex_done.status is TaskStatus.COMPLETED and complex_done.model == config.complex_model and bool(complex_done.result)
+            complex_ok = (
+                complex_done.status is TaskStatus.COMPLETED
+                and complex_done.model == config.complex_model
+                and complex_done.transport == "GenerateContent"
+                and bool(complex_done.result)
+            )
             complex_status = "PASS" if complex_ok else external_status(complex_done.error)
             complex_origin = "NONE" if complex_ok else classify_failure(complex_done.error)[1]
             report.add(
@@ -526,8 +552,21 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
                     item.status is TaskStatus.COMPLETED
                     for item in (first_done, second_done)
                 )
+                live_signals = {
+                    "generation_complete", "turn_complete", "interaction_status=IDLE",
+                }
+                executions_valid = (
+                    first_done.transport == "Live/BidiGenerateContent"
+                    and first_done.completion_signal in live_signals
+                    and (
+                        second_done.transport == "GenerateContent"
+                        if pair_kind == "LIVE_PLUS_FLASH"
+                        else second_done.transport == "Live/BidiGenerateContent"
+                        and second_done.completion_signal in live_signals
+                    )
+                )
                 concurrency_status = (
-                    "PASS" if active_together and both_completed
+                    "PASS" if active_together and both_completed and executions_valid
                     else "NON_TESTABLE" if any(value[0] == "NON_TESTABLE" for value in classifications)
                     else "FAIL"
                 )
@@ -535,6 +574,7 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
                     "BACKGROUND", "deux tâches simultanées indépendantes",
                     concurrency_status,
                     f"pair={pair_kind}; active_together={active_together}; "
+                    f"executions_valid={executions_valid}; "
                     f"classifications={classifications}; {_task_detail(first_done)}; "
                     f"timeline_1={timeline(first_done.id)} || {_task_detail(second_done)}; "
                     f"timeline_2={timeline(second_done.id)}",

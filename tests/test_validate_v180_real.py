@@ -64,6 +64,12 @@ def test_failure_classification_separates_provider_local_timeout_and_code():
     )
 
 
+def test_report_uses_execution_transport_selected_by_complexity():
+    assert validation.execution_transport("simple") == "Live/BidiGenerateContent"
+    assert validation.execution_transport("medium") == "Live/BidiGenerateContent"
+    assert validation.execution_transport("complex") == "GenerateContent"
+
+
 def test_discovery_failure_verdicts_keep_timeout_and_incompatibility_distinct():
     assert validation.discovery_failure_verdict("LIVE_TIMEOUT") == "NON_TESTABLE"
     assert validation.discovery_failure_verdict("EXTERNAL_QUOTA") == "NON_TESTABLE"

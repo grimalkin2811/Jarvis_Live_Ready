@@ -99,6 +99,37 @@ inerte. Transcription sans `turn_complete` reste un échec `LIVE_TIMEOUT`, sans
 cache positif. Compatibilité explicite, configuration manquante, timeout,
 erreur externe et protocole restent des catégories distinctes.
 
+## Audit du cycle long du 10 octobre
+
+Le chemin background ne reconnaissait que `server_content.turn_complete`. Or la
+référence Live distingue trois informations : `generation_complete` signifie
+que tout le contenu est généré et que la dernière transcription a déjà été
+émise; `turn_complete` peut être retardé par le temps de lecture audio estimé;
+les SDK `google-genai>=2.23` peuvent terminer `receive()` lorsque
+`interaction_status=IDLE`. Ce décalage est particulièrement important ici : le
+background demande une sortie AUDIO pour respecter le modèle, mais ne lit jamais
+cet audio.
+
+La passerelle reconnaît désormais ces trois signaux, après avoir accumulé tous
+les fragments reçus. Elle rejette explicitement `interrupted`, une fermeture
+sans signal terminal et toute fin sans transcription. La trace compte séparément
+`generation_complete`, `turn_complete`, `interaction_idle`, `interrupted` et le
+signal qui a effectivement clos la réponse. La version du SDK est bornée à
+`google-genai>=2.23,<3`. Les objets de test de protocole sont construits avec les
+classes du SDK installé.
+
+C'est un défaut local démontré par comparaison avec le contrat officiel. Les
+anciens rapports ne comptaient toutefois pas `generation_complete` ni
+`interaction_status`; ils ne permettent donc pas de prouver rétrospectivement
+le signal exact reçu à la fin des 698 messages. Une validation Windows reste
+nécessaire avant d'affirmer que ce défaut explique à lui seul le timeout réel.
+
+Le gestionnaire protège aussi les états terminaux contre les mises à jour
+tardives, marque l'annulation avant d'annuler la future, refuse les résultats
+vides et les fichiers absents/vides, et persiste la conversion d'une tâche active
+en `FAILED` après redémarrage. Le résultat conserve maintenant le transport
+réel, le signal de fin et les URI de grounding disponibles.
+
 ## Ce qui reste à vérifier avec l'API réelle
 
 Le run Windows suivant devra examiner la nouvelle trace si un timeout revient.
