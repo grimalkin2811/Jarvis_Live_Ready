@@ -6,7 +6,8 @@
 - Découverte dynamique d’un modèle Gemini 3 Live listé puis validé par un tour Bidi complet AUDIO + transcription pour Router/simple/medium; tâches complexes Gemini 3.8.
 - Client GenAI et primitives asyncio background créés sur la boucle worker dédiée, sans transfert inter-boucles.
 - États, progression, résultats, chemins complets de fichiers, non-lus, annulation, timeouts et persistance.
-- Retry borné 429/503, trace de phase des timeouts Live et diagnostics d’indisponibilité externe conservés.
+- Retry borné 429/503; une unique reprise avec jitter pour une 1011 Live explicitement `Resource has been exhausted`.
+- Classification runtime/harness unifiée, trace de phase Live et message fournisseur conservé.
 - Validation de concurrence avec quota local isolé et classification fournisseur/local/code explicite.
 - Protection du quota 3.8 (RPM/RPD/TPM/concurrence), comptée à chaque appel SDK réellement tenté.
 - Six outils conversationnels, dialogue Qt, compteur radial et notifications silencieuses.

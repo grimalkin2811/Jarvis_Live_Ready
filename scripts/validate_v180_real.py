@@ -39,7 +39,10 @@ sys.path.insert(0, str(ROOT))
 from src import paths, settings, wakeword  # noqa: E402
 from src.background_tasks.config import BackgroundModelConfig  # noqa: E402
 from src.background_tasks.discovery import LiveModelResolver  # noqa: E402
-from src.background_tasks.gateway import BackgroundModelGateway, api_status_code  # noqa: E402
+from src.background_tasks.gateway import (  # noqa: E402
+    BackgroundModelGateway,
+    classify_background_error,
+)
 from src.background_tasks.manager import TaskManager  # noqa: E402
 from src.background_tasks.models import RoutingDecision, TaskComplexity, TaskPriority, TaskStatus  # noqa: E402
 from src.background_tasks.quota import ComplexModelQuota, QuotaExceededError  # noqa: E402
@@ -174,6 +177,20 @@ def _task_detail(task) -> str:
     return f"id={task.id}; status={task.status.value}; model={task.model}; progression={task.progress}; erreur={task.error or 'aucune'}"
 
 
+def validate_document_artifacts(task) -> tuple[bool, list[Path]]:
+    valid_files = [
+        Path(item) for item in task.files
+        if Path(item).is_file() and Path(item).stat().st_size > 0
+    ]
+    valid = (
+        task.status is TaskStatus.COMPLETED
+        and bool(task.result and str(task.result).strip())
+        and bool(task.files)
+        and len(valid_files) == len(task.files)
+    )
+    return valid, valid_files
+
+
 async def wait_terminal(manager: TaskManager, task_id: str, timeout: float = 300.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -191,20 +208,16 @@ async def check_live_model(client, model: str) -> None:
         return
 
 
-def classify_failure(error: str) -> tuple[str, str]:
-    """Retourne (verdict, origine) sans transformer une panne en succès."""
-    text = str(error or "").lower()
-    if "429" in text or "resource_exhausted" in text:
-        return "NON_TESTABLE", "EXTERNAL_QUOTA"
-    if "quota gemini 3.8 épuisé" in text or "appels/minute" in text or "tokens/minute" in text:
-        return "NON_TESTABLE", "LOCAL_QUOTA_GUARD"
-    if any(marker in text for marker in ("503", "unavailable", "high demand", "external service")):
-        return "NON_TESTABLE", "EXTERNAL_SERVICE"
-    if "timeout" in text or "délai" in text:
-        return "FAIL", "TIMEOUT"
-    if "sans turn_complete" in text or "sans transcription audio" in text:
-        return "FAIL", "LIVE_PROTOCOL"
-    return "FAIL", "CODE_OR_PROTOCOL"
+def classify_failure(error) -> tuple[str, str]:
+    """Adapte la classification runtime unique aux verdicts du harness."""
+    info = classify_background_error(error)
+    status = "NON_TESTABLE" if info.category in {
+        "EXTERNAL_QUOTA",
+        "EXTERNAL_SERVICE",
+        "LIVE_RESOURCE_EXHAUSTED",
+        "LOCAL_QUOTA_GUARD",
+    } else "FAIL"
+    return status, info.category
 
 
 def external_status(error: str) -> str:
@@ -297,11 +310,12 @@ async def run_api_validation(report: Report) -> None:
         )
         report.add("API RÉELLE", "Google Search grounding Live", "PASS" if grounded.text else "FAIL", f"réponse={grounded.text[:240]}; tokens={grounded.total_tokens}")
     except Exception as exc:
-        code = api_status_code(exc)
-        status, origin = classify_failure(str(exc))
+        info = classify_background_error(exc)
+        status, origin = classify_failure(exc)
         report.add(
             "API RÉELLE", "Google Search grounding Live", status,
-            f"classification={origin}; status_code={code}; {type(exc).__name__}: {exc}",
+            f"classification={origin}; status_code={info.status_code}; "
+            f"live_close_code={info.live_close_code}; {type(exc).__name__}: {exc}",
         )
 
     await run_background_scenarios(report, key, config, client, main_model, resolution.model)
@@ -389,16 +403,7 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
                 "PASS" if quota_ok else "INFO" if expected_delta is None else "FAIL",
                 f"delta={quota_delta}; attendu={expected_delta}; avant={quota_before}; après={quota_after}",
             )
-            valid_files = [
-                Path(item) for item in complex_done.files
-                if Path(item).is_file() and Path(item).stat().st_size > 0
-            ]
-            document_ok = (
-                complex_done.status is TaskStatus.COMPLETED
-                and bool(complex_done.result)
-                and bool(complex_done.files)
-                and len(valid_files) == len(complex_done.files)
-            )
+            document_ok, valid_files = validate_document_artifacts(complex_done)
             report.add(
                 "BACKGROUND", "document référencé",
                 "PASS" if document_ok else complex_status,

@@ -55,8 +55,11 @@ augmenter ce total dans les limites configurées. Il ne tente jamais d’épuise
 volontairement RPM/RPD/TPM. Les données du test sont placées dans un dossier
 temporaire afin de ne pas polluer l’historique utilisateur.
 
-Le rapport sépare `EXTERNAL_QUOTA`, `EXTERNAL_SERVICE`, `LOCAL_QUOTA_GUARD`,
-`TIMEOUT`, `LIVE_PROTOCOL` et `CODE_OR_PROTOCOL`. Chaque tâche simultanée inclut sa chronologie.
+Le rapport sépare `EXTERNAL_QUOTA`, `EXTERNAL_SERVICE`,
+`LIVE_RESOURCE_EXHAUSTED`, `LOCAL_QUOTA_GUARD`, `TIMEOUT`, `LIVE_PROTOCOL` et
+`CODE_OR_PROTOCOL`. Une 1011 n'entre dans `LIVE_RESOURCE_EXHAUSTED` que si le
+code et le motif d'épuisement de ressources sont disponibles; aucune limite
+RPM/TPM/RPD précise n'est inventée. Chaque tâche simultanée inclut sa chronologie.
 Un document ne passe que si le résultat est non vide et si tous les fichiers
 référencés existent et sont non vides.
 

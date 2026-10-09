@@ -18,7 +18,11 @@ from src.background_tasks.discovery import (
     is_gemini3_live_model,
 )
 from src.background_tasks.executor import ExecutionResult, TaskExecutor
-from src.background_tasks.gateway import BackgroundModelGateway, BackgroundServiceError
+from src.background_tasks.gateway import (
+    BackgroundModelGateway,
+    BackgroundServiceError,
+    classify_background_error,
+)
 from src.background_tasks.manager import TaskManager
 from src.background_tasks.models import BackgroundTask, RoutingDecision, TaskComplexity, TaskPriority, TaskStatus
 from src.background_tasks.quota import ComplexModelQuota, QuotaExceededError
@@ -460,6 +464,63 @@ def test_two_live_cycles_progress_independently_when_one_times_out():
     assert sorted(closed) == [1, 2]
 
 
+def test_two_live_cycles_are_independent_when_one_has_resource_1011(monkeypatch):
+    connection_number = 0
+    closed = []
+
+    class Session:
+        def __init__(self, number): self.number = number
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                if self.number in {1, 3}:
+                    raise LiveClose1011(
+                        "Resource has been exhausted (e.g. check quota)."
+                    )
+                yield SimpleNamespace(
+                    server_content=SimpleNamespace(
+                        output_transcription=SimpleNamespace(text="indépendante"),
+                        turn_complete=True,
+                    ),
+                    usage_metadata=None,
+                )
+            return values()
+
+    class Context:
+        def __init__(self, number): self.number = number
+        async def __aenter__(self): return Session(self.number)
+        async def __aexit__(self, *args): closed.append(self.number)
+
+    def connect(**kwargs):
+        nonlocal connection_number
+        connection_number += 1
+        return Context(connection_number)
+
+    original_sleep = asyncio.sleep
+
+    async def no_wait(delay):
+        await original_sleep(0)
+
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    monkeypatch.setattr("src.background_tasks.gateway.random.uniform", lambda low, high: 0.0)
+    gateway = BackgroundModelGateway(SimpleNamespace(
+        aio=SimpleNamespace(live=SimpleNamespace(connect=connect))
+    ), retry_attempts=3, retry_base_delay=0.0)
+
+    async def scenario():
+        return await asyncio.gather(
+            gateway.generate_live(LIVE_MODEL, "A", system_instruction="I"),
+            gateway.generate_live(LIVE_MODEL, "B", system_instruction="I"),
+            return_exceptions=True,
+        )
+
+    exhausted, completed = asyncio.run(scenario())
+    assert isinstance(exhausted, BackgroundServiceError)
+    assert exhausted.category == "LIVE_RESOURCE_EXHAUSTED"
+    assert completed.text == "indépendante"
+    assert sorted(closed) == [1, 2, 3]
+
+
 def test_live_gateway_rejects_turn_without_output_transcription_and_closes():
     closed = []
     message = SimpleNamespace(
@@ -507,6 +568,111 @@ def test_gateway_retries_external_errors_with_bounded_attempts(monkeypatch, code
         asyncio.run(gateway.generate_live(LIVE_MODEL, "D", system_instruction="I"))
     assert captured.value.status_code == code
     assert attempts == 3 and sleeps == [0.1, 0.2]
+
+
+class LiveClose1011(RuntimeError):
+    code = 1011
+
+    def __init__(self, reason):
+        super().__init__(f"received 1011 (internal error) {reason}")
+        self.reason = reason
+
+
+def test_live_1011_resource_exhausted_is_classified_structurally():
+    error = LiveClose1011("Resource has been exhausted (e.g. check quota).")
+    info = classify_background_error(error)
+    assert info.category == "LIVE_RESOURCE_EXHAUSTED"
+    assert info.live_close_code == 1011
+    assert info.status_code is None
+    assert info.retryable and info.external
+
+
+def test_live_1011_without_resource_message_is_not_misclassified():
+    info = classify_background_error(LiveClose1011("unexpected internal condition"))
+    assert info.category == "CODE_OR_PROTOCOL"
+    assert info.live_close_code == 1011
+    assert not info.retryable
+
+
+def test_live_resource_retry_is_limited_jittered_and_closes(monkeypatch):
+    attempts = 0
+    closed = []
+    sleeps = []
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                nonlocal attempts
+                attempts += 1
+                raise LiveClose1011("Resource has been exhausted (e.g. check quota).")
+                yield  # pragma: no cover
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): closed.append(True)
+
+    async def fake_sleep(delay): sleeps.append(delay)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr("src.background_tasks.gateway.random.uniform", lambda low, high: 0.02)
+    client = SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    ))
+    gateway = BackgroundModelGateway(client, retry_attempts=5, retry_base_delay=0.1)
+    with pytest.raises(BackgroundServiceError) as captured:
+        asyncio.run(gateway.generate_live(LIVE_MODEL, "D", system_instruction="I"))
+    assert attempts == 2  # politique Live plus stricte que les retries HTTP
+    assert sleeps == [pytest.approx(0.12)]
+    assert closed == [True, True]
+    assert captured.value.category == "LIVE_RESOURCE_EXHAUSTED"
+    assert captured.value.live_close_code == 1011
+    detail = str(captured.value)
+    assert "diagnostic Live" in detail
+    assert "dernière_erreur=LiveClose1011" in detail
+
+
+def test_live_retry_timeout_preserves_initial_external_1011(monkeypatch):
+    connection_number = 0
+    closed = []
+
+    class Session:
+        def __init__(self, number): self.number = number
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                if self.number == 1:
+                    raise LiveClose1011(
+                        "Resource has been exhausted (e.g. check quota)."
+                    )
+                await asyncio.Event().wait()
+                yield  # pragma: no cover
+            return values()
+
+    class Context:
+        def __init__(self, number): self.number = number
+        async def __aenter__(self): return Session(self.number)
+        async def __aexit__(self, *args): closed.append(self.number)
+
+    def connect(**kwargs):
+        nonlocal connection_number
+        connection_number += 1
+        return Context(connection_number)
+
+    monkeypatch.setattr("src.background_tasks.gateway.random.uniform", lambda low, high: 0.0)
+    gateway = BackgroundModelGateway(SimpleNamespace(
+        aio=SimpleNamespace(live=SimpleNamespace(connect=connect))
+    ), retry_attempts=3, retry_base_delay=0.0)
+    with pytest.raises(BackgroundServiceError) as captured:
+        asyncio.run(gateway.generate_live(
+            LIVE_MODEL, "D", system_instruction="I", timeout_seconds=0.03
+        ))
+    assert captured.value.category == "LIVE_RESOURCE_EXHAUSTED"
+    assert captured.value.live_close_code == 1011
+    assert captured.value.external_unavailable
+    assert "Resource has been exhausted" in str(captured.value)
+    assert "historique_erreurs=" in str(captured.value)
+    assert sorted(closed) == [1, 2]
 
 
 def test_classic_gateway_disables_afc_for_server_tool():

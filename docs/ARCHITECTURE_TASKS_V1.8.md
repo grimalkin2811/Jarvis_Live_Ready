@@ -45,7 +45,8 @@ les autres tâches.
   validation et cache par empreinte non réversible de clé.
 - `gateway.py` : cycle Live `AUDIO` complet pour Router/simple/medium, activation
   de `output_audio_transcription`, assemblage du texte transcrit et abandon des
-  octets audio; Generate Content pour le complexe; retry borné 429/503.
+  octets audio; Generate Content pour le complexe; retry borné 429/503 et reprise
+  Live 1011 strictement limitée lorsqu'un épuisement de ressources est explicite.
 - `router.py` : protocole JSON strict robuste aux fragments/fences, validation
   des champs et du modèle.
 - `executor.py` : outils, progression, timeout, synthèse et document Markdown.
@@ -80,13 +81,17 @@ API centrale : `create_task`, `get_task`, `list_tasks`, `list_active_tasks`,
 
 ## Retry et erreurs externes
 
-Les codes 429 et 503 sont réessayés avec backoff exponentiel borné. Après le
-nombre configuré de tentatives, une `BackgroundServiceError` conserve le code
-et signale l’indisponibilité externe; aucun retry infini. Les autres erreurs ne
-sont pas réessayées aveuglément. Un timeout Live indique phase, nombre de
-messages/audio/transcriptions, `turn_complete`, fermeture et dernier événement.
-Le harness distingue quota fournisseur, service fournisseur, garde locale,
-timeout et défaut de code.
+Une classification runtime unique privilégie les champs structurés SDK
+(`status_code`, code/reason de fermeture Live) puis le message conservé. Les 429
+et 503 ont un backoff exponentiel borné. Une fermeture 1011 n'est pas assimilée
+par défaut à un quota : seulement si son motif indique explicitement
+`Resource has been exhausted`, elle devient `LIVE_RESOURCE_EXHAUSTED` et admet
+au plus une reprise, avec backoff et jitter, dans le timeout global. Une 1011
+sans ce motif n'est pas réessayée. Si la reprise consomme le délai restant, la
+1011 initiale et son message restent la cause classée au lieu d'être masqués par
+un timeout générique. Un diagnostic Live indique phase, tentative,
+messages/audio/transcriptions, `turn_complete`, fermeture, dernier événement et
+historique récent des erreurs. Le harness réutilise exactement cette classification.
 
 ## Quota 3.8
 

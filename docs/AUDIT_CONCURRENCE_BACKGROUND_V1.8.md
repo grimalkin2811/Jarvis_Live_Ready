@@ -72,8 +72,11 @@ raison fournisseur exacte.
 
 ## Classification du rapport
 
-- `EXTERNAL_QUOTA` : 429 / `RESOURCE_EXHAUSTED` fournisseur → `NON_TESTABLE`.
+- `EXTERNAL_QUOTA` : 429 / `RESOURCE_EXHAUSTED` HTTP fournisseur → `NON_TESTABLE`.
 - `EXTERNAL_SERVICE` : 503 / indisponibilité fournisseur → `NON_TESTABLE`.
+- `LIVE_RESOURCE_EXHAUSTED` : fermeture Live 1011 dont le motif indique
+  explicitement `Resource has been exhausted` → `NON_TESTABLE`, sans inventer
+  la limite Google concernée.
 - `LOCAL_QUOTA_GUARD` : RPM/RPD/TPM local → `NON_TESTABLE`, raison locale.
 - `TIMEOUT` : délai Live avec trace de phase → `FAIL`, à analyser; jamais PASS.
 - `LIVE_PROTOCOL` : flux clos sans transcription/`turn_complete` → `FAIL`.

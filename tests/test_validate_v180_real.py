@@ -5,6 +5,7 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "validate_v180_real.py"
@@ -39,6 +40,12 @@ def test_failure_classification_separates_provider_local_timeout_and_code():
     assert validation.classify_failure("503 UNAVAILABLE high demand") == (
         "NON_TESTABLE", "EXTERNAL_SERVICE"
     )
+    assert validation.classify_failure(
+        "received 1011 (internal error) Resource has been exhausted (e.g. check quota)."
+    ) == ("NON_TESTABLE", "LIVE_RESOURCE_EXHAUSTED")
+    assert validation.classify_failure(
+        "received 1011 (internal error) unexpected internal condition"
+    ) == ("FAIL", "CODE_OR_PROTOCOL")
     assert validation.classify_failure("Limite Gemini 3.8 atteinte (5 appels/minute)") == (
         "NON_TESTABLE", "LOCAL_QUOTA_GUARD"
     )
@@ -51,6 +58,37 @@ def test_failure_classification_separates_provider_local_timeout_and_code():
     assert validation.classify_failure("JSON invalide") == (
         "FAIL", "CODE_OR_PROTOCOL"
     )
+
+
+def test_google_search_live_1011_quota_is_external_non_testable():
+    error = RuntimeError(
+        "Google Search grounding: received 1011; Resource has been exhausted (e.g. check quota)."
+    )
+    assert validation.classify_failure(error) == (
+        "NON_TESTABLE", "LIVE_RESOURCE_EXHAUSTED"
+    )
+
+
+def test_document_validation_requires_completed_result_and_nonempty_files(tmp_path):
+    document = tmp_path / "rapport.md"
+    document.write_text("contenu", encoding="utf-8")
+    valid = SimpleNamespace(
+        status=validation.TaskStatus.COMPLETED,
+        result="résultat réel",
+        files=[str(document)],
+    )
+    assert validation.validate_document_artifacts(valid)[0]
+
+    empty = tmp_path / "vide.md"
+    empty.write_text("", encoding="utf-8")
+    for invalid in (
+        SimpleNamespace(status=validation.TaskStatus.FAILED, result="résultat", files=[str(document)]),
+        SimpleNamespace(status=validation.TaskStatus.COMPLETED, result="", files=[str(document)]),
+        SimpleNamespace(status=validation.TaskStatus.COMPLETED, result="résultat", files=[]),
+        SimpleNamespace(status=validation.TaskStatus.COMPLETED, result="résultat", files=[str(empty)]),
+        SimpleNamespace(status=validation.TaskStatus.COMPLETED, result="résultat", files=[str(tmp_path / "absent.md")]),
+    ):
+        assert not validation.validate_document_artifacts(invalid)[0]
 
 
 def test_json_report_contains_no_secret(tmp_path):
