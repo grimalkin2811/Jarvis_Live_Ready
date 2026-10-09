@@ -7,7 +7,7 @@
 - Client GenAI et primitives asyncio background créés sur la boucle worker dédiée, sans transfert inter-boucles.
 - États, progression, résultats, chemins complets de fichiers, non-lus, annulation, timeouts et persistance.
 - Retry borné 429/503; une unique reprise avec jitter pour une 1011 Live explicitement `Resource has been exhausted`.
-- Classification runtime/harness unifiée, trace de phase Live et message fournisseur conservé.
+- Classification runtime/harness unifiée : quota explicite en 1011 reconnu comme `EXTERNAL_QUOTA`, trace Live et message fournisseur conservés.
 - Validation de concurrence avec quota local isolé et classification fournisseur/local/code explicite.
 - Protection du quota 3.8 (RPM/RPD/TPM/concurrence), comptée à chaque appel SDK réellement tenté.
 - Six outils conversationnels, dialogue Qt, compteur radial et notifications silencieuses.

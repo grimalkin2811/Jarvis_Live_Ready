@@ -578,6 +578,28 @@ class LiveClose1011(RuntimeError):
         self.reason = reason
 
 
+def test_live_1011_explicit_quota_is_external_quota():
+    reason = "You exceeded your current quota, please check your plan and billing details."
+    info = classify_background_error(LiveClose1011(reason))
+    assert info.category == "EXTERNAL_QUOTA"
+    assert info.live_close_code == 1011
+    assert info.status_code is None
+    assert info.retryable and info.external
+
+
+def test_explicit_quota_message_overrides_generic_live_resource_category():
+    error = BackgroundServiceError(
+        "You exceeded your current quota, please check your plan and billing details.",
+        live_close_code=1011,
+        category="LIVE_RESOURCE_EXHAUSTED",
+        external_unavailable=True,
+    )
+    info = classify_background_error(error)
+    assert info.category == "EXTERNAL_QUOTA"
+    assert info.live_close_code == 1011
+    assert info.status_code is None
+
+
 def test_live_1011_resource_exhausted_is_classified_structurally():
     error = LiveClose1011("Resource has been exhausted (e.g. check quota).")
     info = classify_background_error(error)
@@ -592,6 +614,42 @@ def test_live_1011_without_resource_message_is_not_misclassified():
     assert info.category == "CODE_OR_PROTOCOL"
     assert info.live_close_code == 1011
     assert not info.retryable
+
+
+def test_live_explicit_quota_keeps_reason_code_and_live_retry_limit(monkeypatch):
+    attempts = 0
+    closed = []
+    reason = "You exceeded your current quota, please check your plan and billing details."
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                nonlocal attempts
+                attempts += 1
+                raise LiveClose1011(reason)
+                yield  # pragma: no cover
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): closed.append(True)
+
+    async def no_wait(delay): return None
+    monkeypatch.setattr(asyncio, "sleep", no_wait)
+    monkeypatch.setattr("src.background_tasks.gateway.random.uniform", lambda low, high: 0.0)
+    gateway = BackgroundModelGateway(SimpleNamespace(
+        aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context()))
+    ), retry_attempts=5, retry_base_delay=0.0)
+
+    with pytest.raises(BackgroundServiceError) as captured:
+        asyncio.run(gateway.generate_live(LIVE_MODEL, "D", system_instruction="I"))
+    assert attempts == 2
+    assert closed == [True, True]
+    assert captured.value.category == "EXTERNAL_QUOTA"
+    assert captured.value.live_close_code == 1011
+    assert captured.value.status_code is None
+    assert reason in str(captured.value)
 
 
 def test_live_resource_retry_is_limited_jittered_and_closes(monkeypatch):

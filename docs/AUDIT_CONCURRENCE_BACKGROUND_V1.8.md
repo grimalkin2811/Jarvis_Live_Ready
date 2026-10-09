@@ -72,7 +72,8 @@ raison fournisseur exacte.
 
 ## Classification du rapport
 
-- `EXTERNAL_QUOTA` : 429 / `RESOURCE_EXHAUSTED` HTTP fournisseur → `NON_TESTABLE`.
+- `EXTERNAL_QUOTA` : 429 / `RESOURCE_EXHAUSTED` HTTP ou message Live explicite
+  `You exceeded your current quota` → `NON_TESTABLE`.
 - `EXTERNAL_SERVICE` : 503 / indisponibilité fournisseur → `NON_TESTABLE`.
 - `LIVE_RESOURCE_EXHAUSTED` : fermeture Live 1011 dont le motif indique
   explicitement `Resource has been exhausted` → `NON_TESTABLE`, sans inventer

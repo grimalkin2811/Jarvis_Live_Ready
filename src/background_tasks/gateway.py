@@ -70,7 +70,9 @@ def _structured_error_values(error) -> tuple[int | None, int | None, str]:
         status = _integer_code(getattr(error, "status_code", None))
         direct_code = _integer_code(getattr(error, "code", None))
         received = getattr(error, "rcvd", None)
-        live_code = _integer_code(getattr(received, "code", None))
+        live_code = _integer_code(getattr(error, "live_close_code", None))
+        if live_code is None:
+            live_code = _integer_code(getattr(received, "code", None))
         if live_code is None and direct_code not in (429, 503):
             live_code = direct_code
         if status is None and direct_code in (429, 503):
@@ -84,6 +86,17 @@ def _structured_error_values(error) -> tuple[int | None, int | None, str]:
     return None, None, str(error or "")
 
 
+def _explicit_provider_quota(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:you\s+)?exceeded\s+(?:your\s+)?(?:current\s+)?quota\b",
+            text,
+        )
+        or re.search(r"\bquota\s+(?:has\s+been\s+)?exceeded\b", text)
+        or ("quota" in text and "check your plan and billing details" in text)
+    )
+
+
 def classify_background_error(error) -> BackgroundErrorInfo:
     """Classification unique pour runtime et harness, structurée si possible."""
     explicit = getattr(error, "category", None) if isinstance(error, BaseException) else None
@@ -91,6 +104,13 @@ def classify_background_error(error) -> BackgroundErrorInfo:
     text = raw_text.lower()
     if live_code is None and re.search(r"\b1011\b", text):
         live_code = 1011
+
+    # Une déclaration de quota du fournisseur prime sur le code de fermeture
+    # générique 1011 et même sur une catégorie enveloppante antérieure.
+    if status == 429 or "429" in text:
+        return BackgroundErrorInfo("EXTERNAL_QUOTA", 429, live_code, True, True)
+    if _explicit_provider_quota(text):
+        return BackgroundErrorInfo("EXTERNAL_QUOTA", status, live_code, True, True)
 
     if explicit:
         category = str(explicit)
@@ -116,8 +136,8 @@ def classify_background_error(error) -> BackgroundErrorInfo:
     ))
     if live_code == 1011 and resource_exhausted:
         return BackgroundErrorInfo("LIVE_RESOURCE_EXHAUSTED", status, 1011, True, True)
-    if status == 429 or "429" in text or "resource_exhausted" in text:
-        return BackgroundErrorInfo("EXTERNAL_QUOTA", 429, live_code, True, True)
+    if "resource_exhausted" in text:
+        return BackgroundErrorInfo("EXTERNAL_QUOTA", status, live_code, True, True)
     if status == 503 or "503" in text or "unavailable" in text or "high demand" in text:
         return BackgroundErrorInfo("EXTERNAL_SERVICE", 503, live_code, True, True)
     if "quota gemini 3.8 épuisé" in text or "appels/minute" in text or "tokens/minute" in text:
@@ -159,7 +179,13 @@ class BackgroundModelGateway:
             except Exception as exc:
                 info = classify_background_error(exc)
                 live_resource = info.category == "LIVE_RESOURCE_EXHAUSTED"
-                max_attempts = min(self.retry_attempts, 2) if live_resource else self.retry_attempts
+                live_limited_retry = info.live_close_code == 1011 and info.category in {
+                    "EXTERNAL_QUOTA", "LIVE_RESOURCE_EXHAUSTED",
+                }
+                max_attempts = (
+                    min(self.retry_attempts, 2)
+                    if live_limited_retry else self.retry_attempts
+                )
                 can_retry = info.category in {"EXTERNAL_QUOTA", "EXTERNAL_SERVICE"}
                 can_retry = can_retry or (retry_live_resource and live_resource)
                 if not can_retry:
@@ -176,7 +202,7 @@ class BackgroundModelGateway:
                 delay = self.retry_base_delay * (2 ** (attempt - 1))
                 # Une seule reprise 1011, espacée avec jitter, évite que deux
                 # tâches concurrentes repartent exactement au même instant.
-                if live_resource:
+                if live_limited_retry:
                     delay += random.uniform(0.0, max(0.05, delay * 0.25))
                 await asyncio.sleep(delay)
         raise last_exc  # pragma: no cover

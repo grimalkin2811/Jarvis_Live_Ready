@@ -41,6 +41,10 @@ def test_failure_classification_separates_provider_local_timeout_and_code():
         "NON_TESTABLE", "EXTERNAL_SERVICE"
     )
     assert validation.classify_failure(
+        "received 1011 (internal error) You exceeded your current quota, "
+        "please check your plan and billing details."
+    ) == ("NON_TESTABLE", "EXTERNAL_QUOTA")
+    assert validation.classify_failure(
         "received 1011 (internal error) Resource has been exhausted (e.g. check quota)."
     ) == ("NON_TESTABLE", "LIVE_RESOURCE_EXHAUSTED")
     assert validation.classify_failure(
@@ -62,10 +66,11 @@ def test_failure_classification_separates_provider_local_timeout_and_code():
 
 def test_google_search_live_1011_quota_is_external_non_testable():
     error = RuntimeError(
-        "Google Search grounding: received 1011; Resource has been exhausted (e.g. check quota)."
+        "Google Search grounding: received 1011; You exceeded your current quota, "
+        "please check your plan and billing details."
     )
     assert validation.classify_failure(error) == (
-        "NON_TESTABLE", "LIVE_RESOURCE_EXHAUSTED"
+        "NON_TESTABLE", "EXTERNAL_QUOTA"
     )
 
 
