@@ -34,6 +34,7 @@ class LiveModelResolution:
     model: str
     transport: str = "Live/BidiGenerateContent"
     validated: bool = True
+    completion_signal: str | None = None
     diagnostics: tuple[LiveValidationFailure, ...] = ()
 
 
@@ -147,7 +148,7 @@ class LiveModelResolver:
 
         return await self._retry_external(list_once)
 
-    async def _validate(self, model: str, *, timeout: float) -> None:
+    async def _validate(self, model: str, *, timeout: float) -> str | None:
         """Valide un tour complet AUDIO → transcription, pas le seul handshake."""
         gateway = BackgroundModelGateway(
             self.client,
@@ -166,6 +167,7 @@ class LiveModelResolver:
         )
         if not response.text.strip():  # défense supplémentaire au contrat gateway
             raise RuntimeError("Échange Live terminé sans transcription textuelle.")
+        return response.completion_signal
 
     @staticmethod
     def _validation_failure(model: str, exc: BaseException) -> LiveValidationFailure:
@@ -266,11 +268,15 @@ class LiveModelResolver:
                 break
             timeout = min(self.connect_timeout, remaining)
             try:
-                await self._validate(name, timeout=timeout)
+                completion_signal = await self._validate(name, timeout=timeout)
             except Exception as exc:
                 failures.append(self._validation_failure(name, exc))
                 continue
-            resolution = LiveModelResolution(name, diagnostics=tuple(failures))
+            resolution = LiveModelResolution(
+                name,
+                completion_signal=completion_signal,
+                diagnostics=tuple(failures),
+            )
             self._resolution = resolution
             with _CACHE_LOCK:
                 _CACHE[self._cache_key] = resolution

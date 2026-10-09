@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from google.genai import types as genai_types
 
 from src.background_tasks.config import BackgroundModelConfig, DEFAULT_COMPLEX_MODEL, DEFAULT_MAIN_MODEL
 from src.background_tasks.discovery import (
@@ -96,6 +97,19 @@ def make_manager(tmp_path, monkeypatch):
         manager.close(wait=True)
 
 
+def test_manager_rejects_illegal_status_transition(make_manager):
+    manager = make_manager(router=FakeRouter(delay=1))
+    task = manager.create_task("transition", "D")
+    # La future peut avoir commencé entre create_task et l'assertion; une tâche
+    # locale dédiée garantit ici l'état QUEUED déterministe.
+    queued = BackgroundTask("manual", "T", "D")
+    with manager._lock:
+        manager._tasks[queued.id] = queued
+    with pytest.raises(RuntimeError, match="QUEUED → COMPLETED"):
+        manager._mutate(queued.id, status=TaskStatus.COMPLETED)
+    manager.cancel_task(task.id)
+
+
 def test_create_task_is_immediately_queued(make_manager):
     manager = make_manager(router=FakeRouter(delay=0.1))
     task = manager.create_task("Titre", "Description")
@@ -163,12 +177,139 @@ def test_cancel_running_task(make_manager):
     assert wait_for(manager, created.id, {TaskStatus.CANCELLED})
 
 
+def test_cancelled_task_rejects_late_result_and_notification(make_manager, monkeypatch):
+    published = []
+    monkeypatch.setattr(
+        "src.background_tasks.manager.notifications.publish",
+        lambda *args, **kwargs: published.append(args),
+    )
+
+    class CancellationResistantExecutor(FakeExecutor):
+        async def execute(self, task, route, update):
+            update(40, "Analyse", 2, 3)
+            try:
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                await asyncio.sleep(0)
+            update(90, "Résultat tardif", 3, 3)
+            return ExecutionResult("résultat tardif", "tardif")
+
+    manager = make_manager(executor=CancellationResistantExecutor())
+    task = manager.create_task("annulation", "D")
+    wait_for(manager, task.id, {TaskStatus.RUNNING})
+    assert manager.cancel_task(task.id)
+    time.sleep(0.05)
+    cancelled = manager.get_task(task.id)
+    assert cancelled.status is TaskStatus.CANCELLED
+    assert cancelled.result is None
+    assert published == []
+
+
+def test_manager_never_completes_partial_live_response(make_manager):
+    message = genai_types.LiveServerMessage(
+        server_content=genai_types.LiveServerContent(
+            output_transcription=genai_types.Transcription(text="partiel")
+        )
+    )
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values(): yield message
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): return None
+
+    gateway = BackgroundModelGateway(SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    )))
+
+    class PartialExecutor:
+        async def execute(self, task, route, update):
+            await gateway.generate_live(LIVE_MODEL, "D", system_instruction="I")
+            raise AssertionError("inaccessible")
+
+    manager = make_manager(executor=PartialExecutor())
+    created = manager.create_task("partielle", "D")
+    failed = wait_for(manager, created.id, {TaskStatus.FAILED})
+    assert "sans signal de fin" in failed.error
+    assert failed.result is None
+
+
+def test_manager_rejects_empty_result_and_missing_artifact(make_manager, tmp_path):
+    class InvalidExecutor(FakeExecutor):
+        def __init__(self, result): self.result = result
+        async def execute(self, task, route, update): return self.result
+
+    empty_manager = make_manager(executor=InvalidExecutor(ExecutionResult("", "")))
+    empty = empty_manager.create_task("vide", "D")
+    failed_empty = wait_for(empty_manager, empty.id, {TaskStatus.FAILED})
+    assert "résultat vide" in failed_empty.error
+
+    missing = tmp_path / "absent.md"
+    file_manager = make_manager(executor=InvalidExecutor(
+        ExecutionResult("texte", "résumé", [str(missing)])
+    ))
+    artifact = file_manager.create_task("fichier", "Crée un rapport")
+    failed_file = wait_for(file_manager, artifact.id, {TaskStatus.FAILED})
+    assert "Livrable absent ou vide" in failed_file.error
+
+
 def test_generated_file_is_referenced(make_manager, tmp_path):
     path = tmp_path / "rapport.md"
     path.write_text("ok")
     manager = make_manager(executor=FakeExecutor(files=[str(path)]))
     task = wait_for(manager, manager.create_task("T", "document").id, {TaskStatus.COMPLETED})
     assert manager.get_task_result(task.id)["files"] == [str(path)]
+
+
+def test_restart_persists_interrupted_active_task_as_failed(tmp_path):
+    storage = tmp_path / "tasks.json"
+    active = BackgroundTask("active", "Titre", "D", status=TaskStatus.RUNNING)
+    storage.write_text(json.dumps({"version": 1, "tasks": [active.to_dict()]}))
+    manager = TaskManager(
+        "fake", storage_path=storage, output_dir=tmp_path / "out",
+        router=FakeRouter(), executor=FakeExecutor(),
+        client_factory=lambda: object(), auto_start=False,
+    )
+    restored = manager.get_task("active")
+    assert restored.status is TaskStatus.FAILED
+    persisted = json.loads(storage.read_text(encoding="utf-8"))["tasks"][0]
+    assert persisted["status"] == "FAILED"
+    assert persisted["finished_at"]
+
+
+def test_unread_result_persists_then_becomes_seen_after_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.background_tasks.manager.notifications.publish", lambda *a, **k: None)
+    storage = tmp_path / "persistent" / "tasks.json"
+    kwargs = {
+        "router": FakeRouter(),
+        "executor": FakeExecutor(),
+        "storage_path": storage,
+        "output_dir": tmp_path / "out",
+        "client_factory": lambda: object(),
+    }
+    first = TaskManager("fake", **kwargs)
+    created = first.create_task("persistée", "D")
+    completed = wait_for(first, created.id, {TaskStatus.COMPLETED})
+    assert not completed.seen
+    first.close(wait=True)
+
+    second = TaskManager("fake", **kwargs)
+    try:
+        unread = second.list_unread_completed_tasks()
+        assert [item.id for item in unread] == [created.id]
+        result = second.get_task_result(created.id, mark_seen=True)
+        assert result["seen"] is True
+        assert second.list_unread_completed_tasks() == []
+    finally:
+        second.close(wait=True)
+
+    persisted = json.loads(storage.read_text(encoding="utf-8"))
+    restored = next(item for item in persisted["tasks"] if item["id"] == created.id)
+    assert restored["seen"] is True
 
 
 def test_manager_builds_loop_bound_resources_in_worker_thread(make_manager):
@@ -212,7 +353,9 @@ class FakeGateway:
 
     async def generate_live(self, model, prompt, **kwargs):
         self.live_calls.append({"model": model, "prompt": prompt, **kwargs})
-        return SimpleNamespace(text=self.text, total_tokens=7)
+        return SimpleNamespace(
+            text=self.text, total_tokens=7, completion_signal="generation_complete"
+        )
 
     async def generate_classic(self, model, prompt, **kwargs):
         self.classic_calls.append({"model": model, "prompt": prompt, **kwargs})
@@ -262,7 +405,7 @@ def test_router_live_timeout_is_explicit_and_bounded():
         object(), BackgroundModelConfig(timeout_seconds=0.01),
         FakeResolver(), gateway=HangingGateway(),
     )
-    with pytest.raises(RoutingError, match="turn_complete"):
+    with pytest.raises(RoutingError, match="signal de fin"):
         asyncio.run(router.route("T", "D", TaskPriority.NORMAL))
 
 
@@ -327,7 +470,7 @@ def test_live_gateway_uses_audio_transcription_until_turn_complete():
     assert calls[-1] == "closed"
 
 
-def test_live_gateway_requires_turn_complete_even_with_partial_text():
+def test_live_gateway_requires_completion_signal_even_with_partial_text():
     message = SimpleNamespace(
         server_content=SimpleNamespace(
             model_turn=SimpleNamespace(parts=[]),
@@ -348,8 +491,113 @@ def test_live_gateway_requires_turn_complete_even_with_partial_text():
         async def __aexit__(self, *args): return None
 
     client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
-    with pytest.raises(RuntimeError, match="sans turn_complete"):
+    with pytest.raises(RuntimeError, match="sans signal de fin"):
         asyncio.run(BackgroundModelGateway(client).generate_live(LIVE_MODEL, "D", system_instruction="I"))
+
+
+def test_live_gateway_accepts_sdk_generation_complete_after_all_transcripts():
+    """Utilise les classes du SDK installé, pas un schéma inventé."""
+    closed = []
+    messages = [
+        genai_types.LiveServerMessage(
+            usage_metadata=genai_types.UsageMetadata(total_token_count=1)
+        ),
+        genai_types.LiveServerMessage(server_content=genai_types.LiveServerContent(
+            model_turn=genai_types.Content(role="model", parts=[
+                genai_types.Part(inline_data=genai_types.Blob(
+                    data=b"audio", mime_type="audio/pcm;rate=24000"
+                ))
+            ]),
+            output_transcription=genai_types.Transcription(text="résultat "),
+            grounding_metadata=genai_types.GroundingMetadata(grounding_chunks=[
+                genai_types.GroundingChunk(web=genai_types.GroundingChunkWeb(
+                    title="Source", uri="https://example.test/source"
+                ))
+            ]),
+        )),
+        genai_types.LiveServerMessage(server_content=genai_types.LiveServerContent(
+            output_transcription=genai_types.Transcription(text="complet"),
+            generation_complete=True,
+        )),
+    ]
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                for message in messages:
+                    yield message
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): closed.append(True)
+
+    client = SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    ))
+    result = asyncio.run(BackgroundModelGateway(client).generate_live(
+        LIVE_MODEL, "D", system_instruction="I"
+    ))
+    assert result.text == "résultat complet"
+    assert result.completion_signal == "generation_complete"
+    assert result.sources == ["https://example.test/source"]
+    assert closed == [True]
+
+
+def test_live_gateway_accepts_sdk_interaction_idle_as_terminal():
+    message = genai_types.LiveServerMessage(
+        server_content=genai_types.LiveServerContent(
+            output_transcription=genai_types.Transcription(text="terminé"),
+            interaction_status=genai_types.InteractionStatus.IDLE,
+        )
+    )
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values(): yield message
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): return None
+
+    gateway = BackgroundModelGateway(SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    )))
+    result = asyncio.run(gateway.generate_live(
+        LIVE_MODEL, "D", system_instruction="I"
+    ))
+    assert result.text == "terminé"
+    assert result.completion_signal == "interaction_status=IDLE"
+
+
+def test_live_gateway_rejects_interrupted_partial_sdk_response():
+    message = genai_types.LiveServerMessage(
+        server_content=genai_types.LiveServerContent(
+            output_transcription=genai_types.Transcription(text="partiel"),
+            interrupted=True,
+            turn_complete=True,
+        )
+    )
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values(): yield message
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): return None
+
+    gateway = BackgroundModelGateway(SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    )))
+    with pytest.raises(RuntimeError, match="interrompue") as captured:
+        asyncio.run(gateway.generate_live(LIVE_MODEL, "D", system_instruction="I"))
+    assert classify_background_error(captured.value).category == "LIVE_PROTOCOL"
 
 
 def test_live_gateway_cancellation_closes_session():
@@ -738,12 +986,21 @@ def test_classic_gateway_disables_afc_for_server_tool():
     calls = []
     async def generate_content(**kwargs):
         calls.append(kwargs)
-        return SimpleNamespace(text="ok", usage_metadata=SimpleNamespace(total_token_count=3))
+        metadata = genai_types.GroundingMetadata(grounding_chunks=[
+            genai_types.GroundingChunk(web=genai_types.GroundingChunkWeb(
+                title="Source", uri="https://example.test/classic"
+            ))
+        ])
+        return SimpleNamespace(
+            text="ok", usage_metadata=SimpleNamespace(total_token_count=3),
+            candidates=[SimpleNamespace(grounding_metadata=metadata)],
+        )
     client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
     result = asyncio.run(BackgroundModelGateway(client).generate_classic(
         DEFAULT_COMPLEX_MODEL, "D", tools=[{"google_search": {}}]
     ))
     assert result.text == "ok"
+    assert result.sources == ["https://example.test/classic"]
     assert calls[0]["config"]["automatic_function_calling"] == {"disable": True}
 
 
@@ -784,6 +1041,8 @@ def test_simple_medium_use_live_without_complex_quota(tmp_path, complexity):
     assert result.files and Path(result.files[0]).exists()
     assert gateway.live_calls[0]["model"] == LIVE_MODEL
     assert not gateway.classic_calls
+    assert result.transport == "Live/BidiGenerateContent"
+    assert result.completion_signal == "generation_complete"
     assert quota.reserved == quota.attempted == quota.finished == 0
 
 
@@ -791,6 +1050,7 @@ def test_complex_uses_classic_and_counts_attempt(tmp_path):
     result, gateway, quota, _ = execute_with_complexity(tmp_path, TaskComplexity.COMPLEX)
     assert result.files
     assert gateway.classic_calls[0]["model"] == DEFAULT_COMPLEX_MODEL
+    assert result.transport == "GenerateContent"
     assert quota.reserved == quota.attempted == quota.finished == 1
 
 
@@ -904,6 +1164,7 @@ def test_discovery_filters_bidi_prefers_current_stable_and_validates_connection(
     resolution = asyncio.run(resolver.resolve())
     assert resolution.model == "gemini-3.8-live"
     assert resolution.transport == "Live/BidiGenerateContent"
+    assert resolution.completion_signal == "turn_complete"
     assert [item[0] for item in calls] == ["connect", "send", "close"]
     assert calls[0][2]["response_modalities"] == ["AUDIO"]
     assert calls[0][2]["output_audio_transcription"] == {}

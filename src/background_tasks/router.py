@@ -119,7 +119,8 @@ class TaskRouter:
             )
         except asyncio.TimeoutError as exc:
             raise RoutingError(
-                f"Le cycle Live du Router n'a pas produit de turn_complete sous {self.config.timeout_seconds:.0f}s."
+                "Le cycle Live du Router n'a pas produit de signal de fin "
+                f"sous {self.config.timeout_seconds:.0f}s."
             ) from exc
         except RoutingError:
             raise

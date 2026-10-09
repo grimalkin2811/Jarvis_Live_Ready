@@ -59,6 +59,9 @@ class BackgroundTask:
     complexity: TaskComplexity | None = None
     task_type: str | None = None
     model: str | None = None
+    transport: str | None = None
+    completion_signal: str | None = None
+    sources: list[str] = field(default_factory=list)
     progress: int = 0
     current_step: str = "En attente de routage"
     current_step_number: int = 0

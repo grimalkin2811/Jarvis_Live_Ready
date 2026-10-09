@@ -15,6 +15,20 @@ from google.genai import types
 class TextModelResponse:
     text: str
     total_tokens: int = 0
+    completion_signal: str | None = None
+    sources: list[str] = field(default_factory=list)
+
+
+def _grounding_source_urls(metadata) -> list[str]:
+    """Extrait sans doublon les URI de grounding exposées par le SDK."""
+    found: list[str] = []
+    for chunk in getattr(metadata, "grounding_chunks", None) or []:
+        for kind in ("web", "retrieved_context", "maps"):
+            source = getattr(chunk, kind, None)
+            uri = str(getattr(source, "uri", "") or "").strip()
+            if uri and uri not in found:
+                found.append(uri)
+    return found
 
 
 @dataclass
@@ -27,6 +41,10 @@ class LiveCycleTrace:
     transcription_chars: int = 0
     audio_messages: int = 0
     turn_complete: bool = False
+    generation_complete: bool = False
+    interaction_idle: bool = False
+    interrupted: bool = False
+    completion_signal: str | None = None
     session_closed: bool = False
     last_event: str = "aucun"
     last_error: str = "aucune"
@@ -144,7 +162,12 @@ def classify_background_error(error) -> BackgroundErrorInfo:
         return BackgroundErrorInfo("LOCAL_QUOTA_GUARD")
     if "timeout" in text or "délai" in text:
         return BackgroundErrorInfo("TIMEOUT")
-    if "sans turn_complete" in text or "sans transcription audio" in text:
+    if (
+        "sans signal de fin" in text
+        or "sans turn_complete" in text
+        or "sans transcription audio" in text
+        or "réponse live interrompue" in text
+    ):
         return BackgroundErrorInfo("LIVE_PROTOCOL")
     return BackgroundErrorInfo("CODE_OR_PROTOCOL", status, live_code)
 
@@ -227,6 +250,10 @@ class BackgroundModelGateway:
             trace.transcription_chars = 0
             trace.audio_messages = 0
             trace.turn_complete = False
+            trace.generation_complete = False
+            trace.interaction_idle = False
+            trace.interrupted = False
+            trace.completion_signal = None
             trace.session_closed = False
             trace.last_event = "configuration"
             trace.last_error = "aucune"
@@ -242,6 +269,7 @@ class BackgroundModelGateway:
             if tools:
                 config["tools"] = tools
             chunks: list[str] = []
+            sources: list[str] = []
             tokens = 0
             entered = False
             trace.phase = "connexion"
@@ -266,6 +294,11 @@ class BackgroundModelGateway:
                             trace.audio_messages += 1
                             trace.last_event = "audio reçu"
                         server = getattr(response, "server_content", None)
+                        for uri in _grounding_source_urls(
+                            getattr(server, "grounding_metadata", None)
+                        ):
+                            if uri not in sources:
+                                sources.append(uri)
                         # Une sortie AUDIO place le texte utilisable uniquement
                         # dans output_transcription. Les octets sont comptés
                         # pour le diagnostic mais jamais conservés ni joués.
@@ -277,10 +310,35 @@ class BackgroundModelGateway:
                             trace.transcription_fragments += 1
                             trace.transcription_chars += len(fragment)
                             trace.last_event = "transcription reçue"
+                        if getattr(server, "interrupted", False):
+                            trace.interrupted = True
+                            trace.last_event = "interrupted"
+                            raise RuntimeError(
+                                "Réponse Live interrompue avant sa finalisation."
+                            )
+
+                        # Pour une sortie AUDIO non jouée, generation_complete
+                        # est le signal officiel que tout le contenu (dont la
+                        # dernière transcription) a été généré. turn_complete
+                        # peut arriver plus tard car le serveur estime le temps
+                        # de lecture audio. Les SDK récents terminent aussi
+                        # receive() sur interaction_status=IDLE.
+                        trace.generation_complete = bool(
+                            getattr(server, "generation_complete", False)
+                        )
+                        status = getattr(server, "interaction_status", None)
+                        status_value = str(getattr(status, "value", status) or "").upper()
+                        trace.interaction_idle = status_value == "IDLE"
                         if getattr(server, "turn_complete", False):
                             trace.turn_complete = True
-                            trace.phase = "fin de tour"
-                            trace.last_event = "turn_complete"
+                            trace.completion_signal = "turn_complete"
+                        elif trace.interaction_idle:
+                            trace.completion_signal = "interaction_status=IDLE"
+                        elif trace.generation_complete:
+                            trace.completion_signal = "generation_complete"
+                        if trace.completion_signal:
+                            trace.phase = "fin de réponse"
+                            trace.last_event = trace.completion_signal
                             break
             except asyncio.CancelledError:
                 trace.last_error = "CancelledError"
@@ -300,17 +358,18 @@ class BackgroundModelGateway:
                 # __aexit__ lorsque la session avait effectivement été ouverte.
                 trace.session_closed = entered
             text = "".join(chunks).strip()
-            if not trace.turn_complete:
+            if trace.completion_signal is None:
                 raise RuntimeError(
-                    "La session Gemini Live s'est fermée sans turn_complete "
-                    f"(transcription partielle: {len(text)} caractère(s))."
+                    "La session Gemini Live s'est fermée sans signal de fin "
+                    "(turn_complete, generation_complete ou interaction_status=IDLE) "
+                    f"avec {len(text)} caractère(s) de transcription partielle."
                 )
             if not text:
                 raise RuntimeError(
                     "Gemini Live a terminé son tour sans transcription audio exploitable."
                 )
             trace.phase = "finalisation"
-            return TextModelResponse(text, tokens)
+            return TextModelResponse(text, tokens, trace.completion_signal, sources)
 
         def trace_detail() -> str:
             elapsed = time.monotonic() - trace.started_at
@@ -319,7 +378,12 @@ class BackgroundModelGateway:
                 f"messages={trace.messages}; audio={trace.audio_messages}; "
                 f"fragments_transcription={trace.transcription_fragments}; "
                 f"caractères_transcrits={trace.transcription_chars}; "
-                f"turn_complete={trace.turn_complete}; session_fermée={trace.session_closed}; "
+                f"turn_complete={trace.turn_complete}; "
+                f"generation_complete={trace.generation_complete}; "
+                f"interaction_idle={trace.interaction_idle}; "
+                f"interrupted={trace.interrupted}; "
+                f"signal_fin={trace.completion_signal}; "
+                f"session_fermée={trace.session_closed}; "
                 f"dernier_événement={trace.last_event}; dernière_erreur={trace.last_error}; "
                 f"historique_erreurs={trace.error_history[-3:]}"
             )
@@ -382,6 +446,17 @@ class BackgroundModelGateway:
             )
             usage = getattr(response, "usage_metadata", None)
             tokens = int(getattr(usage, "total_token_count", 0) or 0)
-            return TextModelResponse(str(getattr(response, "text", "") or "").strip(), tokens)
+            sources: list[str] = []
+            for candidate in getattr(response, "candidates", None) or []:
+                for uri in _grounding_source_urls(
+                    getattr(candidate, "grounding_metadata", None)
+                ):
+                    if uri not in sources:
+                        sources.append(uri)
+            return TextModelResponse(
+                str(getattr(response, "text", "") or "").strip(),
+                tokens,
+                sources=sources,
+            )
 
         return await self._with_bounded_retry(operation, before_attempt=before_attempt)

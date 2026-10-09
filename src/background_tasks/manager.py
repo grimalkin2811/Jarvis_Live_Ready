@@ -27,6 +27,18 @@ from .router import TaskRouter
 
 TaskHook = Callable[[BackgroundTask], None]
 
+_ALLOWED_STATUS_TRANSITIONS = {
+    TaskStatus.QUEUED: {TaskStatus.RUNNING, TaskStatus.FAILED, TaskStatus.CANCELLED},
+    TaskStatus.RUNNING: {
+        TaskStatus.RUNNING, TaskStatus.WAITING_FOR_TOOL,
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED,
+    },
+    TaskStatus.WAITING_FOR_TOOL: {
+        TaskStatus.WAITING_FOR_TOOL, TaskStatus.RUNNING,
+        TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED,
+    },
+}
+
 
 class TaskManager:
     def __init__(
@@ -209,6 +221,7 @@ class TaskManager:
             return
         try:
             payload = json.loads(self.storage_path.read_text(encoding="utf-8"))
+            recovered = False
             for raw in payload.get("tasks", []):
                 task = BackgroundTask.from_dict(raw)
                 if task.status not in TERMINAL_STATUSES:
@@ -216,7 +229,10 @@ class TaskManager:
                     task.finished_at = utc_now()
                     task.error = "Jarvis a été arrêté avant la fin de cette tâche. Tu peux la relancer."
                     task.current_step = "Interrompue par l'arrêt précédent"
+                    recovered = True
                 self._tasks[task.id] = task
+            if recovered:
+                self._save()
         except Exception as exc:
             print(f"[Tasks] Historique illisible, ignoré : {exc}")
 
@@ -267,12 +283,33 @@ class TaskManager:
             )
 
         result = await self.executor.execute(self._tasks[task_id], route, update)
+        text = str(result.text or "").strip()
+        if not text:
+            raise RuntimeError("Une tâche ne peut pas être terminée avec un résultat vide.")
+        invalid_files = [
+            str(item) for item in result.files
+            if not Path(item).is_file() or Path(item).stat().st_size <= 0
+        ]
+        if invalid_files:
+            raise RuntimeError(
+                "Livrable absent ou vide; tâche non terminée: " + ", ".join(invalid_files)
+            )
+        request = task.description.lower()
+        if (
+            any(word in request for word in ("document", "fichier", "rapport", "markdown"))
+            and not result.files
+        ):
+            raise RuntimeError("Le document demandé n'a pas été produit.")
         completed = self._mutate(
             task_id, status=TaskStatus.COMPLETED, finished_at=utc_now(), progress=100,
             current_step="Terminée", current_step_number=route.estimated_steps,
             result=result.text, summary=result.summary, files=result.files,
-            token_usage=result.tokens, seen=False,
+            token_usage=result.tokens, transport=result.transport,
+            completion_signal=result.completion_signal, sources=result.sources,
+            seen=False,
         )
+        if completed.status is not TaskStatus.COMPLETED:
+            return
         try:
             notifications.publish("Tâche terminée", f"J'ai terminé : {completed.title}", silent=True)
         except Exception:
@@ -308,6 +345,24 @@ class TaskManager:
     def _mutate(self, task_id: str, **changes) -> BackgroundTask:
         with self._lock:
             task = self._tasks[task_id]
+            requested_status = changes.get("status")
+            if (
+                task.status in TERMINAL_STATUSES
+                and requested_status is not None
+                and requested_status is not task.status
+            ):
+                # Une coroutine qui se termine après une annulation/expiration
+                # ne peut jamais ressusciter la tâche ni écraser son verdict.
+                return self._clone(task)
+            if (
+                requested_status is not None
+                and requested_status is not task.status
+                and requested_status not in _ALLOWED_STATUS_TRANSITIONS.get(task.status, set())
+            ):
+                raise RuntimeError(
+                    f"Transition de tâche interdite: {task.status.value} → "
+                    f"{requested_status.value}"
+                )
             for name, value in changes.items():
                 setattr(task, name, value)
             snapshot = self._clone(task)
@@ -341,10 +396,14 @@ class TaskManager:
             if task is None or task.status in TERMINAL_STATUSES:
                 return False
             future = self._futures.get(task.id)
+        cancelled = self._mutate(
+            task.id, status=TaskStatus.CANCELLED, finished_at=utc_now(),
+            current_step="Annulée", error="Tâche annulée.",
+        )
+        if cancelled.status is not TaskStatus.CANCELLED:
+            return False
         if future is not None:
             future.cancel()
-        else:
-            self._mutate(task.id, status=TaskStatus.CANCELLED, finished_at=utc_now(), current_step="Annulée")
         return True
 
     def mark_task_as_seen(self, task_id: str) -> bool:
@@ -366,7 +425,9 @@ class TaskManager:
             "summary": task.summary, "result": task.result, "files": task.files,
             "error": task.error, "partial_errors": task.partial_errors,
             "model": task.model, "complexity": task.complexity.value if task.complexity else None,
-            "task_type": task.task_type, "routing_reason": task.routing_reason,
+            "transport": task.transport, "completion_signal": task.completion_signal,
+            "sources": task.sources, "task_type": task.task_type,
+            "routing_reason": task.routing_reason,
             "steps": task.total_steps, "seen": task.seen,
         }
 
@@ -381,6 +442,7 @@ class TaskManager:
             "model": resolution.model if resolution else None,
             "transport": resolution.transport if resolution else "Live/BidiGenerateContent",
             "validated": bool(resolution and resolution.validated),
+            "completion_signal": resolution.completion_signal if resolution else None,
         }
 
     def resolve_live_model(self, timeout: float = 60.0) -> dict:
@@ -393,6 +455,7 @@ class TaskManager:
             "model": resolution.model,
             "transport": resolution.transport,
             "validated": resolution.validated,
+            "completion_signal": resolution.completion_signal,
         }
 
 

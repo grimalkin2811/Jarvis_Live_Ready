@@ -19,6 +19,9 @@ class ExecutionResult:
     summary: str
     files: list[str] = field(default_factory=list)
     tokens: int = 0
+    transport: str | None = None
+    completion_signal: str | None = None
+    sources: list[str] = field(default_factory=list)
 
 
 class TaskExecutionError(RuntimeError):
@@ -111,7 +114,15 @@ class TaskExecutor:
                 path = (self.output_dir / f"{slug}-{task.id[:8]}.md").resolve()
                 path.write_text(f"# {task.title}\n\n{text}\n", encoding="utf-8")
                 files.append(str(path))
-            return ExecutionResult(text=text, summary=summary, files=files, tokens=response.total_tokens)
+            return ExecutionResult(
+                text=text,
+                summary=summary,
+                files=files,
+                tokens=response.total_tokens,
+                transport="GenerateContent" if complex_call else "Live/BidiGenerateContent",
+                completion_signal=getattr(response, "completion_signal", None),
+                sources=list(getattr(response, "sources", None) or []),
+            )
         except asyncio.TimeoutError as exc:
             raise TaskExecutionError(
                 f"Délai d'exécution dépassé ({self.config.timeout_seconds:.0f} s); la session a été annulée et fermée."
