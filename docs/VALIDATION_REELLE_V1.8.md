@@ -40,7 +40,9 @@ Cette commande effectue de vraies connexions/requêtes :
 - Google Search grounding sur le modèle Live résolu ;
 - cycle simple, résultat, non-vu puis vu ;
 - tâche complexe et document avec Gemini 3.8 Flash ;
-- deux tâches simultanées Gemini 3 Live/3.8 ;
+- deux tâches simultanées avec chronologies indépendantes et état de quota
+  local isolé ; si 3.8 est déjà refusé par Google, deux tâches Live sont testées
+  réellement et la partie Live+Flash reste `NON_TESTABLE` ;
 - connexion Gemini 2.5 pendant que les deux tâches sont actives ;
 - compteurs 3.8 et relecture persistante ;
 - refus local à la limite sans consommer d’appel supplémentaire ;
@@ -52,6 +54,11 @@ Chaque tentative 429/503 réellement envoyée est toutefois comptée et peut
 augmenter ce total dans les limites configurées. Il ne tente jamais d’épuiser
 volontairement RPM/RPD/TPM. Les données du test sont placées dans un dossier
 temporaire afin de ne pas polluer l’historique utilisateur.
+
+Le rapport sépare `EXTERNAL_QUOTA`, `EXTERNAL_SERVICE`, `LOCAL_QUOTA_GUARD`,
+`TIMEOUT`, `LIVE_PROTOCOL` et `CODE_OR_PROTOCOL`. Chaque tâche simultanée inclut sa chronologie.
+Un document ne passe que si le résultat est non vide et si tous les fichiers
+référencés existent et sont non vides.
 
 Le rapport JSON est écrit dans le dossier de logs utilisateur. Un autre chemin
 peut être donné avec `--report`, jamais avec une clé.

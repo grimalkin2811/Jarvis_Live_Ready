@@ -32,10 +32,25 @@ def test_api_without_key_is_explicitly_non_testable(monkeypatch):
     assert not report.failed()
 
 
-def test_external_service_status_is_not_reported_as_code_failure():
-    assert validation.external_status("429 RESOURCE_EXHAUSTED") == "NON_TESTABLE"
-    assert validation.external_status("503 UNAVAILABLE high demand") == "NON_TESTABLE"
-    assert validation.external_status("JSON invalide") == "FAIL"
+def test_failure_classification_separates_provider_local_timeout_and_code():
+    assert validation.classify_failure("429 RESOURCE_EXHAUSTED") == (
+        "NON_TESTABLE", "EXTERNAL_QUOTA"
+    )
+    assert validation.classify_failure("503 UNAVAILABLE high demand") == (
+        "NON_TESTABLE", "EXTERNAL_SERVICE"
+    )
+    assert validation.classify_failure("Limite Gemini 3.8 atteinte (5 appels/minute)") == (
+        "NON_TESTABLE", "LOCAL_QUOTA_GUARD"
+    )
+    assert validation.classify_failure("Timeout Gemini Live après 90s") == (
+        "FAIL", "TIMEOUT"
+    )
+    assert validation.classify_failure("session fermée sans turn_complete") == (
+        "FAIL", "LIVE_PROTOCOL"
+    )
+    assert validation.classify_failure("JSON invalide") == (
+        "FAIL", "CODE_OR_PROTOCOL"
+    )
 
 
 def test_json_report_contains_no_secret(tmp_path):

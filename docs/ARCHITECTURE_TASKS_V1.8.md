@@ -83,7 +83,10 @@ API centrale : `create_task`, `get_task`, `list_tasks`, `list_active_tasks`,
 Les codes 429 et 503 sont réessayés avec backoff exponentiel borné. Après le
 nombre configuré de tentatives, une `BackgroundServiceError` conserve le code
 et signale l’indisponibilité externe; aucun retry infini. Les autres erreurs ne
-sont pas réessayées aveuglément. Le harness les distingue d’une erreur de code.
+sont pas réessayées aveuglément. Un timeout Live indique phase, nombre de
+messages/audio/transcriptions, `turn_complete`, fermeture et dernier événement.
+Le harness distingue quota fournisseur, service fournisseur, garde locale,
+timeout et défaut de code.
 
 ## Quota 3.8
 

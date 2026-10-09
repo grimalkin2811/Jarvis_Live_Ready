@@ -11,9 +11,10 @@ Exemples Windows, depuis la racine du dépôt :
     py -3 scripts\\validate_v180_real.py --s1-s6
     py -3 scripts\\validate_v180_real.py --manual-protocol
 
-``--api`` consomme normalement deux appels du quota 3.8 au maximum : une
-exécution complexe, une deuxième pendant le test de concurrence, et aucun
-appel volontaire destiné à épuiser une limite.
+``--api`` tente une exécution complexe puis, uniquement si 3.8 est disponible,
+une deuxième pendant le test de concurrence. Les retries bornés réellement
+envoyés sont comptés. Après un refus fournisseur, le scénario n'insiste pas et
+marque la partie Live+Flash non testable.
 """
 from __future__ import annotations
 
@@ -190,9 +191,29 @@ async def check_live_model(client, model: str) -> None:
         return
 
 
-def external_status(error: str) -> str:
+def classify_failure(error: str) -> tuple[str, str]:
+    """Retourne (verdict, origine) sans transformer une panne en succès."""
     text = str(error or "").lower()
-    return "NON_TESTABLE" if any(marker in text for marker in ("429", "503", "resource_exhausted", "unavailable", "high demand", "external service")) else "FAIL"
+    if "429" in text or "resource_exhausted" in text:
+        return "NON_TESTABLE", "EXTERNAL_QUOTA"
+    if "quota gemini 3.8 épuisé" in text or "appels/minute" in text or "tokens/minute" in text:
+        return "NON_TESTABLE", "LOCAL_QUOTA_GUARD"
+    if any(marker in text for marker in ("503", "unavailable", "high demand", "external service")):
+        return "NON_TESTABLE", "EXTERNAL_SERVICE"
+    if "timeout" in text or "délai" in text:
+        return "FAIL", "TIMEOUT"
+    if "sans turn_complete" in text or "sans transcription audio" in text:
+        return "FAIL", "LIVE_PROTOCOL"
+    return "FAIL", "CODE_OR_PROTOCOL"
+
+
+def external_status(error: str) -> str:
+    return classify_failure(error)[0]
+
+
+def failure_detail(error: str) -> str:
+    status, origin = classify_failure(error)
+    return f"classification={origin}; verdict={status}; erreur={error or 'aucune'}"
 
 
 async def run_api_validation(report: Report) -> None:
@@ -270,14 +291,18 @@ async def run_api_validation(report: Report) -> None:
                 "Quelle est la météo prévue demain à Paris ? Donne une source web vérifiable.",
                 system_instruction="Utilise Google Search et réponds brièvement en français avec la source consultée.",
                 tools=[{"google_search": {}}],
+                timeout_seconds=config.timeout_seconds,
             ),
-            timeout=config.timeout_seconds,
+            timeout=config.timeout_seconds + 1.0,
         )
         report.add("API RÉELLE", "Google Search grounding Live", "PASS" if grounded.text else "FAIL", f"réponse={grounded.text[:240]}; tokens={grounded.total_tokens}")
     except Exception as exc:
         code = api_status_code(exc)
-        status = "NON_TESTABLE" if code in (429, 503) or external_status(str(exc)) == "NON_TESTABLE" else "FAIL"
-        report.add("API RÉELLE", "Google Search grounding Live", status, f"external service unavailable={status == 'NON_TESTABLE'}; {type(exc).__name__}: {exc}")
+        status, origin = classify_failure(str(exc))
+        report.add(
+            "API RÉELLE", "Google Search grounding Live", status,
+            f"classification={origin}; status_code={code}; {type(exc).__name__}: {exc}",
+        )
 
     await run_background_scenarios(report, key, config, client, main_model, resolution.model)
 
@@ -288,8 +313,27 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
         # Important: le Manager crée son propre client dans SON thread. Ne
         # jamais lui transmettre le client attaché à la boucle du harness.
         manager = TaskManager(key, config=config, storage_path=root / "tasks.json", output_dir=root / "results")
-        events: dict[str, list[str]] = {}
-        manager.add_hook(lambda task: events.setdefault(task.id, []).append(task.status.value))
+        trace_started = time.monotonic()
+        events: dict[str, list[dict]] = {}
+
+        def record_event(task) -> None:
+            events.setdefault(task.id, []).append({
+                "t": round(time.monotonic() - trace_started, 3),
+                "status": task.status.value,
+                "progress": task.progress,
+                "step": task.current_step,
+                "model": task.model,
+                "error": task.error,
+            })
+
+        def timeline(task_id: str) -> str:
+            return " | ".join(
+                f"+{item['t']:.3f}s {item['status']} {item['progress']}% {item['step']}"
+                + (f" error={item['error']}" if item["error"] else "")
+                for item in events.get(task_id, [])
+            )
+
+        manager.add_hook(record_event)
         try:
             resolved = manager.resolve_live_model()
             report.add("BACKGROUND", "modèle Live dans la boucle worker", "PASS" if resolved["model"] == live_model else "FAIL", repr(resolved))
@@ -305,9 +349,12 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
             unread = any(item.id == simple.id for item in manager.list_unread_completed_tasks())
             result = manager.get_task_result(simple.id, mark_seen=True)
             seen = manager.get_task(simple.id).seen
-            state_path = events.get(simple.id, [])
+            state_path = [item["status"] for item in events.get(simple.id, [])]
             lifecycle = simple.status.value == "QUEUED" and "RUNNING" in state_path and "COMPLETED" in state_path
-            report.add("BACKGROUND", "cycle QUEUED/RUNNING/COMPLETED", "PASS" if lifecycle else simple_status, " -> ".join(state_path))
+            report.add(
+                "BACKGROUND", "cycle QUEUED/RUNNING/COMPLETED",
+                "PASS" if lifecycle else simple_status, timeline(simple.id),
+            )
             report.add("BACKGROUND", "non vue puis vue", "PASS" if unread and seen and result and result.get("result") else simple_status)
 
             quota_before = manager.quota_status()
@@ -321,36 +368,135 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
             quota_delta = quota_after["calls_today"] - quota_before["calls_today"]
             complex_ok = complex_done.status is TaskStatus.COMPLETED and complex_done.model == config.complex_model and bool(complex_done.result)
             complex_status = "PASS" if complex_ok else external_status(complex_done.error)
-            report.add("BACKGROUND", "tâche complexe Gemini 3.8 Flash", complex_status, _task_detail(complex_done))
-            # Un 503 après envoi est un appel réel et doit être compté.
-            quota_ok = quota_delta >= 1 if complex_done.model == config.complex_model else quota_delta == 0
-            report.add("QUOTA", "tentative(s) 3.8 comptabilisée(s)", "PASS" if quota_ok else "FAIL", f"delta={quota_delta}; avant={quota_before}; après={quota_after}")
-            document_ok = bool(complex_done.files) and all(Path(item).exists() for item in complex_done.files)
-            report.add("BACKGROUND", "document référencé", "PASS" if document_ok else complex_status, repr(complex_done.files))
-
-            first = manager.create_task("Conseils courts", "Donne cinq conseils simples pour organiser un bureau.")
-            second = manager.create_task("Comparatif stockage", "Fais une recherche poussée multi-sources comparant SSD NVMe et stockage cloud pour une PME, avec analyse détaillée.")
-            active_together = False
-            deadline = time.monotonic() + 30
-            while time.monotonic() < deadline:
-                active = {item.id for item in manager.list_active_tasks()}
-                if first.id in active and second.id in active:
-                    active_together = True
-                    break
-                await asyncio.sleep(0.05)
-            try:
-                await asyncio.wait_for(check_live_model(main_client, main_model), timeout=30)
-                report.add("NON-BLOCAGE", "Gemini 2.5 pendant deux tâches", "PASS" if manager.list_active_tasks() else "FAIL")
-            except Exception as exc:
-                report.add("NON-BLOCAGE", "Gemini 2.5 pendant deux tâches", external_status(str(exc)), f"{type(exc).__name__}: {exc}")
-            first_done, second_done = await asyncio.gather(
-                wait_terminal(manager, first.id, timeout=config.task_timeout_seconds + 15),
-                wait_terminal(manager, second.id, timeout=config.task_timeout_seconds + 15),
+            complex_origin = "NONE" if complex_ok else classify_failure(complex_done.error)[1]
+            report.add(
+                "BACKGROUND", "tâche complexe Gemini 3.8 Flash", complex_status,
+                f"classification={complex_origin}; {_task_detail(complex_done)}; timeline={timeline(complex_done.id)}",
             )
-            statuses = [external_status(first_done.error), external_status(second_done.error)]
-            both_completed = first_done.status is TaskStatus.COMPLETED and second_done.status is TaskStatus.COMPLETED
-            concurrency_status = "PASS" if active_together and both_completed else ("NON_TESTABLE" if "NON_TESTABLE" in statuses else "FAIL")
-            report.add("BACKGROUND", "deux tâches simultanées indépendantes", concurrency_status, f"{_task_detail(first_done)} | {_task_detail(second_done)}")
+            # Chaque retry 429/503 a été réellement envoyé et doit compter
+            # exactement une fois; ni sous-comptage, ni double comptage.
+            if complex_ok:
+                expected_delta = 1
+            elif complex_origin in {"EXTERNAL_QUOTA", "EXTERNAL_SERVICE"}:
+                expected_delta = config.retry_attempts
+            elif complex_done.model != config.complex_model:
+                expected_delta = 0
+            else:
+                expected_delta = None
+            quota_ok = expected_delta is not None and quota_delta == expected_delta
+            report.add(
+                "QUOTA", "tentative(s) 3.8 comptabilisée(s)",
+                "PASS" if quota_ok else "INFO" if expected_delta is None else "FAIL",
+                f"delta={quota_delta}; attendu={expected_delta}; avant={quota_before}; après={quota_after}",
+            )
+            valid_files = [
+                Path(item) for item in complex_done.files
+                if Path(item).is_file() and Path(item).stat().st_size > 0
+            ]
+            document_ok = (
+                complex_done.status is TaskStatus.COMPLETED
+                and bool(complex_done.result)
+                and bool(complex_done.files)
+                and len(valid_files) == len(complex_done.files)
+            )
+            report.add(
+                "BACKGROUND", "document référencé",
+                "PASS" if document_ok else complex_status,
+                f"résultat_non_vide={bool(complex_done.result)}; fichiers={complex_done.files}; "
+                f"fichiers_valides={[str(item) for item in valid_files]}",
+            )
+
+            # Le scénario simultané possède son propre état LOCAL de quota et
+            # sa propre persistance. Cela ne réinitialise évidemment aucun
+            # quota Google. Si le fournisseur vient de refuser 3.8, on teste
+            # deux vraies tâches Live et on marque séparément Live+Flash comme
+            # non testable plutôt que de provoquer d'autres appels coûteux.
+            concurrent_root = root / "concurrent"
+            concurrent_manager = TaskManager(
+                key,
+                config=config,
+                storage_path=concurrent_root / "tasks.json",
+                output_dir=concurrent_root / "results",
+            )
+            concurrent_manager.add_hook(record_event)
+            flash_blocked = complex_origin in {
+                "EXTERNAL_QUOTA", "EXTERNAL_SERVICE", "LOCAL_QUOTA_GUARD",
+            }
+            flash_available = not flash_blocked
+            try:
+                first = concurrent_manager.create_task(
+                    "Conseils courts",
+                    "Donne cinq conseils simples pour organiser un bureau.",
+                )
+                if flash_available:
+                    second = concurrent_manager.create_task(
+                        "Comparatif stockage",
+                        "Fais une recherche poussée multi-sources comparant SSD NVMe et stockage cloud pour une PME, avec analyse détaillée.",
+                    )
+                    pair_kind = "LIVE_PLUS_FLASH"
+                else:
+                    second = concurrent_manager.create_task(
+                        "Comparaison courte",
+                        "Compare brièvement deux méthodes simples d'organisation du travail.",
+                    )
+                    pair_kind = "TWO_LIVE_TASKS"
+                    report.add(
+                        "BACKGROUND", "concurrence Live + Flash",
+                        "NON_TESTABLE",
+                        f"classification={complex_origin}; quota fournisseur 3.8 indisponible lors du test complexe précédent; aucun quota Google réinitialisé",
+                    )
+
+                active_together = False
+                deadline = time.monotonic() + 30
+                while time.monotonic() < deadline:
+                    active = {item.id for item in concurrent_manager.list_active_tasks()}
+                    if first.id in active and second.id in active:
+                        active_together = True
+                        break
+                    await asyncio.sleep(0.05)
+                try:
+                    active_before_main_check = bool(concurrent_manager.list_active_tasks())
+                    await asyncio.wait_for(check_live_model(main_client, main_model), timeout=30)
+                    active_after_main_check = bool(concurrent_manager.list_active_tasks())
+                    report.add(
+                        "NON-BLOCAGE", "Gemini 2.5 pendant deux tâches",
+                        "PASS" if active_before_main_check else "FAIL",
+                        f"pair={pair_kind}; active_before={active_before_main_check}; "
+                        f"active_after={active_after_main_check}",
+                    )
+                except Exception as exc:
+                    report.add(
+                        "NON-BLOCAGE", "Gemini 2.5 pendant deux tâches",
+                        external_status(str(exc)),
+                        f"pair={pair_kind}; {failure_detail(str(exc))}",
+                    )
+                first_done, second_done = await asyncio.gather(
+                    wait_terminal(concurrent_manager, first.id, timeout=config.task_timeout_seconds + 15),
+                    wait_terminal(concurrent_manager, second.id, timeout=config.task_timeout_seconds + 15),
+                )
+                classifications = [
+                    classify_failure(item.error) if item.status is not TaskStatus.COMPLETED else ("PASS", "NONE")
+                    for item in (first_done, second_done)
+                ]
+                both_completed = all(
+                    item.status is TaskStatus.COMPLETED
+                    for item in (first_done, second_done)
+                )
+                concurrency_status = (
+                    "PASS" if active_together and both_completed
+                    else "NON_TESTABLE" if any(value[0] == "NON_TESTABLE" for value in classifications)
+                    else "FAIL"
+                )
+                report.add(
+                    "BACKGROUND", "deux tâches simultanées indépendantes",
+                    concurrency_status,
+                    f"pair={pair_kind}; active_together={active_together}; "
+                    f"classifications={classifications}; {_task_detail(first_done)}; "
+                    f"timeline_1={timeline(first_done.id)} || {_task_detail(second_done)}; "
+                    f"timeline_2={timeline(second_done.id)}",
+                )
+            finally:
+                concurrent_manager.close(wait=True)
 
             restored = ComplexModelQuota(
                 rpm=config.complex_rpm, rpd=config.complex_rpd, tpm=config.complex_tpm,

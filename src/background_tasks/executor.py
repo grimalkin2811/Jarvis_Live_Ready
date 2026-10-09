@@ -83,6 +83,9 @@ class TaskExecutor:
                     temperature=0.25,
                     before_attempt=lambda: self.quota.mark_attempt(lease),
                 )
+                response = await asyncio.wait_for(
+                    operation, timeout=self.config.timeout_seconds
+                )
             else:
                 operation = self.gateway.generate_live(
                     route.model,
@@ -90,8 +93,11 @@ class TaskExecutor:
                     system_instruction="Exécuteur interne d'une tâche Jarvis. Fournis uniquement le livrable demandé en français.",
                     tools=tools,
                     temperature=0.25,
+                    timeout_seconds=self.config.timeout_seconds,
                 )
-            response = await asyncio.wait_for(operation, timeout=self.config.timeout_seconds)
+                response = await asyncio.wait_for(
+                    operation, timeout=self.config.timeout_seconds + 1.0
+                )
             text = response.text.strip()
             if not text:
                 raise TaskExecutionError("Le modèle d'exécution a renvoyé une réponse vide.")

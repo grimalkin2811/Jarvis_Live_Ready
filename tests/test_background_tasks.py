@@ -73,13 +73,14 @@ def make_manager(tmp_path, monkeypatch):
     monkeypatch.setattr("src.background_tasks.manager.notifications.publish", lambda *a, **k: "test")
 
     def make(router=None, executor=None, config=None, client_factory=None):
+        manager_root = tmp_path / f"manager-{len(managers)}"
         manager = TaskManager(
             "fake",
             router=router or FakeRouter(),
             executor=executor or FakeExecutor(),
             config=config or BackgroundModelConfig(),
-            storage_path=tmp_path / f"tasks-{len(managers)}.json",
-            output_dir=tmp_path / "out",
+            storage_path=manager_root / "tasks.json",
+            output_dir=manager_root / "out",
             client_factory=client_factory or (lambda: object()),
         )
         managers.append(manager)
@@ -374,6 +375,89 @@ def test_live_gateway_cancellation_closes_session():
     with pytest.raises(asyncio.TimeoutError):
         asyncio.run(scenario())
     assert closed == [True]
+
+
+def test_live_gateway_internal_timeout_reports_phase_and_cleanup():
+    closed = []
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                await asyncio.Event().wait()
+                yield  # pragma: no cover
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): closed.append(True)
+
+    client = SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    ))
+    with pytest.raises(BackgroundServiceError) as captured:
+        asyncio.run(BackgroundModelGateway(client).generate_live(
+            LIVE_MODEL, "D", system_instruction="I", timeout_seconds=0.01
+        ))
+    detail = str(captured.value)
+    assert "phase=réception" in detail
+    assert "messages=0" in detail
+    assert "turn_complete=False" in detail
+    assert "session_fermée=True" in detail
+    assert closed == [True]
+
+
+def test_two_live_cycles_progress_independently_when_one_times_out():
+    closed = []
+    connection_number = 0
+
+    class Session:
+        def __init__(self, hangs): self.hangs = hangs
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                if self.hangs:
+                    await asyncio.Event().wait()
+                    return
+                yield SimpleNamespace(
+                    server_content=SimpleNamespace(
+                        output_transcription=SimpleNamespace(text="terminé"),
+                        turn_complete=True,
+                    ),
+                    usage_metadata=None,
+                )
+            return values()
+
+    class Context:
+        def __init__(self, number): self.number = number
+        async def __aenter__(self): return Session(self.number == 1)
+        async def __aexit__(self, *args): closed.append(self.number)
+
+    def connect(**kwargs):
+        nonlocal connection_number
+        connection_number += 1
+        return Context(connection_number)
+
+    client = SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=connect)
+    ))
+    gateway = BackgroundModelGateway(client)
+
+    async def scenario():
+        return await asyncio.gather(
+            gateway.generate_live(
+                LIVE_MODEL, "bloquée", system_instruction="I", timeout_seconds=0.03
+            ),
+            gateway.generate_live(
+                LIVE_MODEL, "rapide", system_instruction="I", timeout_seconds=0.03
+            ),
+            return_exceptions=True,
+        )
+
+    blocked, completed = asyncio.run(scenario())
+    assert isinstance(blocked, BackgroundServiceError)
+    assert completed.text == "terminé"
+    assert sorted(closed) == [1, 2]
 
 
 def test_live_gateway_rejects_turn_without_output_transcription_and_closes():

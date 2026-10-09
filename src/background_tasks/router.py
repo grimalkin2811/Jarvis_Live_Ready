@@ -69,8 +69,14 @@ class TaskRouter:
                         "Émets uniquement la décision JSON demandée."
                     ),
                     temperature=0.1,
+                    timeout_seconds=self.config.timeout_seconds,
                 ),
-                timeout=self.config.timeout_seconds,
+                # Garde externe pour les doubles/injections; le gateway réel
+                # produit son diagnostic détaillé une seconde plus tôt.
+                timeout=(
+                    self.config.timeout_seconds
+                    + min(1.0, max(0.01, self.config.timeout_seconds * 0.05))
+                ),
             )
             data = parse_json_object(response.text)
             required = {

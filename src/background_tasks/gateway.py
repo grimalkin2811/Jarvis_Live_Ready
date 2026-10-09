@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import time
 from dataclasses import dataclass
 
 from google.genai import types
@@ -12,6 +13,20 @@ from google.genai import types
 class TextModelResponse:
     text: str
     total_tokens: int = 0
+
+
+@dataclass
+class LiveCycleTrace:
+    started_at: float
+    attempt: int = 0
+    phase: str = "initialisation"
+    messages: int = 0
+    transcription_fragments: int = 0
+    transcription_chars: int = 0
+    audio_messages: int = 0
+    turn_complete: bool = False
+    session_closed: bool = False
+    last_event: str = "aucun"
 
 
 class BackgroundServiceError(RuntimeError):
@@ -81,8 +96,20 @@ class BackgroundModelGateway:
         system_instruction: str,
         tools=None,
         temperature: float = 0.2,
+        timeout_seconds: float | None = None,
     ) -> TextModelResponse:
+        trace = LiveCycleTrace(started_at=time.monotonic())
+
         async def operation():
+            trace.attempt += 1
+            trace.phase = "configuration"
+            trace.messages = 0
+            trace.transcription_fragments = 0
+            trace.transcription_chars = 0
+            trace.audio_messages = 0
+            trace.turn_complete = False
+            trace.session_closed = False
+            trace.last_event = "configuration"
             # Gemini 3.8 Live n'accepte que la modalité de sortie AUDIO.
             # Jarvis ne joue et ne conserve jamais ces octets : seule la
             # transcription officielle de la sortie audio est exploitée.
@@ -96,28 +123,51 @@ class BackgroundModelGateway:
                 config["tools"] = tools
             chunks: list[str] = []
             tokens = 0
-            turn_complete = False
-            async with self.client.aio.live.connect(model=model, config=config) as session:
-                await session.send_client_content(
-                    turns=types.Content(role="user", parts=[types.Part(text=prompt)]),
-                    turn_complete=True,
-                )
-                async for response in session.receive():
-                    usage = getattr(response, "usage_metadata", None)
-                    tokens = max(tokens, int(getattr(usage, "total_token_count", 0) or 0))
-                    server = getattr(response, "server_content", None)
-                    # Une sortie AUDIO place le texte utilisable uniquement
-                    # dans output_transcription. Les parts inline_data et
-                    # response.data sont volontairement ignorées.
-                    output = getattr(server, "output_transcription", None)
-                    transcription = getattr(output, "text", None) if output else None
-                    if transcription:
-                        chunks.append(str(transcription))
-                    if getattr(server, "turn_complete", False):
-                        turn_complete = True
-                        break
+            entered = False
+            trace.phase = "connexion"
+            trace.last_event = "ouverture demandée"
+            try:
+                async with self.client.aio.live.connect(model=model, config=config) as session:
+                    entered = True
+                    trace.phase = "envoi"
+                    trace.last_event = "session ouverte"
+                    await session.send_client_content(
+                        turns=types.Content(role="user", parts=[types.Part(text=prompt)]),
+                        turn_complete=True,
+                    )
+                    trace.phase = "réception"
+                    trace.last_event = "prompt envoyé"
+                    async for response in session.receive():
+                        trace.messages += 1
+                        trace.last_event = "message serveur"
+                        usage = getattr(response, "usage_metadata", None)
+                        tokens = max(tokens, int(getattr(usage, "total_token_count", 0) or 0))
+                        if getattr(response, "data", None):
+                            trace.audio_messages += 1
+                            trace.last_event = "audio reçu"
+                        server = getattr(response, "server_content", None)
+                        # Une sortie AUDIO place le texte utilisable uniquement
+                        # dans output_transcription. Les octets sont comptés
+                        # pour le diagnostic mais jamais conservés ni joués.
+                        output = getattr(server, "output_transcription", None)
+                        transcription = getattr(output, "text", None) if output else None
+                        if transcription:
+                            fragment = str(transcription)
+                            chunks.append(fragment)
+                            trace.transcription_fragments += 1
+                            trace.transcription_chars += len(fragment)
+                            trace.last_event = "transcription reçue"
+                        if getattr(server, "turn_complete", False):
+                            trace.turn_complete = True
+                            trace.phase = "fin de tour"
+                            trace.last_event = "turn_complete"
+                            break
+            finally:
+                # Le finally externe à `async with` n'est atteint qu'après son
+                # __aexit__ lorsque la session avait effectivement été ouverte.
+                trace.session_closed = entered
             text = "".join(chunks).strip()
-            if not turn_complete:
+            if not trace.turn_complete:
                 raise RuntimeError(
                     "La session Gemini Live s'est fermée sans turn_complete "
                     f"(transcription partielle: {len(text)} caractère(s))."
@@ -126,9 +176,25 @@ class BackgroundModelGateway:
                 raise RuntimeError(
                     "Gemini Live a terminé son tour sans transcription audio exploitable."
                 )
+            trace.phase = "finalisation"
             return TextModelResponse(text, tokens)
 
-        return await self._with_bounded_retry(operation)
+        cycle = self._with_bounded_retry(operation)
+        if timeout_seconds is None:
+            return await cycle
+        try:
+            return await asyncio.wait_for(cycle, timeout=max(0.001, float(timeout_seconds)))
+        except asyncio.TimeoutError as exc:
+            elapsed = time.monotonic() - trace.started_at
+            raise BackgroundServiceError(
+                "Timeout Gemini Live "
+                f"après {elapsed:.1f}s; phase={trace.phase}; tentative={trace.attempt}; "
+                f"messages={trace.messages}; audio={trace.audio_messages}; "
+                f"fragments_transcription={trace.transcription_fragments}; "
+                f"caractères_transcrits={trace.transcription_chars}; "
+                f"turn_complete={trace.turn_complete}; session_fermée={trace.session_closed}; "
+                f"dernier_événement={trace.last_event}."
+            ) from exc
 
     async def generate_classic(
         self,

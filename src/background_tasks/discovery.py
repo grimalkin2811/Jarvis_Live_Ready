@@ -132,8 +132,9 @@ class LiveModelResolver:
                     "le mot OK, sans explication."
                 ),
                 temperature=0.0,
+                timeout_seconds=self.connect_timeout,
             ),
-            timeout=self.connect_timeout,
+            timeout=self.connect_timeout + 1.0,
         )
         if not response.text.strip():  # défense supplémentaire au contrat gateway
             raise RuntimeError("Échange Live terminé sans transcription textuelle.")
