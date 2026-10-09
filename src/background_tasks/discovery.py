@@ -1,8 +1,8 @@
 """Découverte et validation du modèle Gemini 3 Live disponible.
 
 Aucun identifiant Live n'est supposé. La liste exposée à la clé est filtrée
-par capacité BidiGenerateContent, classée, puis chaque candidat est réellement
-ouvert via l'API Live avant d'être mémorisé pour le processus courant.
+par capacité BidiGenerateContent, classée, puis chaque candidat doit réussir
+un tour AUDIO transcrit complet avant d'être mémorisé pour le processus courant.
 """
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import hashlib
 import re
 import threading
 from dataclasses import dataclass
+
+from .gateway import BackgroundModelGateway
 
 
 class LiveModelDiscoveryError(RuntimeError):
@@ -115,14 +117,26 @@ class LiveModelResolver:
         return await self._retry_external(list_once)
 
     async def _validate(self, model: str) -> None:
-        async def connect_once():
-            config = {"response_modalities": ["TEXT"]}
-            async with self.client.aio.live.connect(model=model, config=config):
-                return
-
-        await self._retry_external(
-            lambda: asyncio.wait_for(connect_once(), timeout=self.connect_timeout)
+        """Valide un tour complet AUDIO → transcription, pas le seul handshake."""
+        gateway = BackgroundModelGateway(
+            self.client,
+            retry_attempts=self.retry_attempts,
+            retry_base_delay=self.retry_base_delay,
         )
+        response = await asyncio.wait_for(
+            gateway.generate_live(
+                model,
+                "Réponds uniquement par le mot OK.",
+                system_instruction=(
+                    "Test technique de disponibilité Jarvis. Prononce uniquement "
+                    "le mot OK, sans explication."
+                ),
+                temperature=0.0,
+            ),
+            timeout=self.connect_timeout,
+        )
+        if not response.text.strip():  # défense supplémentaire au contrat gateway
+            raise RuntimeError("Échange Live terminé sans transcription textuelle.")
 
     async def resolve(self, *, force: bool = False) -> LiveModelResolution:
         if self._resolution is not None and not force:

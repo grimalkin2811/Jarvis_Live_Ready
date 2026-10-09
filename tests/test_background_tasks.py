@@ -247,6 +247,19 @@ def test_router_maps_complex_but_router_call_stays_live():
     assert gateway.live_calls[0]["model"] == LIVE_MODEL
 
 
+def test_router_live_timeout_is_explicit_and_bounded():
+    class HangingGateway:
+        async def generate_live(self, *args, **kwargs):
+            await asyncio.Event().wait()
+
+    router = TaskRouter(
+        object(), BackgroundModelConfig(timeout_seconds=0.01),
+        FakeResolver(), gateway=HangingGateway(),
+    )
+    with pytest.raises(RoutingError, match="turn_complete"):
+        asyncio.run(router.route("T", "D", TaskPriority.NORMAL))
+
+
 def test_router_rejects_invalid_or_inconsistent_json():
     with pytest.raises(RoutingError):
         parse_json_object("pas de json")
@@ -256,11 +269,24 @@ def test_router_rejects_invalid_or_inconsistent_json():
         asyncio.run(router.route("T", "D", TaskPriority.NORMAL))
 
 
-def test_live_gateway_collects_partial_text_until_turn_complete():
+def test_live_gateway_uses_audio_transcription_until_turn_complete():
     calls = []
+    configs = []
     responses = [
-        SimpleNamespace(server_content=SimpleNamespace(model_turn=SimpleNamespace(parts=[SimpleNamespace(text="bon")]), output_transcription=None, turn_complete=False), usage_metadata=None),
-        SimpleNamespace(server_content=SimpleNamespace(model_turn=SimpleNamespace(parts=[SimpleNamespace(text="jour")]), output_transcription=None, turn_complete=True), usage_metadata=SimpleNamespace(total_token_count=9)),
+        SimpleNamespace(
+            server_content=SimpleNamespace(
+                model_turn=SimpleNamespace(parts=[SimpleNamespace(text="IGNORÉ")]),
+                output_transcription=SimpleNamespace(text="bon"), turn_complete=False,
+            ),
+            data=b"audio ignored", usage_metadata=None,
+        ),
+        SimpleNamespace(
+            server_content=SimpleNamespace(
+                model_turn=SimpleNamespace(parts=[]),
+                output_transcription=SimpleNamespace(text="jour"), turn_complete=True,
+            ),
+            data=b"audio ignored", usage_metadata=SimpleNamespace(total_token_count=9),
+        ),
     ]
 
     class Session:
@@ -275,17 +301,31 @@ def test_live_gateway_collects_partial_text_until_turn_complete():
         async def __aenter__(self): return Session()
         async def __aexit__(self, *args): calls.append("closed")
 
-    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
-    result = asyncio.run(BackgroundModelGateway(client).generate_live(LIVE_MODEL, "demande", system_instruction="interne"))
+    def connect(**kwargs):
+        configs.append(kwargs["config"])
+        return Context()
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=connect)))
+    result = asyncio.run(BackgroundModelGateway(client).generate_live(
+        LIVE_MODEL, "demande", system_instruction="interne",
+        tools=[{"google_search": {}}],
+    ))
     assert result.text == "bonjour" and result.total_tokens == 9
+    assert configs == [{
+        "response_modalities": ["AUDIO"],
+        "output_audio_transcription": {},
+        "system_instruction": "interne",
+        "temperature": 0.2,
+        "tools": [{"google_search": {}}],
+    }]
     assert calls[-1] == "closed"
 
 
 def test_live_gateway_requires_turn_complete_even_with_partial_text():
     message = SimpleNamespace(
         server_content=SimpleNamespace(
-            model_turn=SimpleNamespace(parts=[SimpleNamespace(text="partiel")]),
-            output_transcription=None,
+            model_turn=SimpleNamespace(parts=[]),
+            output_transcription=SimpleNamespace(text="partiel"),
             turn_complete=False,
         ),
         usage_metadata=None,
@@ -304,6 +344,63 @@ def test_live_gateway_requires_turn_complete_even_with_partial_text():
     client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
     with pytest.raises(RuntimeError, match="sans turn_complete"):
         asyncio.run(BackgroundModelGateway(client).generate_live(LIVE_MODEL, "D", system_instruction="I"))
+
+
+def test_live_gateway_cancellation_closes_session():
+    closed = []
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                await asyncio.Event().wait()
+                yield  # pragma: no cover
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): closed.append(True)
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
+
+    async def scenario():
+        await asyncio.wait_for(
+            BackgroundModelGateway(client).generate_live(
+                LIVE_MODEL, "D", system_instruction="I"
+            ),
+            timeout=0.01,
+        )
+
+    with pytest.raises(asyncio.TimeoutError):
+        asyncio.run(scenario())
+    assert closed == [True]
+
+
+def test_live_gateway_rejects_turn_without_output_transcription_and_closes():
+    closed = []
+    message = SimpleNamespace(
+        server_content=SimpleNamespace(
+            model_turn=SimpleNamespace(parts=[SimpleNamespace(text="ne pas utiliser")]),
+            output_transcription=None,
+            turn_complete=True,
+        ),
+        data=b"audio", usage_metadata=None,
+    )
+
+    class Session:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values(): yield message
+            return values()
+
+    class Context:
+        async def __aenter__(self): return Session()
+        async def __aexit__(self, *args): closed.append(True)
+
+    client = SimpleNamespace(aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context())))
+    with pytest.raises(RuntimeError, match="sans transcription audio"):
+        asyncio.run(BackgroundModelGateway(client).generate_live(LIVE_MODEL, "D", system_instruction="I"))
+    assert closed == [True]
 
 
 @pytest.mark.parametrize("code", [429, 503])
@@ -439,21 +536,45 @@ class AsyncPager:
         return iterate()
 
 
+class DiscoverySession:
+    def __init__(self, name, calls):
+        self.name, self.calls = name, calls
+
+    async def send_client_content(self, **kwargs):
+        self.calls.append(("send", self.name, kwargs))
+
+    def receive(self):
+        async def values():
+            yield SimpleNamespace(
+                server_content=SimpleNamespace(
+                    output_transcription=SimpleNamespace(text="OK"),
+                    turn_complete=True,
+                ),
+                usage_metadata=None,
+            )
+        return values()
+
+
 class LiveContext:
-    def __init__(self, name, accepted, calls):
-        self.name, self.accepted, self.calls = name, accepted, calls
+    def __init__(self, name, config, accepted, calls):
+        self.name, self.config, self.accepted, self.calls = name, config, accepted, calls
+
     async def __aenter__(self):
-        self.calls.append(self.name)
+        self.calls.append(("connect", self.name, self.config))
         if self.name not in self.accepted:
             raise RuntimeError("unsupported")
-        return object()
-    async def __aexit__(self, *args): return None
+        return DiscoverySession(self.name, self.calls)
+
+    async def __aexit__(self, *args):
+        self.calls.append(("close", self.name))
 
 
 def discovery_client(models, accepted):
     calls = []
     async def list_models(): return AsyncPager(models)
-    live = SimpleNamespace(connect=lambda model, config: LiveContext(model, accepted, calls))
+    live = SimpleNamespace(
+        connect=lambda model, config: LiveContext(model, config, accepted, calls)
+    )
     return SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(list=list_models), live=live)), calls
 
 
@@ -474,7 +595,41 @@ def test_discovery_filters_bidi_prefers_current_stable_and_validates_connection(
     resolution = asyncio.run(resolver.resolve())
     assert resolution.model == "gemini-3.8-live"
     assert resolution.transport == "Live/BidiGenerateContent"
-    assert calls == ["gemini-3.8-live"]
+    assert [item[0] for item in calls] == ["connect", "send", "close"]
+    assert calls[0][2]["response_modalities"] == ["AUDIO"]
+    assert calls[0][2]["output_audio_transcription"] == {}
+
+
+def test_discovery_does_not_validate_handshake_without_transcription():
+    clear_discovery_cache_for_tests()
+
+    class EmptySession:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                yield SimpleNamespace(
+                    server_content=SimpleNamespace(
+                        output_transcription=None, turn_complete=True
+                    ),
+                    usage_metadata=None,
+                )
+            return values()
+
+    class EmptyContext:
+        async def __aenter__(self): return EmptySession()
+        async def __aexit__(self, *args): return None
+
+    async def list_models():
+        return AsyncPager([model("gemini-3.8-live", ["bidiGenerateContent"])])
+
+    client = SimpleNamespace(aio=SimpleNamespace(
+        models=SimpleNamespace(list=list_models),
+        live=SimpleNamespace(connect=lambda **kwargs: EmptyContext()),
+    ))
+    resolver = LiveModelResolver(client, api_key_fingerprint="empty-exchange")
+    with pytest.raises(LiveModelDiscoveryError, match="sans transcription"):
+        asyncio.run(resolver.resolve())
+    assert resolver.resolution is None
 
 
 def test_discovery_tries_next_candidate_and_never_invents_name():
@@ -486,7 +641,12 @@ def test_discovery_tries_next_candidate_and_never_invents_name():
     client, calls = discovery_client(models, {"gemini-3.8-live"})
     result = asyncio.run(LiveModelResolver(client, api_key_fingerprint="key-next").resolve())
     assert result.model == "gemini-3.8-live"
-    assert calls == ["gemini-3.9-live", "gemini-3.8-live"]
+    assert [item[:2] for item in calls if item[0] == "connect"] == [
+        ("connect", "gemini-3.9-live"),
+        ("connect", "gemini-3.8-live"),
+    ]
+    assert ("send", "gemini-3.8-live") == calls[-2][:2]
+    assert calls[-1] == ("close", "gemini-3.8-live")
 
     empty, _ = discovery_client([model("gemini-3.8-flash", ["generateContent"])], set())
     with pytest.raises(LiveModelDiscoveryError, match="Aucun modèle"):
@@ -510,7 +670,11 @@ def test_discovery_retries_503_with_bounded_backoff(monkeypatch):
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     calls = []
-    live = SimpleNamespace(connect=lambda model, config: LiveContext(model, {"gemini-3.8-live"}, calls))
+    live = SimpleNamespace(
+        connect=lambda model, config: LiveContext(
+            model, config, {"gemini-3.8-live"}, calls
+        )
+    )
     client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(list=list_models), live=live))
     resolver = LiveModelResolver(
         client, api_key_fingerprint="retry-discovery",

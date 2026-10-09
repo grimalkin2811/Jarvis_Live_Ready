@@ -229,7 +229,8 @@ async def run_api_validation(report: Report) -> None:
         report.add(
             "DÉCOUVERTE LIVE", "modèle Gemini 3",
             "PASS",
-            f"model={resolution.model}; transport={resolution.transport}; validated={resolution.validated}",
+            f"model={resolution.model}; transport={resolution.transport}; "
+            f"validated={resolution.validated}; exchange=AUDIO→output_transcription→turn_complete",
         )
     except Exception as exc:
         report.add(

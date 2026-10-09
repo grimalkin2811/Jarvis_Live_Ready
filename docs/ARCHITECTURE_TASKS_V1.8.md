@@ -17,7 +17,9 @@ Utilisateur
 Le nom du modèle Gemini 3 Live n’est pas codé en dur. `LiveModelResolver` liste
 les modèles visibles par la clé, conserve uniquement Gemini 3 avec l’action
 `bidiGenerateContent`, préfère une version stable et standard récente, puis
-ouvre réellement une connexion Live. Le résultat `(model, transport,
+exécute un véritable tour Live : sortie `AUDIO`, transcription de sortie non
+vide, `turn_complete` et fermeture de session. Le seul handshake WebSocket ne
+suffit jamais à produire `validated=True`. Le résultat `(model, transport,
 validated)` est mémorisé en mémoire pour le processus. Un hint
 `JARVIS_TASK_LIVE_MODEL` peut changer l’ordre des candidats, jamais contourner
 la validation. Sans candidat utilisable, la tâche échoue explicitement.
@@ -41,8 +43,9 @@ les autres tâches.
   Live facultatif.
 - `discovery.py` : liste, filtre de capacité Bidi, classement, connexion de
   validation et cache par empreinte non réversible de clé.
-- `gateway.py` : cycle Live complet pour Router/simple/medium; Generate Content
-  pour le complexe; retry borné 429/503.
+- `gateway.py` : cycle Live `AUDIO` complet pour Router/simple/medium, activation
+  de `output_audio_transcription`, assemblage du texte transcrit et abandon des
+  octets audio; Generate Content pour le complexe; retry borné 429/503.
 - `router.py` : protocole JSON strict robuste aux fragments/fences, validation
   des champs et du modèle.
 - `executor.py` : outils, progression, timeout, synthèse et document Markdown.

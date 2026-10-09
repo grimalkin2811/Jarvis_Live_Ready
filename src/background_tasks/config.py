@@ -12,7 +12,7 @@ DEFAULT_COMPLEX_MODEL = "gemini-3.8-flash"
 @dataclass(frozen=True)
 class BackgroundModelConfig:
     # Un hint est seulement prioritaire dans la liste API; il doit quand même
-    # annoncer BidiGenerateContent et réussir une vraie connexion Live.
+    # annoncer BidiGenerateContent et réussir un vrai tour Live transcrit.
     live_model_hint: str = ""
     complex_model: str = DEFAULT_COMPLEX_MODEL
     max_concurrent_tasks: int = 3

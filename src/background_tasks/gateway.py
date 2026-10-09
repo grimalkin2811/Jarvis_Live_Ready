@@ -83,8 +83,12 @@ class BackgroundModelGateway:
         temperature: float = 0.2,
     ) -> TextModelResponse:
         async def operation():
+            # Gemini 3.8 Live n'accepte que la modalité de sortie AUDIO.
+            # Jarvis ne joue et ne conserve jamais ces octets : seule la
+            # transcription officielle de la sortie audio est exploitée.
             config = {
-                "response_modalities": ["TEXT"],
+                "response_modalities": ["AUDIO"],
+                "output_audio_transcription": {},
                 "system_instruction": system_instruction,
                 "temperature": temperature,
             }
@@ -102,14 +106,13 @@ class BackgroundModelGateway:
                     usage = getattr(response, "usage_metadata", None)
                     tokens = max(tokens, int(getattr(usage, "total_token_count", 0) or 0))
                     server = getattr(response, "server_content", None)
-                    content = getattr(server, "model_turn", None)
-                    for part in getattr(content, "parts", None) or []:
-                        text = getattr(part, "text", None)
-                        if text:
-                            chunks.append(str(text))
+                    # Une sortie AUDIO place le texte utilisable uniquement
+                    # dans output_transcription. Les parts inline_data et
+                    # response.data sont volontairement ignorées.
                     output = getattr(server, "output_transcription", None)
-                    if output and getattr(output, "text", None):
-                        chunks.append(str(output.text))
+                    transcription = getattr(output, "text", None) if output else None
+                    if transcription:
+                        chunks.append(str(transcription))
                     if getattr(server, "turn_complete", False):
                         turn_complete = True
                         break
@@ -117,7 +120,11 @@ class BackgroundModelGateway:
             if not turn_complete:
                 raise RuntimeError(
                     "La session Gemini Live s'est fermée sans turn_complete "
-                    f"(texte partiel: {len(text)} caractère(s))."
+                    f"(transcription partielle: {len(text)} caractère(s))."
+                )
+            if not text:
+                raise RuntimeError(
+                    "Gemini Live a terminé son tour sans transcription audio exploitable."
                 )
             return TextModelResponse(text, tokens)
 
