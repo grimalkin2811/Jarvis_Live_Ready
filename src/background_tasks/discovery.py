@@ -10,13 +10,23 @@ import asyncio
 import hashlib
 import re
 import threading
+import time
 from dataclasses import dataclass
 
-from .gateway import BackgroundModelGateway
+from .gateway import BackgroundModelGateway, classify_background_error
+
+
+@dataclass(frozen=True)
+class LiveValidationFailure:
+    model: str
+    category: str
+    detail: str
 
 
 class LiveModelDiscoveryError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, failures: tuple[LiveValidationFailure, ...] = ()):
+        super().__init__(message)
+        self.failures = failures
 
 
 @dataclass(frozen=True)
@@ -24,6 +34,7 @@ class LiveModelResolution:
     model: str
     transport: str = "Live/BidiGenerateContent"
     validated: bool = True
+    diagnostics: tuple[LiveValidationFailure, ...] = ()
 
 
 _CACHE: dict[str, LiveModelResolution] = {}
@@ -39,12 +50,25 @@ def _supported_actions(model) -> set[str]:
     return {re.sub(r"[^a-z]", "", str(item).lower()) for item in raw}
 
 
-def is_gemini3_live_model(model) -> bool:
+def live_candidate_rejection(model) -> str | None:
+    """Écarte les variantes Bidi spécialisées incompatibles avec notre rôle."""
     name = _model_name(model).lower()
     actions = _supported_actions(model)
-    is_gemini3 = bool(re.search(r"(?:^|-)gemini-3(?:[.-]|$)", name))
-    supports_bidi = any("bidigeneratecontent" in action for action in actions)
-    return is_gemini3 and "live" in name and supports_bidi
+    if not re.search(r"(?:^|-)gemini-3(?:[.-]|$)", name):
+        return "pas un modèle Gemini 3"
+    if "live" not in name:
+        return "pas un modèle Live"
+    if not any("bidigeneratecontent" in action for action in actions):
+        return "BidiGenerateContent non annoncé"
+    if any(marker in name for marker in ("transcribe", "translate")):
+        return "modèle spécialisé transcription/traduction"
+    if "thinking" in name:
+        return "configuration de réflexion spécifique requise"
+    return None
+
+
+def is_gemini3_live_model(model) -> bool:
+    return live_candidate_rejection(model) is None
 
 
 def _candidate_score(model) -> tuple:
@@ -58,13 +82,16 @@ def _candidate_score(model) -> tuple:
 class LiveModelResolver:
     def __init__(
         self, client, *, api_key_fingerprint: str = "", hint: str = "",
-        list_timeout: float = 30.0, connect_timeout: float = 15.0,
+        list_timeout: float = 30.0, connect_timeout: float = 25.0,
+        total_timeout: float = 60.0, max_candidates: int = 3,
         retry_attempts: int = 3, retry_base_delay: float = 1.0,
     ):
         self.client = client
         self.hint = str(hint or "").strip().removeprefix("models/")
-        self.list_timeout = list_timeout
-        self.connect_timeout = connect_timeout
+        self.list_timeout = max(0.01, float(list_timeout))
+        self.connect_timeout = max(0.01, float(connect_timeout))
+        self.total_timeout = max(0.01, float(total_timeout))
+        self.max_candidates = max(1, int(max_candidates))
         self.retry_attempts = max(1, int(retry_attempts))
         self.retry_base_delay = max(0.0, float(retry_base_delay))
         self._cache_key = api_key_fingerprint or f"client-{id(client)}"
@@ -106,9 +133,13 @@ class LiveModelResolver:
                 await asyncio.sleep(self.retry_base_delay * (2 ** (attempt - 1)))
         raise AssertionError("retry loop unreachable")  # pragma: no cover
 
-    async def _list_models(self) -> list:
+    async def _list_models(self, timeout: float | None = None) -> list:
+        effective_timeout = min(self.list_timeout, timeout or self.list_timeout)
+
         async def list_once():
-            pager = await asyncio.wait_for(self.client.aio.models.list(), timeout=self.list_timeout)
+            pager = await asyncio.wait_for(
+                self.client.aio.models.list(), timeout=effective_timeout
+            )
             models = []
             async for model in pager:
                 models.append(model)
@@ -116,28 +147,55 @@ class LiveModelResolver:
 
         return await self._retry_external(list_once)
 
-    async def _validate(self, model: str) -> None:
+    async def _validate(self, model: str, *, timeout: float) -> None:
         """Valide un tour complet AUDIO → transcription, pas le seul handshake."""
         gateway = BackgroundModelGateway(
             self.client,
             retry_attempts=self.retry_attempts,
             retry_base_delay=self.retry_base_delay,
         )
-        response = await asyncio.wait_for(
-            gateway.generate_live(
-                model,
-                "Réponds uniquement par le mot OK.",
-                system_instruction=(
-                    "Test technique de disponibilité Jarvis. Prononce uniquement "
-                    "le mot OK, sans explication."
-                ),
-                temperature=0.0,
-                timeout_seconds=self.connect_timeout,
+        response = await gateway.generate_live(
+            model,
+            "Réponds uniquement par le mot OK.",
+            system_instruction=(
+                "Test technique de disponibilité Jarvis. Prononce uniquement "
+                "le mot OK, sans explication."
             ),
-            timeout=self.connect_timeout + 1.0,
+            temperature=0.0,
+            timeout_seconds=timeout,
         )
         if not response.text.strip():  # défense supplémentaire au contrat gateway
             raise RuntimeError("Échange Live terminé sans transcription textuelle.")
+
+    @staticmethod
+    def _validation_failure(model: str, exc: BaseException) -> LiveValidationFailure:
+        text = str(exc)
+        lowered = text.lower()
+        info = classify_background_error(exc)
+        if (
+            "not supported by the model" in lowered
+            or "unsupported model" in lowered
+            or ("modality" in lowered and "not supported" in lowered)
+        ):
+            category = "UNSUPPORTED_MODEL_OR_MODALITY"
+        elif "thinking" in lowered and any(
+            marker in lowered for marker in ("required", "must", "missing")
+        ):
+            category = "CONFIGURATION_ERROR"
+        elif info.category == "TIMEOUT":
+            category = "LIVE_TIMEOUT"
+        elif info.category in {
+            "EXTERNAL_QUOTA", "EXTERNAL_SERVICE", "LIVE_RESOURCE_EXHAUSTED",
+        }:
+            category = info.category
+        elif info.category in {"LIVE_PROTOCOL", "CODE_OR_PROTOCOL"}:
+            category = "LIVE_PROTOCOL"
+        else:
+            category = (
+                "CONFIGURATION_ERROR" if "invalid argument" in lowered
+                else "LIVE_PROTOCOL"
+            )
+        return LiveValidationFailure(model, category, text)
 
     async def resolve(self, *, force: bool = False) -> LiveModelResolution:
         if self._resolution is not None and not force:
@@ -148,12 +206,32 @@ class LiveModelResolver:
             self._resolution = cached
             return cached
 
+        started = time.monotonic()
         try:
-            available = await self._list_models()
+            available = await asyncio.wait_for(
+                self._list_models(timeout=self.total_timeout),
+                timeout=self.total_timeout,
+            )
         except Exception as exc:
-            raise LiveModelDiscoveryError(f"Impossible de lister les modèles Gemini: {exc}") from exc
+            raise LiveModelDiscoveryError(
+                f"Impossible de lister les modèles Gemini: {exc}"
+            ) from exc
 
-        candidates = [model for model in available if is_gemini3_live_model(model)]
+        failures: list[LiveValidationFailure] = []
+        candidates = []
+        for model in available:
+            reason = live_candidate_rejection(model)
+            if reason is None:
+                candidates.append(model)
+                continue
+            name = _model_name(model)
+            # N'encombre pas le rapport avec tous les modèles non-Live. Les
+            # variantes Gemini 3 Live spécialisées restent, elles, explicites.
+            if "gemini-3" in name.lower() and "live" in name.lower():
+                failures.append(LiveValidationFailure(
+                    name, "FILTERED_SPECIALIZED_MODEL", reason
+                ))
+
         candidates.sort(
             key=lambda model: (
                 bool(self.hint and _model_name(model) == self.hint),
@@ -162,26 +240,50 @@ class LiveModelResolver:
             reverse=True,
         )
         if not candidates:
+            detail = " | ".join(
+                f"{item.model} [{item.category}]: {item.detail}"
+                for item in failures
+            )
             raise LiveModelDiscoveryError(
-                "Aucun modèle Gemini 3 compatible Live/BidiGenerateContent n'est disponible pour cette clé."
+                "Aucun modèle Gemini 3 généraliste compatible "
+                f"Live/BidiGenerateContent n'est disponible. {detail}".strip(),
+                failures=tuple(failures),
             )
 
-        errors: list[str] = []
-        for candidate in candidates:
+        for skipped in candidates[self.max_candidates:]:
+            failures.append(LiveValidationFailure(
+                _model_name(skipped), "DISCOVERY_CANDIDATE_LIMIT",
+                f"limite de {self.max_candidates} candidat(s) atteinte",
+            ))
+
+        for candidate in candidates[:self.max_candidates]:
             name = _model_name(candidate)
+            remaining = self.total_timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                failures.append(LiveValidationFailure(
+                    name, "LIVE_TIMEOUT", "budget total de découverte épuisé"
+                ))
+                break
+            timeout = min(self.connect_timeout, remaining)
             try:
-                await self._validate(name)
+                await self._validate(name, timeout=timeout)
             except Exception as exc:
-                errors.append(f"{name}: {type(exc).__name__}: {exc}")
+                failures.append(self._validation_failure(name, exc))
                 continue
-            resolution = LiveModelResolution(name)
+            resolution = LiveModelResolution(name, diagnostics=tuple(failures))
             self._resolution = resolution
             with _CACHE_LOCK:
                 _CACHE[self._cache_key] = resolution
             return resolution
 
+        detail = " | ".join(
+            f"{item.model} [{item.category}]: {item.detail}"
+            for item in failures
+        )
         raise LiveModelDiscoveryError(
-            "Aucun modèle Gemini 3 Live listé n'a accepté une connexion: " + " | ".join(errors)
+            "Aucun modèle Gemini 3 Live listé n'a terminé l'échange de "
+            f"validation. {detail}",
+            failures=tuple(failures),
         )
 
 

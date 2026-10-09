@@ -64,6 +64,14 @@ def test_failure_classification_separates_provider_local_timeout_and_code():
     )
 
 
+def test_discovery_failure_verdicts_keep_timeout_and_incompatibility_distinct():
+    assert validation.discovery_failure_verdict("LIVE_TIMEOUT") == "NON_TESTABLE"
+    assert validation.discovery_failure_verdict("EXTERNAL_QUOTA") == "NON_TESTABLE"
+    assert validation.discovery_failure_verdict("UNSUPPORTED_MODEL_OR_MODALITY") == "INFO"
+    assert validation.discovery_failure_verdict("CONFIGURATION_ERROR") == "INFO"
+    assert validation.discovery_failure_verdict("LIVE_PROTOCOL") == "FAIL"
+
+
 def test_google_search_live_1011_quota_is_external_non_testable():
     error = RuntimeError(
         "Google Search grounding: received 1011; You exceeded your current quota, "

@@ -15,14 +15,20 @@ Utilisateur
 ```
 
 Le nom du modèle Gemini 3 Live n’est pas codé en dur. `LiveModelResolver` liste
-les modèles visibles par la clé, conserve uniquement Gemini 3 avec l’action
-`bidiGenerateContent`, préfère une version stable et standard récente, puis
-exécute un véritable tour Live : sortie `AUDIO`, transcription de sortie non
-vide, `turn_complete` et fermeture de session. Le seul handshake WebSocket ne
+les modèles visibles par la clé, conserve uniquement les Gemini 3 généralistes
+avec l’action `bidiGenerateContent` et écarte les variantes spécialisées
+`transcribe`, `translate` ou exigeant une configuration `thinking`. Il préfère
+ensuite une version stable et standard récente, puis exécute un véritable tour
+Live : sortie `AUDIO`, transcription de sortie non vide, `turn_complete` et
+fermeture de session. Le seul handshake WebSocket ne
 suffit jamais à produire `validated=True`. Le résultat `(model, transport,
 validated)` est mémorisé en mémoire pour le processus. Un hint
 `JARVIS_TASK_LIVE_MODEL` peut changer l’ordre des candidats, jamais contourner
-la validation. Sans candidat utilisable, la tâche échoue explicitement.
+la validation. La découverte teste au plus trois candidats, dans un budget
+total de 60 s; chaque échange est borné à 25 s. Cette fenêtre remplace les 15 s
+qui ont expiré malgré une transcription et des événements audio réels. Un
+échange incomplet n'est jamais mis en cache et un timeout reste réessayable au
+prochain processus/run. Sans candidat utilisable, la tâche échoue explicitement.
 
 ## Isolation asyncio
 

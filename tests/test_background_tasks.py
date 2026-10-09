@@ -16,6 +16,7 @@ from src.background_tasks.discovery import (
     LiveModelResolver,
     clear_discovery_cache_for_tests,
     is_gemini3_live_model,
+    live_candidate_rejection,
 )
 from src.background_tasks.executor import ExecutionResult, TaskExecutor
 from src.background_tasks.gateway import (
@@ -908,6 +909,39 @@ def test_discovery_filters_bidi_prefers_current_stable_and_validates_connection(
     assert calls[0][2]["output_audio_transcription"] == {}
 
 
+def test_discovery_filters_specialized_live_variants_before_connection():
+    clear_discovery_cache_for_tests()
+    models = [
+        model("gemini-3.5-transcribe-live", ["bidiGenerateContent"]),
+        model("gemini-3.5-live-translate-preview", ["bidiGenerateContent"]),
+        model("gemini-3.8-live-extended-thinking", ["bidiGenerateContent"]),
+        model("gemini-3.1-flash-live-preview", ["bidiGenerateContent"]),
+    ]
+    client, calls = discovery_client(models, {"gemini-3.1-flash-live-preview"})
+    result = asyncio.run(LiveModelResolver(
+        client, api_key_fingerprint="specialized-filter"
+    ).resolve())
+    assert result.model == "gemini-3.1-flash-live-preview"
+    connected = [item[1] for item in calls if item[0] == "connect"]
+    assert connected == ["gemini-3.1-flash-live-preview"]
+    assert "transcription/traduction" in live_candidate_rejection(models[0])
+    assert "transcription/traduction" in live_candidate_rejection(models[1])
+    assert "réflexion" in live_candidate_rejection(models[2])
+
+
+def test_validation_failure_categories_are_context_specific():
+    unsupported = LiveModelResolver._validation_failure(
+        "transcribe", RuntimeError(
+            "The requested combination of response modalities (AUDIO) is not supported by the model"
+        )
+    )
+    configuration = LiveModelResolver._validation_failure(
+        "thinking", RuntimeError("thinking level is required and missing")
+    )
+    assert unsupported.category == "UNSUPPORTED_MODEL_OR_MODALITY"
+    assert configuration.category == "CONFIGURATION_ERROR"
+
+
 def test_discovery_does_not_validate_handshake_without_transcription():
     clear_discovery_cache_for_tests()
 
@@ -935,9 +969,120 @@ def test_discovery_does_not_validate_handshake_without_transcription():
         live=SimpleNamespace(connect=lambda **kwargs: EmptyContext()),
     ))
     resolver = LiveModelResolver(client, api_key_fingerprint="empty-exchange")
-    with pytest.raises(LiveModelDiscoveryError, match="sans transcription"):
+    with pytest.raises(LiveModelDiscoveryError, match="sans transcription") as captured:
         asyncio.run(resolver.resolve())
     assert resolver.resolution is None
+    assert captured.value.failures[0].category == "LIVE_PROTOCOL"
+
+    # Le même fingerprint doit relancer un échange : aucun cache positif ne
+    # peut provenir d'un handshake ou d'un tour incomplet.
+    successful, calls = discovery_client(
+        [model("gemini-3.8-live", ["bidiGenerateContent"])],
+        {"gemini-3.8-live"},
+    )
+    recovered = LiveModelResolver(
+        successful, api_key_fingerprint="empty-exchange"
+    )
+    assert asyncio.run(recovered.resolve()).validated
+    assert any(item[0] == "connect" for item in calls)
+
+
+def test_discovery_timeout_is_categorized_and_not_cached():
+    clear_discovery_cache_for_tests()
+    closed = []
+
+    class HangingSession:
+        async def send_client_content(self, **kwargs): return None
+        def receive(self):
+            async def values():
+                # Une transcription partielle ne valide jamais le candidat sans
+                # marqueur de fin de tour.
+                yield SimpleNamespace(
+                    server_content=SimpleNamespace(
+                        output_transcription=SimpleNamespace(text="OK"),
+                        turn_complete=False,
+                    ),
+                    usage_metadata=None,
+                )
+                await asyncio.Event().wait()
+                yield  # pragma: no cover
+            return values()
+
+    class HangingContext:
+        async def __aenter__(self): return HangingSession()
+        async def __aexit__(self, *args): closed.append(True)
+
+    async def list_models():
+        return AsyncPager([model("gemini-3.8-live", ["bidiGenerateContent"])])
+
+    client = SimpleNamespace(aio=SimpleNamespace(
+        models=SimpleNamespace(list=list_models),
+        live=SimpleNamespace(connect=lambda **kwargs: HangingContext()),
+    ))
+    resolver = LiveModelResolver(
+        client, api_key_fingerprint="timeout-no-cache", connect_timeout=0.01,
+        total_timeout=0.1,
+    )
+    with pytest.raises(LiveModelDiscoveryError) as captured:
+        asyncio.run(resolver.resolve())
+    assert resolver.resolution is None
+    assert closed == [True]
+    failures = captured.value.failures
+    assert len(failures) == 1
+    assert failures[0].category == "LIVE_TIMEOUT"
+    assert "CancelledError" in failures[0].detail
+
+
+def test_discovery_timeout_candidate_then_success_closes_and_continues():
+    clear_discovery_cache_for_tests()
+    calls = []
+
+    class Session:
+        def __init__(self, name): self.name = name
+        async def send_client_content(self, **kwargs): calls.append(("send", self.name))
+        def receive(self):
+            async def values():
+                if self.name == "gemini-3.9-live":
+                    await asyncio.Event().wait()
+                    yield  # pragma: no cover
+                else:
+                    yield SimpleNamespace(
+                        server_content=SimpleNamespace(
+                            output_transcription=SimpleNamespace(text="OK"),
+                            turn_complete=True,
+                        ),
+                        usage_metadata=None,
+                    )
+            return values()
+
+    class Context:
+        def __init__(self, name): self.name = name
+        async def __aenter__(self):
+            calls.append(("connect", self.name))
+            return Session(self.name)
+        async def __aexit__(self, *args): calls.append(("close", self.name))
+
+    async def list_models():
+        return AsyncPager([
+            model("gemini-3.9-live", ["bidiGenerateContent"]),
+            model("gemini-3.8-live", ["bidiGenerateContent"]),
+        ])
+
+    client = SimpleNamespace(aio=SimpleNamespace(
+        models=SimpleNamespace(list=list_models),
+        live=SimpleNamespace(connect=lambda model, config: Context(model)),
+    ))
+    resolver = LiveModelResolver(
+        client, api_key_fingerprint="timeout-next", connect_timeout=0.01,
+        total_timeout=1.0, max_candidates=2,
+    )
+    result = asyncio.run(resolver.resolve())
+    assert result.model == "gemini-3.8-live"
+    assert [(item.model, item.category) for item in result.diagnostics] == [
+        ("gemini-3.9-live", "LIVE_TIMEOUT")
+    ]
+    assert ("close", "gemini-3.9-live") in calls
+    assert ("close", "gemini-3.8-live") in calls
 
 
 def test_discovery_tries_next_candidate_and_never_invents_name():
@@ -959,6 +1104,27 @@ def test_discovery_tries_next_candidate_and_never_invents_name():
     empty, _ = discovery_client([model("gemini-3.8-flash", ["generateContent"])], set())
     with pytest.raises(LiveModelDiscoveryError, match="Aucun modèle"):
         asyncio.run(LiveModelResolver(empty, api_key_fingerprint="key-empty").resolve())
+
+
+def test_discovery_candidate_count_is_bounded():
+    clear_discovery_cache_for_tests()
+    models = [
+        model("gemini-3.9-live", ["bidiGenerateContent"]),
+        model("gemini-3.8-live", ["bidiGenerateContent"]),
+        model("gemini-3.7-live", ["bidiGenerateContent"]),
+    ]
+    client, calls = discovery_client(models, set())
+    resolver = LiveModelResolver(
+        client, api_key_fingerprint="candidate-limit", max_candidates=2
+    )
+    with pytest.raises(LiveModelDiscoveryError) as captured:
+        asyncio.run(resolver.resolve())
+    connected = [item for item in calls if item[0] == "connect"]
+    assert len(connected) == 2
+    assert any(
+        failure.category == "DISCOVERY_CANDIDATE_LIMIT"
+        for failure in captured.value.failures
+    )
 
 
 def test_discovery_retries_503_with_bounded_backoff(monkeypatch):

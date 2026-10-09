@@ -38,7 +38,10 @@ sys.path.insert(0, str(ROOT))
 
 from src import paths, settings, wakeword  # noqa: E402
 from src.background_tasks.config import BackgroundModelConfig  # noqa: E402
-from src.background_tasks.discovery import LiveModelResolver  # noqa: E402
+from src.background_tasks.discovery import (  # noqa: E402
+    LiveModelDiscoveryError,
+    LiveModelResolver,
+)
 from src.background_tasks.gateway import (  # noqa: E402
     BackgroundModelGateway,
     classify_background_error,
@@ -220,6 +223,20 @@ def classify_failure(error) -> tuple[str, str]:
     return status, info.category
 
 
+def discovery_failure_verdict(category: str) -> str:
+    if category in {
+        "LIVE_TIMEOUT", "EXTERNAL_QUOTA", "EXTERNAL_SERVICE",
+        "LIVE_RESOURCE_EXHAUSTED",
+    }:
+        return "NON_TESTABLE"
+    if category in {
+        "UNSUPPORTED_MODEL_OR_MODALITY", "CONFIGURATION_ERROR",
+        "FILTERED_SPECIALIZED_MODEL", "DISCOVERY_CANDIDATE_LIMIT",
+    }:
+        return "INFO"
+    return "FAIL"
+
+
 def external_status(error: str) -> str:
     return classify_failure(error)[0]
 
@@ -260,16 +277,38 @@ async def run_api_validation(report: Report) -> None:
     )
     try:
         resolution = await resolver.resolve(force=True)
+        for failure in resolution.diagnostics:
+            report.add(
+                "DÉCOUVERTE CANDIDAT", failure.model,
+                discovery_failure_verdict(failure.category),
+                f"classification={failure.category}; {failure.detail}",
+            )
         report.add(
             "DÉCOUVERTE LIVE", "modèle Gemini 3",
             "PASS",
-            f"model={resolution.model}; transport={resolution.transport}; "
-            f"validated={resolution.validated}; exchange=AUDIO→output_transcription→turn_complete",
+            f"classification=VALIDATION_SUCCESS; model={resolution.model}; "
+            f"transport={resolution.transport}; validated={resolution.validated}; "
+            "exchange=AUDIO→output_transcription→turn_complete",
         )
     except Exception as exc:
+        if isinstance(exc, LiveModelDiscoveryError) and exc.failures:
+            verdicts = []
+            for failure in exc.failures:
+                verdict = discovery_failure_verdict(failure.category)
+                verdicts.append(verdict)
+                report.add(
+                    "DÉCOUVERTE CANDIDAT", failure.model, verdict,
+                    f"classification={failure.category}; {failure.detail}",
+                )
+            overall = (
+                "FAIL" if "FAIL" in verdicts
+                else "NON_TESTABLE" if "NON_TESTABLE" in verdicts
+                else "NON_TESTABLE"
+            )
+        else:
+            overall = external_status(str(exc))
         report.add(
-            "DÉCOUVERTE LIVE", "modèle Gemini 3",
-            external_status(str(exc)),
+            "DÉCOUVERTE LIVE", "modèle Gemini 3", overall,
             f"{type(exc).__name__}: {exc}",
         )
         return

@@ -35,8 +35,10 @@ py -3 scripts\validate_v180_real.py --api
 Cette commande effectue de vraies connexions/requêtes :
 
 - ouverture Gemini 2.5 Flash Native Audio ;
-- découverte du modèle Gemini 3 Live et validation par échange réel AUDIO →
-  `output_transcription` non vide → `turn_complete`, puis décisions Router A/B/C ;
+- découverte du modèle Gemini 3 Live généraliste et validation par échange réel
+  AUDIO → `output_transcription` non vide → `turn_complete`, puis décisions
+  Router A/B/C ; les variantes transcription/traduction/thinking sont filtrées
+  et chaque candidat refusé conserve sa catégorie et son diagnostic ;
 - Google Search grounding sur le modèle Live résolu ;
 - cycle simple, résultat, non-vu puis vu ;
 - tâche complexe et document avec Gemini 3.8 Flash ;

@@ -86,6 +86,19 @@ raison fournisseur exacte.
 Un document n'est `PASS` que si la tâche est `COMPLETED`, son résultat est non
 vide et tous les chemins référencés désignent des fichiers non vides.
 
+## Découverte Live après expiration du 9 octobre
+
+Le filtre précédent acceptait toute variante Gemini 3 dont le nom contenait
+`live` et annonçait Bidi. Il pouvait donc tester inutilement des modèles dédiés
+à la transcription, à la traduction ou à une configuration de réflexion. Ces
+variantes sont désormais écartées avant connexion. Les candidats généralistes
+restants sont classés, limités à trois et testés dans un budget total de 60 s.
+La fenêtre par échange passe de 15 à 25 s parce que les traces réelles montraient
+à 15 s une session active avec audio et transcription, et non une connexion
+inerte. Transcription sans `turn_complete` reste un échec `LIVE_TIMEOUT`, sans
+cache positif. Compatibilité explicite, configuration manquante, timeout,
+erreur externe et protocole restent des catégories distinctes.
+
 ## Ce qui reste à vérifier avec l'API réelle
 
 Le run Windows suivant devra examiner la nouvelle trace si un timeout revient.
