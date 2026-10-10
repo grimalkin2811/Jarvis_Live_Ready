@@ -457,7 +457,8 @@ async def run_background_scenarios(report: Report, key: str, config: BackgroundM
             if complex_ok:
                 expected_delta = 1
             elif complex_origin in {"EXTERNAL_QUOTA", "EXTERNAL_SERVICE"}:
-                expected_delta = config.retry_attempts
+                error_info = classify_background_error(complex_done.error)
+                expected_delta = config.retry_attempts if error_info.retryable else 1
             elif complex_done.model != config.complex_model:
                 expected_delta = 0
             else:

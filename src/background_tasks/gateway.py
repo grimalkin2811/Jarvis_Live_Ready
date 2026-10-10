@@ -125,10 +125,15 @@ def classify_background_error(error) -> BackgroundErrorInfo:
 
     # Une déclaration de quota du fournisseur prime sur le code de fermeture
     # générique 1011 et même sur une catégorie enveloppante antérieure.
-    if status == 429 or "429" in text:
-        return BackgroundErrorInfo("EXTERNAL_QUOTA", 429, live_code, True, True)
     if _explicit_provider_quota(text):
-        return BackgroundErrorInfo("EXTERNAL_QUOTA", status, live_code, True, True)
+        # Un quota explicitement épuisé n'est pas transitoire à l'échelle de
+        # cette tâche : le réessayer immédiatement ne peut que consommer une
+        # tentative supplémentaire et masquer le diagnostic initial.
+        return BackgroundErrorInfo("EXTERNAL_QUOTA", status, live_code, False, True)
+    if status == 429 or "429" in text:
+        # Un 429 sans libellé de quota explicite peut rester une saturation
+        # momentanée; la politique historique de retry borné est conservée.
+        return BackgroundErrorInfo("EXTERNAL_QUOTA", 429, live_code, True, True)
 
     if explicit:
         category = str(explicit)
@@ -201,6 +206,14 @@ class BackgroundModelGateway:
                 raise
             except Exception as exc:
                 info = classify_background_error(exc)
+                if info.category == "EXTERNAL_QUOTA" and not info.retryable:
+                    raise BackgroundServiceError(
+                        f"Gemini EXTERNAL_QUOTA après 1 tentative: {exc}",
+                        status_code=info.status_code,
+                        live_close_code=info.live_close_code,
+                        category=info.category,
+                        external_unavailable=True,
+                    ) from exc
                 live_resource = info.category == "LIVE_RESOURCE_EXHAUSTED"
                 live_limited_retry = info.live_close_code == 1011 and info.category in {
                     "EXTERNAL_QUOTA", "LIVE_RESOURCE_EXHAUSTED",

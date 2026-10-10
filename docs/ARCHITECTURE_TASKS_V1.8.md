@@ -95,8 +95,10 @@ API centrale : `create_task`, `get_task`, `list_tasks`, `list_active_tasks`,
 Une classification runtime unique privilégie les champs structurés SDK
 (`status_code`, code/reason de fermeture Live) et le message fournisseur
 conservé. Un motif explicite tel que `You exceeded your current quota` prime sur
-le code générique 1011 et devient `EXTERNAL_QUOTA`. Les 429 et 503 ont un
-backoff exponentiel borné. Une fermeture 1011 qui indique seulement
+le code générique 1011 et devient `EXTERNAL_QUOTA`; il échoue dès la première
+tentative, car une reprise immédiate ne peut pas restaurer ce quota. Les 429 sans
+libellé explicite de quota et les 503 conservent un backoff exponentiel borné.
+Une fermeture 1011 qui indique seulement
 `Resource has been exhausted` devient `LIVE_RESOURCE_EXHAUSTED` et admet au plus
 une reprise, avec backoff et jitter, dans le timeout global. Une 1011
 sans ce motif n'est pas réessayée. Si la reprise consomme le délai restant, la

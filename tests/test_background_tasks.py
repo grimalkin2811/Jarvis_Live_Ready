@@ -178,6 +178,57 @@ def test_failure_does_not_block_other_task(make_manager):
     assert manager._thread.is_alive()
 
 
+def test_explicit_live_quota_fails_one_task_once_and_manager_survives(make_manager):
+    attempts = 0
+    reason = "You exceeded your current quota"
+
+    class QuotaClose1011(RuntimeError):
+        code = 1011
+
+        def __init__(self):
+            super().__init__(f"1011 None. {reason}")
+            self.reason = reason
+
+    class Context:
+        async def __aenter__(self):
+            nonlocal attempts
+            attempts += 1
+            raise QuotaClose1011()
+        async def __aexit__(self, *args): return None
+
+    gateway = BackgroundModelGateway(SimpleNamespace(aio=SimpleNamespace(
+        live=SimpleNamespace(connect=lambda **kwargs: Context())
+    )), retry_attempts=3, retry_base_delay=0.0)
+
+    class SelectiveExecutor(FakeExecutor):
+        async def execute(self, task, route, update):
+            if task.title == "quota":
+                await gateway.generate_live(
+                    LIVE_MODEL, "D", system_instruction="I", timeout_seconds=1
+                )
+            return await super().execute(task, route, update)
+
+    manager = make_manager(executor=SelectiveExecutor(delay=0.01))
+    rejected = manager.create_task("quota", "D")
+    healthy = manager.create_task("saine", "D")
+
+    failed = wait_for(manager, rejected.id, {TaskStatus.FAILED})
+    completed = wait_for(manager, healthy.id, {TaskStatus.COMPLETED})
+    assert attempts == 1
+    assert failed.result is None
+    assert "EXTERNAL_QUOTA" in failed.error
+    assert "après 1 tentative" in failed.error
+    assert "1011 None" in failed.error
+    assert reason in failed.error
+    assert completed.result == "Résultat détaillé"
+    assert manager._thread.is_alive()
+
+    payload = json.loads(manager.storage_path.read_text(encoding="utf-8"))
+    persisted = next(item for item in payload["tasks"] if item["id"] == rejected.id)
+    assert persisted["status"] == "FAILED"
+    assert persisted["error"] == failed.error
+
+
 def test_global_task_timeout_releases_slot(make_manager):
     config = BackgroundModelConfig(task_timeout_seconds=0.05)
     manager = make_manager(executor=FakeExecutor(delay=1), config=config)
@@ -852,7 +903,7 @@ def test_live_1011_explicit_quota_is_external_quota():
     assert info.category == "EXTERNAL_QUOTA"
     assert info.live_close_code == 1011
     assert info.status_code is None
-    assert info.retryable and info.external
+    assert not info.retryable and info.external
 
 
 def test_explicit_quota_message_overrides_generic_live_resource_category():
@@ -884,40 +935,48 @@ def test_live_1011_without_resource_message_is_not_misclassified():
     assert not info.retryable
 
 
-def test_live_explicit_quota_keeps_reason_code_and_live_retry_limit(monkeypatch):
+def test_live_explicit_quota_stops_after_first_connection_and_preserves_reason(
+    monkeypatch,
+):
     attempts = 0
-    closed = []
-    reason = "You exceeded your current quota, please check your plan and billing details."
+    sleeps = []
+    reason = "You exceeded your current quota"
 
-    class Session:
-        async def send_client_content(self, **kwargs): return None
-        def receive(self):
-            async def values():
-                nonlocal attempts
-                attempts += 1
-                raise LiveClose1011(reason)
-                yield  # pragma: no cover
-            return values()
+    class QuotaClose1011(RuntimeError):
+        code = 1011
+
+        def __init__(self):
+            super().__init__(f"1011 None. {reason}")
+            self.reason = reason
 
     class Context:
-        async def __aenter__(self): return Session()
-        async def __aexit__(self, *args): closed.append(True)
+        async def __aenter__(self):
+            nonlocal attempts
+            attempts += 1
+            raise QuotaClose1011()
+        async def __aexit__(self, *args):
+            raise AssertionError("une session non ouverte ne doit pas être fermée")
 
-    async def no_wait(delay): return None
-    monkeypatch.setattr(asyncio, "sleep", no_wait)
-    monkeypatch.setattr("src.background_tasks.gateway.random.uniform", lambda low, high: 0.0)
+    async def fake_sleep(delay): sleeps.append(delay)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
     gateway = BackgroundModelGateway(SimpleNamespace(
         aio=SimpleNamespace(live=SimpleNamespace(connect=lambda **kwargs: Context()))
-    ), retry_attempts=5, retry_base_delay=0.0)
+    ), retry_attempts=5, retry_base_delay=0.1)
 
     with pytest.raises(BackgroundServiceError) as captured:
         asyncio.run(gateway.generate_live(LIVE_MODEL, "D", system_instruction="I"))
-    assert attempts == 2
-    assert closed == [True, True]
+    assert attempts == 1
+    assert sleeps == []
     assert captured.value.category == "EXTERNAL_QUOTA"
     assert captured.value.live_close_code == 1011
     assert captured.value.status_code is None
-    assert reason in str(captured.value)
+    assert captured.value.external_unavailable
+    detail = str(captured.value)
+    assert "après 1 tentative" in detail
+    assert "1011 None" in detail
+    assert reason in detail
+    assert "phase=connexion" in detail
+    assert "messages=0" in detail
 
 
 def test_live_resource_retry_is_limited_jittered_and_closes(monkeypatch):
