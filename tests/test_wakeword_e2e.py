@@ -149,6 +149,15 @@ class WakewordE2ETests(unittest.TestCase):
             with mock.patch(
                 "src.wakeword.paths.openwakeword_models_dir", return_value=user_dir
             ):
+                self.assertIs(_sys, wakeword.sys)
+                candidates = wakeword.candidate_dirs()
+                diagnostic = (
+                    f"sys.frozen={getattr(wakeword.sys, 'frozen', None)!r}; "
+                    f"sys._MEIPASS={getattr(wakeword.sys, '_MEIPASS', None)!r}; "
+                    f"candidates={candidates!r}"
+                )
+                self.assertTrue(candidates, diagnostic)
+                self.assertEqual(candidates[0], pkg_dir, diagnostic)
                 resolved = wakeword.resolve_onnx_models()
                 self.assertTrue(all(resolved.values()), resolved)
                 self.assertEqual(
@@ -156,6 +165,89 @@ class WakewordE2ETests(unittest.TestCase):
                 )
                 ok, message = wakeword.smoke_check(download=False, verbose=False)
                 self.assertTrue(ok, message)
+        finally:
+            if had_frozen is None:
+                del _sys.frozen  # type: ignore[attr-defined]
+            else:
+                _sys.frozen = had_frozen  # type: ignore[attr-defined]
+            if had_meipass is None:
+                del _sys._MEIPASS  # type: ignore[attr-defined]
+            else:
+                _sys._MEIPASS = had_meipass  # type: ignore[attr-defined]
+
+    def test_meipass_is_authoritative_without_secondary_frozen_flag(self):
+        """Le chemin de ressources ne dépend pas d'un second marqueur mutable."""
+        import sys as _sys
+
+        from src import wakeword
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        meipass = Path(tmp.name) / "_internal"
+        pkg_dir = meipass / "openwakeword" / "resources" / "models"
+        pkg_dir.mkdir(parents=True)
+        user_dir = Path(tmp.name) / "user-models"
+        user_dir.mkdir()
+        names = ("melspectrogram.onnx", "embedding_model.onnx", "hey_jarvis_v0.1.onnx")
+        for name in names:
+            shutil.copyfile(FIXTURES / name, pkg_dir / name)
+            shutil.copyfile(FIXTURES / name, user_dir / name)
+
+        had_frozen = getattr(_sys, "frozen", None)
+        had_meipass = getattr(_sys, "_MEIPASS", None)
+        _sys.frozen = False  # type: ignore[attr-defined]
+        _sys._MEIPASS = str(meipass)  # type: ignore[attr-defined]
+        try:
+            with mock.patch(
+                "src.wakeword.paths.openwakeword_models_dir", return_value=user_dir
+            ):
+                resolved = wakeword.resolve_onnx_models()
+                self.assertEqual(
+                    resolved["wakeword"], pkg_dir / "hey_jarvis_v0.1.onnx"
+                )
+        finally:
+            if had_frozen is None:
+                del _sys.frozen  # type: ignore[attr-defined]
+            else:
+                _sys.frozen = had_frozen  # type: ignore[attr-defined]
+            if had_meipass is None:
+                del _sys._MEIPASS  # type: ignore[attr-defined]
+            else:
+                _sys._MEIPASS = had_meipass  # type: ignore[attr-defined]
+
+    def test_frozen_missing_bundle_models_falls_back_to_user(self):
+        """Un _MEIPASS incomplet conserve le repli utilisateur justifié."""
+        import sys as _sys
+
+        from src import wakeword
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        meipass = Path(tmp.name) / "_internal"
+        meipass.mkdir()
+        user_dir = Path(tmp.name) / "user-models"
+        user_dir.mkdir()
+        names = ("melspectrogram.onnx", "embedding_model.onnx", "hey_jarvis_v0.1.onnx")
+        for name in names:
+            shutil.copyfile(FIXTURES / name, user_dir / name)
+
+        had_frozen = getattr(_sys, "frozen", None)
+        had_meipass = getattr(_sys, "_MEIPASS", None)
+        _sys.frozen = True  # type: ignore[attr-defined]
+        _sys._MEIPASS = str(meipass)  # type: ignore[attr-defined]
+        try:
+            with mock.patch(
+                "src.wakeword.paths.openwakeword_models_dir", return_value=user_dir
+            ):
+                resolved = wakeword.resolve_onnx_models()
+                self.assertEqual(
+                    resolved,
+                    {
+                        "melspectrogram": user_dir / "melspectrogram.onnx",
+                        "embedding": user_dir / "embedding_model.onnx",
+                        "wakeword": user_dir / "hey_jarvis_v0.1.onnx",
+                    },
+                )
         finally:
             if had_frozen is None:
                 del _sys.frozen  # type: ignore[attr-defined]

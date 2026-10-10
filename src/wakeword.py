@@ -123,6 +123,19 @@ def download_allowed(explicit: bool | None = None) -> bool:
 # Emplacements candidats
 # ---------------------------------------------------------------------------
 
+def _pyinstaller_bundle_root() -> Path | None:
+    """Retourne la racine extraite du bundle quand ``_MEIPASS`` est présent.
+
+    ``_MEIPASS`` est l'indicateur qui porte le chemin des ressources. Il est
+    suffisant et plus précis que ``sys.frozen`` pour cette résolution : exiger
+    les deux rendait la priorité dépendante d'un second attribut mutable.
+    """
+    value = getattr(sys, "_MEIPASS", None)
+    if value is None or not str(value).strip():
+        return None
+    return Path(str(value))
+
+
 def candidate_dirs() -> list[Path]:
     """Répertoires où chercher les modèles, du plus spécifique au général.
 
@@ -130,12 +143,12 @@ def candidate_dirs() -> list[Path]:
     ``.venv/Lib/site-packages`` existe sur la machine de l'utilisateur.
     """
     dirs: list[Path] = []
-    frozen = bool(getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None))
-    if frozen:
+    bundle_root = _pyinstaller_bundle_root()
+    if bundle_root is not None:
         # 1. Dans une application gelée, le jeu de modèles embarqué avec le
         #    binaire est cohérent avec sa version et doit primer sur un ancien
         #    téléchargement utilisateur.
-        meipass = Path(str(sys._MEIPASS))  # type: ignore[attr-defined]
+        meipass = bundle_root
         # a. Emplacement d'origine du paquet openwakeword : le build y copie
         #    les .onnx (voir packaging/jarvis.spec) pour que même la
         #    résolution par défaut d'openWakeWord fonctionne.
@@ -148,7 +161,7 @@ def candidate_dirs() -> list[Path]:
     #    préservés lors des mises à jour. En développement, il reste prioritaire.
     dirs.append(paths.openwakeword_models_dir())
 
-    if not frozen:
+    if bundle_root is None:
         # 3. En développement : dossier resources/ du dépôt (rempli par
         #    scripts/download_models.py).
         repo_resources = paths.app_dir() / "resources" / "openwakeword"
