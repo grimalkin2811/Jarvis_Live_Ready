@@ -88,6 +88,80 @@ def test_google_search_live_1011_quota_is_external_non_testable():
     )
 
 
+def test_grounding_requires_exploitable_structured_source():
+    response = SimpleNamespace(
+        text="Réponse fondée",
+        total_tokens=42,
+        sources=["https://example.com/source", "https://example.com/source"],
+    )
+    status, detail = validation.evaluate_grounding_response(response)
+    assert status == "PASS"
+    assert "GROUNDING_CONFIRMED" in detail
+    assert "sources=1" in detail
+    assert "https://example.com/source" in detail
+
+
+def test_grounding_text_without_source_is_a_failure_not_a_pass():
+    response = SimpleNamespace(text="Réponse sans preuve", total_tokens=12, sources=[])
+    status, detail = validation.evaluate_grounding_response(response)
+    assert status == "FAIL"
+    assert "GROUNDING_ABSENT" in detail
+    assert "aucune source web exploitable" in detail
+
+
+def test_grounding_with_non_web_source_is_absent():
+    response = SimpleNamespace(
+        text="Réponse avec pseudo-source",
+        total_tokens=9,
+        sources=["pas une URL", "ftp://example.com/source"],
+    )
+    status, detail = validation.evaluate_grounding_response(response)
+    assert status == "FAIL"
+    assert "éléments_sources=2" in detail
+
+
+def test_grounding_is_non_testable_when_response_cannot_expose_evidence():
+    for response in (
+        SimpleNamespace(text="Texte seul", total_tokens=4),
+        SimpleNamespace(text="Sources indisponibles", total_tokens=4, sources=None),
+    ):
+        status, detail = validation.evaluate_grounding_response(response)
+        assert status == "NON_TESTABLE"
+        assert "GROUNDING_NOT_OBSERVABLE" in detail
+        assert "ne constitue pas une preuve" in detail
+
+
+def test_grounding_is_non_testable_when_sdk_cannot_expose_live_metadata():
+    response = SimpleNamespace(text="Texte seul", total_tokens=4, sources=[])
+    status, detail = validation.evaluate_grounding_response(
+        response,
+        metadata_observable=False,
+        capability_detail="grounding_metadata absent du SDK simulé",
+    )
+    assert status == "NON_TESTABLE"
+    assert "GROUNDING_NOT_OBSERVABLE" in detail
+    assert "grounding_metadata absent du SDK simulé" in detail
+
+
+def test_report_exit_code_distinguishes_pass_fail_and_non_testable():
+    passing = validation.Report()
+    passing.add("TEST", "pass", "PASS")
+    assert passing.exit_code() == 0
+
+    unavailable = validation.Report()
+    unavailable.add("TEST", "non testable", "NON_TESTABLE")
+    assert unavailable.exit_code() == 2
+
+    failed = validation.Report()
+    failed.add("TEST", "échec", "FAIL")
+    assert failed.exit_code() == 1
+
+    mixed = validation.Report()
+    mixed.add("TEST", "indisponible", "NON_TESTABLE")
+    mixed.add("TEST", "échec", "FAIL")
+    assert mixed.exit_code() == 1
+
+
 def test_document_validation_requires_completed_result_and_nonempty_files(tmp_path):
     document = tmp_path / "rapport.md"
     document.write_text("contenu", encoding="utf-8")

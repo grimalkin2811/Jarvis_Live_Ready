@@ -32,6 +32,7 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -88,6 +89,14 @@ class Report:
 
     def failed(self) -> bool:
         return any(item.status == "FAIL" for item in self.checks)
+
+    def exit_code(self) -> int:
+        """Retourne 1 pour tout échec, 2 si seul le testable manque, sinon 0."""
+        if self.failed():
+            return 1
+        if any(item.status == "NON_TESTABLE" for item in self.checks):
+            return 2
+        return 0
 
 
 def redact(value) -> str:
@@ -258,6 +267,77 @@ def failure_detail(error: str) -> str:
     return f"classification={origin}; verdict={status}; erreur={error or 'aucune'}"
 
 
+def live_grounding_metadata_capability() -> tuple[bool, str]:
+    """Indique si la version SDK peut exposer le grounding des messages Live."""
+    try:
+        from google.genai import types
+        fields = getattr(types.LiveServerContent, "model_fields", {})
+        observable = "grounding_metadata" in fields
+        return observable, (
+            "LiveServerContent.grounding_metadata disponible"
+            if observable else
+            "LiveServerContent.grounding_metadata absent de cette version SDK"
+        )
+    except Exception as exc:
+        return False, f"structure SDK inaccessible: {type(exc).__name__}: {exc}"
+
+
+def evaluate_grounding_response(
+    response, *, metadata_observable: bool = True, capability_detail: str = ""
+) -> tuple[str, str]:
+    """Évalue le grounding uniquement depuis les preuves structurées exposées."""
+    text = str(getattr(response, "text", "") or "").strip()
+    excerpt = text[:240] or "aucune"
+    tokens = int(getattr(response, "total_tokens", 0) or 0)
+    if not hasattr(response, "sources") or response.sources is None:
+        return (
+            "NON_TESTABLE",
+            "classification=GROUNDING_NOT_OBSERVABLE; la structure de réponse "
+            "n'expose pas les sources/grounding; une réponse textuelle ne constitue "
+            f"pas une preuve; réponse={excerpt}; tokens={tokens}",
+        )
+    if isinstance(response.sources, (str, bytes)):
+        return (
+            "NON_TESTABLE",
+            "classification=GROUNDING_NOT_OBSERVABLE; champ sources mal formé; "
+            f"réponse={excerpt}; tokens={tokens}",
+        )
+    try:
+        candidates = list(response.sources)
+    except TypeError:
+        return (
+            "NON_TESTABLE",
+            "classification=GROUNDING_NOT_OBSERVABLE; champ sources inexploitable; "
+            f"réponse={excerpt}; tokens={tokens}",
+        )
+
+    usable: list[str] = []
+    for candidate in candidates:
+        uri = str(candidate or "").strip()
+        parsed = urlsplit(uri)
+        if parsed.scheme.lower() in {"http", "https"} and parsed.netloc and uri not in usable:
+            usable.append(uri)
+    if usable:
+        return (
+            "PASS",
+            f"classification=GROUNDING_CONFIRMED; sources={len(usable)}; "
+            f"uris={usable}; réponse={excerpt}; tokens={tokens}",
+        )
+    if not metadata_observable:
+        reason = capability_detail or "métadonnées Live non exposées par le SDK"
+        return (
+            "NON_TESTABLE",
+            "classification=GROUNDING_NOT_OBSERVABLE; "
+            f"{reason}; une réponse textuelle ne constitue pas une preuve; "
+            f"réponse={excerpt}; tokens={tokens}",
+        )
+    return (
+        "FAIL",
+        "classification=GROUNDING_ABSENT; aucune source web exploitable exposée "
+        f"(éléments_sources={len(candidates)}); réponse={excerpt}; tokens={tokens}",
+    )
+
+
 async def run_api_validation(report: Report) -> None:
     config = BackgroundModelConfig.from_env()
     key, source = load_api_key()
@@ -360,7 +440,16 @@ async def run_api_validation(report: Report) -> None:
             ),
             timeout=config.timeout_seconds + 1.0,
         )
-        report.add("API RÉELLE", "Google Search grounding Live", "PASS" if grounded.text else "FAIL", f"réponse={grounded.text[:240]}; tokens={grounded.total_tokens}")
+        metadata_observable, capability_detail = live_grounding_metadata_capability()
+        grounding_status, grounding_detail = evaluate_grounding_response(
+            grounded,
+            metadata_observable=metadata_observable,
+            capability_detail=capability_detail,
+        )
+        report.add(
+            "API RÉELLE", "Google Search grounding Live",
+            grounding_status, grounding_detail,
+        )
     except Exception as exc:
         info = classify_background_error(exc)
         status, origin = classify_failure(exc)
@@ -695,9 +784,7 @@ def main() -> int:
 
     destination = args.report or paths.logs_dir() / f"validation_v180_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     report.write(destination)
-    if any(item.status == "NON_TESTABLE" for item in report.checks):
-        return 2
-    return 1 if report.failed() else 0
+    return report.exit_code()
 
 
 if __name__ == "__main__":

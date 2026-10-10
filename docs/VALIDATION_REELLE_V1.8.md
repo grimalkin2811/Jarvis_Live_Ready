@@ -40,7 +40,10 @@ Cette commande effectue de vraies connexions/requêtes :
   (`generation_complete`, `turn_complete` ou `interaction_status=IDLE`), puis décisions
   Router A/B/C ; les variantes transcription/traduction/thinking sont filtrées
   et chaque candidat refusé conserve sa catégorie et son diagnostic ;
-- Google Search grounding sur le modèle Live résolu ;
+- Google Search grounding sur le modèle Live résolu : `PASS` exige au moins
+  une URI web structurée et exploitable exposée par l'API; du texte sans source
+  vaut `FAIL`, et une structure SDK qui ne permet pas d'observer les sources
+  vaut `NON_TESTABLE` avec une raison explicite ;
 - cycle simple, résultat, non-vu puis vu ;
 - tâche complexe et document avec Gemini 3.8 Flash ;
 - deux tâches simultanées avec chronologies indépendantes et état de quota
@@ -112,5 +115,11 @@ réponse. Une connexion API automatisée ne remplace pas cette observation audio
 3. S1→S6 passe précisément ;
 4. le protocole manuel audio/UI passe intégralement ;
 5. la suite automatisée complète passe dans l’environnement Windows.
+
+Le code de sortie est `0` si tous les contrôles exécutés sont réussis (ou
+informatifs), `1` dès qu'au moins un contrôle vaut `FAIL`, et `2` lorsqu'il n'y
+a aucun `FAIL` mais au moins un `NON_TESTABLE`. Un `FAIL` reste donc prioritaire
+sur tout `NON_TESTABLE`; ces derniers restent visibles et ne sont jamais
+assimilés à des réussites.
 
 Aucune de ces commandes ne crée de tag ou de release.
