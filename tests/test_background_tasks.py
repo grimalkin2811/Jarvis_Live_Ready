@@ -116,6 +116,25 @@ def test_create_task_is_immediately_queued(make_manager):
     assert task.id and task.status is TaskStatus.QUEUED
 
 
+def test_create_task_returns_queued_snapshot_if_worker_starts_immediately(
+    make_manager, monkeypatch
+):
+    manager = make_manager()
+
+    def start_immediately(coroutine, loop):
+        del loop
+        with manager._lock:
+            task_id = next(reversed(manager._tasks))
+            manager._tasks[task_id].status = TaskStatus.RUNNING
+        coroutine.close()
+        return SimpleNamespace(cancel=lambda: None)
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", start_immediately)
+    submitted = manager.create_task("Titre", "Description")
+    assert submitted.status is TaskStatus.QUEUED
+    assert manager.get_task(submitted.id).status is TaskStatus.RUNNING
+
+
 def test_full_lifecycle_and_result(make_manager):
     manager = make_manager()
     created = manager.create_task("T", "D")

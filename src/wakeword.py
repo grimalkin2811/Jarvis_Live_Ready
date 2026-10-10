@@ -130,20 +130,25 @@ def candidate_dirs() -> list[Path]:
     ``.venv/Lib/site-packages`` existe sur la machine de l'utilisateur.
     """
     dirs: list[Path] = []
-    # 1. Dossier utilisateur (modèles téléchargés au premier lancement,
-    #    préservés lors des mises à jour).
-    dirs.append(paths.openwakeword_models_dir())
-    # 2. Ressources embarquées dans le bundle PyInstaller (_MEIPASS).
-    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
+    frozen = bool(getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None))
+    if frozen:
+        # 1. Dans une application gelée, le jeu de modèles embarqué avec le
+        #    binaire est cohérent avec sa version et doit primer sur un ancien
+        #    téléchargement utilisateur.
         meipass = Path(str(sys._MEIPASS))  # type: ignore[attr-defined]
         # a. Emplacement d'origine du paquet openwakeword : le build y copie
         #    les .onnx (voir packaging/jarvis.spec) pour que même la
         #    résolution par défaut d'openWakeWord fonctionne.
         dirs.append(meipass / "openwakeword" / "resources" / "models")
-        # b. Dossier de ressources fourni par le build.
+        # b. Dossiers de ressources fournis par le build.
         dirs.append(meipass / "resources" / "openwakeword")
         dirs.append(meipass / "resources" / "models")
-    else:
+
+    # 2. Repli utilisateur : modèles téléchargés au premier lancement et
+    #    préservés lors des mises à jour. En développement, il reste prioritaire.
+    dirs.append(paths.openwakeword_models_dir())
+
+    if not frozen:
         # 3. En développement : dossier resources/ du dépôt (rempli par
         #    scripts/download_models.py).
         repo_resources = paths.app_dir() / "resources" / "openwakeword"

@@ -249,12 +249,16 @@ class TaskManager:
             self._tasks[task.id] = task
         self._save()
         self._emit(task)
+        # Le contrat de soumission retourne l'instantané QUEUED créé ci-dessus.
+        # Le worker peut passer l'objet stocké à RUNNING immédiatement après
+        # run_coroutine_threadsafe; ne pas le recloner après cette frontière.
+        queued_snapshot = self._clone(task)
         self.start()
         assert self._loop is not None
         future = asyncio.run_coroutine_threadsafe(self._run_task(task.id), self._loop)
         with self._lock:
             self._futures[task.id] = future
-        return self._clone(task)
+        return queued_snapshot
 
     def retry_task(self, task_id: str) -> BackgroundTask:
         old = self.get_task(task_id)

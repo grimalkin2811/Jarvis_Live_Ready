@@ -134,17 +134,28 @@ class WakewordE2ETests(unittest.TestCase):
             shutil.copyfile(FIXTURES / name, pkg_dir / name)
             shutil.copyfile(FIXTURES / name, res_dir / name)
 
+        # Un ancien téléchargement utilisateur peut être présent sur la machine
+        # de build. En mode gelé, le bundle cohérent doit rester prioritaire.
+        user_dir = Path(tmp.name) / "user-models"
+        user_dir.mkdir()
+        for name in names:
+            shutil.copyfile(FIXTURES / name, user_dir / name)
+
         had_frozen = getattr(_sys, "frozen", None)
         had_meipass = getattr(_sys, "_MEIPASS", None)
         _sys.frozen = True  # type: ignore[attr-defined]
         _sys._MEIPASS = str(meipass)  # type: ignore[attr-defined]
         try:
-            resolved = wakeword.resolve_onnx_models()
-            self.assertTrue(all(resolved.values()), resolved)
-            # La résolution préfère l'emplacement du paquet (défauts OK).
-            self.assertEqual(resolved["wakeword"], pkg_dir / "hey_jarvis_v0.1.onnx")
-            ok, message = wakeword.smoke_check(download=False, verbose=False)
-            self.assertTrue(ok, message)
+            with mock.patch(
+                "src.wakeword.paths.openwakeword_models_dir", return_value=user_dir
+            ):
+                resolved = wakeword.resolve_onnx_models()
+                self.assertTrue(all(resolved.values()), resolved)
+                self.assertEqual(
+                    resolved["wakeword"], pkg_dir / "hey_jarvis_v0.1.onnx"
+                )
+                ok, message = wakeword.smoke_check(download=False, verbose=False)
+                self.assertTrue(ok, message)
         finally:
             if had_frozen is None:
                 del _sys.frozen  # type: ignore[attr-defined]
