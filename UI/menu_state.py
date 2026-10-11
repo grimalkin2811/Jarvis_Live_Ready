@@ -15,10 +15,10 @@ les threads du backend sans dépendance à PySide6.
 
 from __future__ import annotations
 
-import json
-import os
 import threading
 from dataclasses import dataclass, fields, asdict
+
+from src.json_state import load_dict, save_dict
 
 # ---------------------------------------------------------------------------
 # Options cyclables (menus de type "chips")
@@ -133,31 +133,16 @@ def state_to_dict(state: MenuState) -> dict:
 
 def load_state(path: str) -> MenuState:
     state = MenuState()
-    if not path or not os.path.exists(path):
-        return state
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if isinstance(payload, dict):
-            _apply_payload(state, payload)
-    except Exception:
-        pass
+    payload = load_dict(path)
+    if payload:
+        _apply_payload(state, payload)
     _sync_live(state)
     return state
 
 
 def save_state(state: MenuState, path: str) -> None:
     _sync_live(state)
-    if not path:
-        return
-    try:
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(state_to_dict(state), handle, indent=2)
-    except Exception:
-        pass
+    save_dict(path, state_to_dict(state))
 
 
 # ---------------------------------------------------------------------------
@@ -429,12 +414,7 @@ def load_runtime_preferences(
             system_path = str(paths.system_state_file())
         except Exception:
             system_path = ""
-    if system_path and os.path.exists(system_path):
-        try:
-            with open(system_path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
-            if isinstance(payload, dict) and "response_mode_index" in payload:
-                LIVE.set_response_mode_index(int(payload["response_mode_index"]))
-        except Exception:
-            pass
+    payload = load_dict(system_path)
+    if "response_mode_index" in payload:
+        LIVE.set_response_mode_index(int(payload["response_mode_index"]))
     return state

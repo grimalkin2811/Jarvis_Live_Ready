@@ -8,7 +8,6 @@ backend la refuse avant d'agir sur le PC.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
 import re
 import subprocess
@@ -21,7 +20,7 @@ try:  # Informations/processus système enrichis, optionnel.
 except Exception:  # pragma: no cover - dépend de l'environnement
     psutil = None
 
-from . import mode_apps, paths  # noqa: E402
+from . import json_state, mode_apps, paths  # noqa: E402
 
 DEFAULT_DATA_DIR = str(paths.data_dir())
 DEFAULT_MODES_PATH = os.environ.get("JARVIS_MODES_PATH", str(paths.modes_file()))
@@ -378,12 +377,8 @@ def _parse_duration_minutes(value) -> int | None:
 
 
 def _safe_load_json(path: str) -> dict:
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        return payload if isinstance(payload, dict) else {}
-    except Exception:
-        return {}
+    """État local des modes : ``{}`` si absent ou illisible (voir json_state)."""
+    return json_state.load_dict(path)
 
 
 class JarvisModeManager:
@@ -443,21 +438,11 @@ class JarvisModeManager:
         return cleaned
 
     def _save(self) -> None:
+        # Les modes restent valables en mémoire ; on ne doit pas faire échouer
+        # Jarvis pour une erreur d'écriture locale (voir json_state.save_dict).
         if not self.enabled:
             return
-        try:
-            directory = os.path.dirname(self.path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            temp = f"{self.path}.tmp"
-            with open(temp, "w", encoding="utf-8") as handle:
-                json.dump(self._state, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-            os.replace(temp, self.path)
-        except Exception:
-            # Les modes restent valables en mémoire ; on ne doit pas faire
-            # échouer Jarvis pour une erreur d'écriture locale.
-            pass
+        json_state.save_dict(self.path, self._state)
 
     def _normalize_expiration(self, state: dict) -> dict:
         expires = state.get("expires_at")
