@@ -4,8 +4,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from ..settings import DEFAULT_MODEL
+
 MAIN_MODEL_ENV = "GEMINI_MODEL"
-DEFAULT_MAIN_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+#: Modèle de conversation principal, réexporté depuis sa source unique
+#: (``src.settings.DEFAULT_MODEL``) : le nom reste stable pour les appelants
+#: (validation réelle, tests) sans second littéral à maintenir.
+DEFAULT_MAIN_MODEL = DEFAULT_MODEL
 DEFAULT_COMPLEX_MODEL = "gemini-3.8-flash"
 
 

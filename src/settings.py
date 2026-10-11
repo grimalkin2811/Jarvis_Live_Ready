@@ -32,6 +32,12 @@ DESKTOP_MODE = "desktop"
 DEFAULT_INTERFACE_MODE = BLOB_MODE
 INTERFACE_MODES = (BLOB_MODE, DESKTOP_MODE)
 
+#: Modèle Gemini Live de la conversation principale — SOURCE UNIQUE.
+#: L'assistant de premier lancement, la configuration persistante et le
+#: système de tâches d'arrière-plan s'y réfèrent tous : une montée de version
+#: de modèle se fait ici, sans risque d'oublier une copie divergente.
+DEFAULT_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+
 
 @dataclass
 class AppConfig:
@@ -39,7 +45,7 @@ class AppConfig:
 
     user: str = ""
     api_key: str = ""
-    model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    model: str = DEFAULT_MODEL
     memory_enabled: bool = True
     memory_max_results: int = 5
     memory_min_importance: int = 1
