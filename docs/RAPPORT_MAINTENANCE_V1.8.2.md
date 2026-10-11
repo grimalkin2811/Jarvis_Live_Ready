@@ -315,6 +315,14 @@ menus tombent de la même façon sur les deux versions.
 - Notes de release : le corps auto-généré par l'action ne contenait que le lien
   de comparaison ; il a été **remplacé** par les notes de cette version
   (résumé du CHANGELOG, mesures, limites explicites), via l'API GitHub.
+- **Pull request** : https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/44
+  (`arena/9076c6a8-jarvis-live-ready` → `main`, 28 commits) — elle contient le
+  contenu de la 1.8.1 et le remplace donc comme véhicule vers `main` ; la PR
+  #43 (branche 1.8.1) n'a plus d'objet mais reste ouverte, sa fermeture étant
+  laissée à l'appréciation du propriétaire du dépôt. L'ouverture de cette PR a
+  déclenché le workflow de validation réelle (PR vers `main`) : il s'est
+  terminé en 22 s sur « aucune clé disponible » — aucune requête réelle n'a
+  été émise.
 - Note d'environnement : les *fichiers* d'actifs ne peuvent pas être
   téléchargés depuis ce bac à sable (leur hôte de téléchargement
   `release-assets.githubusercontent.com` n'est pas dans la liste réseau
