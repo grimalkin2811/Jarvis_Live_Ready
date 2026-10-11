@@ -40,7 +40,11 @@ jobs:
         shell: bash
         # pytest collecte aussi les TestCase unittest historiques et exécute
         # les tests fonctionnels v1.8 écrits sous forme de fonctions/fixtures.
-        run: python -m pytest -q
+        run: python -m pytest -q --junitxml=pytest-results.xml
+
+      - name: Diagnostic pytest
+        if: failure()
+        run: python scripts/emit_pytest_annotations.py pytest-results.xml
 
       - name: Code module en echec
         if: failure()
