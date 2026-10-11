@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, asdict, fields
+from dataclasses import dataclass, asdict
 from pathlib import Path
 
 from . import paths
@@ -254,7 +254,3 @@ def validate_api_key(raw: str) -> str:
     if len(key) < 20:
         return key
     return key
-
-
-def _field_defaults() -> dict:
-    return {f.name: f.default for f in fields(AppConfig)}

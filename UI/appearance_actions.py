@@ -165,16 +165,6 @@ def _print_action(name: str) -> None:
     print(f"[appearance] {name}")
 
 
-def set_theme_blue(state: AppearanceState) -> None:
-    _apply_theme(state, "blue")
-    _print_action("theme=blue")
-
-
-def set_theme_white(state: AppearanceState) -> None:
-    _apply_theme(state, "white")
-    _print_action("theme=white")
-
-
 def cycle_theme(state: AppearanceState) -> None:
     current_index = THEME_ORDER.index(state.theme_name) if state.theme_name in THEME_ORDER else 0
     next_theme = THEME_ORDER[(current_index + 1) % len(THEME_ORDER)]

@@ -156,8 +156,3 @@ def save_state(state: SystemState, path: str) -> None:
 def cycle_response_mode(state: SystemState) -> None:
     state.response_mode_index = (state.response_mode_index + 1) % len(RESPONSE_MODES)
     print(f"[system] response_mode={state.response_mode_label}")
-
-
-def response_mode_info(state: SystemState) -> dict:
-    entry = RESPONSE_MODES[state.response_mode_index % len(RESPONSE_MODES)]
-    return {"label": entry["label"], "description": entry["description"]}

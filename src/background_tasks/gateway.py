@@ -177,10 +177,6 @@ def classify_background_error(error) -> BackgroundErrorInfo:
     return BackgroundErrorInfo("CODE_OR_PROTOCOL", status, live_code)
 
 
-def api_status_code(exc: BaseException) -> int | None:
-    return classify_background_error(exc).status_code
-
-
 class BackgroundModelGateway:
     def __init__(self, client, *, retry_attempts: int = 3, retry_base_delay: float = 1.0):
         self.client = client

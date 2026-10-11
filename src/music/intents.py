@@ -417,21 +417,3 @@ def _fill_slots_from_query(intent: MusicIntent, query: str) -> None:
         intent.artist = artist
     else:
         intent.query = query
-
-
-def intent_to_tool_args(intent: MusicIntent) -> dict[str, Any]:
-    """Convertit une intention en arguments d'outil MusicManager."""
-    data: dict[str, Any] = {"intent": intent.intent}
-    if intent.track:
-        data["track"] = intent.track
-    if intent.artist:
-        data["artist"] = intent.artist
-    if intent.album:
-        data["album"] = intent.album
-    if intent.playlist:
-        data["playlist"] = intent.playlist
-    if intent.query:
-        data["query"] = intent.query
-    if intent.personal:
-        data["personal"] = True
-    return data

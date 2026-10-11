@@ -41,10 +41,6 @@ def _log_path() -> Path:
     return paths.app_log_file()
 
 
-def _log_dir() -> Path:
-    return _log_path().parent
-
-
 def setup_logging(
     level: int | str | None = None,
     filename: str | os.PathLike | None = None,
@@ -144,11 +140,3 @@ def force_utf8_stdio() -> None:
             # Flux déjà fermé ou non reconfigurable : ne jamais bloquer le
             # processus pour un problème de journalisation.
             pass
-
-
-def log_exception(logger: logging.Logger, message: str, exc: BaseException | None = None) -> None:
-    """Journalise une exception avec pile complète (informe sans masquer)."""
-    if exc is not None:
-        logger.error("%s: %s", message, exc, exc_info=True)
-    else:
-        logger.error(message)

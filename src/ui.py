@@ -34,12 +34,6 @@ from UI import menu_state
 from UI.notification_bridge import NotificationBridge
 
 
-class PresenceBridge(QObject):
-    """Signal émis depuis n'importe quel thread, délivré dans le thread Qt."""
-
-    presence_changed = Signal(str)
-
-
 def __getattr__(name: str):
     """Exports paresseux (PEP 562).
 
@@ -56,16 +50,6 @@ def __getattr__(name: str):
         globals()["PresenceRouter"] = DesktopOverlayController
         return DesktopOverlayController
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-class VoiceEnergyRouter(QObject):
-    """Relie le niveau micro (AudioIO) à l'énergie vocale de l'orbe."""
-
-    @Slot(float)
-    def handle_level(self, level: float) -> None:
-        from UI import jarvis_menu
-
-        jarvis_menu.set_voice_energy(level)
 
 
 class InterfaceModeController(QObject):

@@ -338,25 +338,6 @@ def download_models_to_user_dir() -> bool:
     return all(resolved.values())
 
 
-def ensure_onnx_models(*, download: bool | None = None) -> dict[str, Path | None]:
-    """Garantit (si possible) la présence des trois ONNX et les retourne.
-
-    Si des fichiers manquent et que le téléchargement est autorisé, un
-    téléchargement vers le dossier utilisateur est tenté une fois.
-    """
-    resolved = resolve_onnx_models()
-    if all(resolved.values()):
-        return resolved
-    if download_allowed(download):
-        download_models_to_user_dir()
-        resolved = resolve_onnx_models()
-    return resolved
-
-
-# ---------------------------------------------------------------------------
-# Création du modèle openWakeWord
-# ---------------------------------------------------------------------------
-
 def detect_score_key(model: Any, *, preferred: str = WAKEWORD_NAME) -> str:
     """Détecte la clé de score à lire dans ``model.predict(...)``.
 

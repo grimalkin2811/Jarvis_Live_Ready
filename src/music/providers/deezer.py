@@ -614,14 +614,6 @@ def open_deezer_content(
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class MatchCandidate:
-    kind: str  # track | artist | album | playlist
-    score: float
-    item: Any
-    label: str
-
-
 def rank_tracks(
     tracks: list[Track],
     *,

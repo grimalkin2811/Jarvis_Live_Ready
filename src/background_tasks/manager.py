@@ -480,11 +480,3 @@ def get_default_task_manager() -> TaskManager:
         if _DEFAULT is None:
             raise RuntimeError("Le gestionnaire de tâches d'arrière-plan n'est pas initialisé.")
         return _DEFAULT
-
-
-def reset_default_task_manager_for_tests() -> None:
-    global _DEFAULT
-    with _DEFAULT_LOCK:
-        if _DEFAULT is not None:
-            _DEFAULT.close(wait=True)
-        _DEFAULT = None

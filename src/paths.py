@@ -249,13 +249,6 @@ def app_log_file() -> Path:
 # Utilitaires
 # ---------------------------------------------------------------------------
 
-def ensure_dir(path: Path | str) -> Path:
-    """Crée le dossier parent (et tous ses parents) s'il n'existe pas."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    return target
-
-
 def ensure_data_dirs() -> None:
     """Crée l'arborescence de données utilisateur au démarrage."""
     for directory in (
@@ -267,15 +260,3 @@ def ensure_data_dirs() -> None:
         cache_dir(),
     ):
         directory.mkdir(parents=True, exist_ok=True)
-
-
-def resource_dir(name: str | None = None) -> Path:
-    """Répertoire des ressources embarquées du programme.
-
-    En bundle PyInstaller, les ``datas`` sont extraites dans ``sys._MEIPASS``.
-    En dev, le dossier ``resources/`` du dépôt est utilisé.
-    """
-    base = Path(getattr(sys, "_MEIPASS", None)) if is_frozen() else app_dir() / "resources"
-    if name:
-        return base / name
-    return base

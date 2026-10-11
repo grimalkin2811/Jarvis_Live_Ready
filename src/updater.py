@@ -91,7 +91,7 @@ except ImportError:
         is_valid = not missing and not forbidden
         return is_valid, missing, forbidden
 
-    def _validate_zip(zip_path, expect_app_prefix=False):
+    def _validate_zip(zip_path):
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 names = [n.replace("\\", "/") for n in zf.namelist()]
@@ -172,14 +172,6 @@ def validate_extracted_app_structure(extracted_dir: Path) -> tuple[Path, bool, l
 
     is_valid, missing, forbidden = _validate_app_dir(app_root)
     return app_root, is_valid, missing, forbidden
-
-
-def assert_valid_app_dir(app_path: Path) -> None:
-    """Lève UpdateError si le dossier app est invalide."""
-    is_valid, missing, forbidden = _validate_app_dir(app_path)
-    if not is_valid:
-        msg = _format_validation_error(f"Structure invalide pour {app_path}:", missing, forbidden)
-        raise UpdateError(msg)
 
 
 def assert_valid_zip(zip_path: Path) -> None:
@@ -616,7 +608,6 @@ def check_for_update(
     *,
     current: str | None = None,
     prerelease: bool = False,
-    show_prerelease: bool = False,
     timeout: int = 30,
 ) -> tuple[str, dict]:
     """Compare la version locale et la dernière release.

@@ -77,10 +77,6 @@ def resolve_menu_name(name: Any) -> str | None:
     return None
 
 
-def valid_menu_names() -> list[str]:
-    return list(MENU_NAMES)
-
-
 class VisibilityBridge:
     """Intentions d'affichage explicitement demandées par l'utilisateur.
 

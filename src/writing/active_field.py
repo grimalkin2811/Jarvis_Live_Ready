@@ -12,7 +12,6 @@ du presse-papiers. Hors Windows, l'action échoue proprement.
 from __future__ import annotations
 
 import os
-import sys
 import time
 from dataclasses import dataclass
 
@@ -644,7 +643,3 @@ def _set_format(fmt: int, data: bytes) -> None:
     if not user32.SetClipboardData(fmt, handle):
         kernel32.GlobalFree(handle)
         raise OSError("SetClipboardData a échoué")
-
-
-def running_on_windows() -> bool:
-    return sys.platform.startswith("win")
