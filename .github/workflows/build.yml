@@ -34,11 +34,13 @@ jobs:
       - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Lancer les tests
         shell: bash
-        run: python -m unittest discover tests -v
+        # pytest collecte aussi les TestCase unittest historiques et exécute
+        # les tests fonctionnels v1.8 écrits sous forme de fonctions/fixtures.
+        run: python -m pytest -q
 
       - name: Code module en echec
         if: failure()

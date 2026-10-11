@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.1 — Correctif du pipeline de publication
+
+- Le job Windows installe désormais `requirements-dev.txt` en plus des dépendances de production, afin que `pytest` soit réellement disponible pendant la validation de release.
+- La suite principale du workflow utilise `pytest`, qui collecte les tests `unittest` historiques ainsi que les tests v1.8 basés sur les fonctions, fixtures et paramétrages pytest.
+- Aucun changement du routage, des modèles Gemini, des quotas ou de l’architecture des tâches d’arrière-plan.
+
 ## 1.8.0 — Tâches d’arrière-plan asynchrones
 
 - Task Manager central, thread et boucle asyncio indépendants de Gemini Live.
