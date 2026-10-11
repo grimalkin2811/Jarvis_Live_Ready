@@ -295,12 +295,31 @@ menus tombent de la même façon sur les deux versions.
   9. (commit de version) — `chore(release): v1.8.2`
 - Diff total vs `v1.8.1` : 36 fichiers, +301 / −368 (dont
   `src/json_state.py` et `tests/test_json_state.py` ajoutés).
-- Tag : `v1.8.2` — le push du tag déclenche `build.yml`, qui construit
-  l'exécutable Windows, vérifie la lignée, puis publie la release
-  (`draft: false`) avec `JarvisSetup-*.exe`, `Jarvis-v*-portable.zip` et sa
-  somme SHA-256.
-- Release : _à compléter après publication (URL, identifiant et actifs
-  réellement attachés)_.
+- Tag annoté `v1.8.2` → commit `f2eac2b` (vérifié : `git ls-remote` renvoie
+  `refs/tags/v1.8.2` pointant sur `f2eac2b`).
+- **Publication déclenchée par le push du tag** (workflow `Build & Release`,
+  exécution **38161762028**, conclusion `success`, 17 min 35 s) :
+  - `Tests (Windows)` : **succès en 11 min 5 s** — c'est la suite complète
+    exécutée sur un vrai runner Windows, avec écran, donc sans le problème
+    PySide6 hors écran de ce conteneur ;
+  - `Lint` : succès (8 s) ;
+  - `Build & Release` : succès (6 min 25 s) — garde-fou de lignée, contrôle
+    tag/version, build PyInstaller, installeur, validations, publication.
+- **Release publiée** : https://github.com/grimalkin2811/Jarvis_Live_Ready/releases/tag/v1.8.2
+  (créée par `github-actions[bot]`, `draft: false`, `prerelease: false`,
+  publiée le 2026-10-11 à 18:14:30 UTC, désormais marquée **Latest**).
+- **Actifs attachés** (tailles relevées via l'API GitHub) :
+  - `JarvisSetup-1.8.2.exe` — 150 746 532 octets ;
+  - `Jarvis-v1.8.2-portable.zip` — 155 198 858 octets ;
+  - `Jarvis-v1.8.2-portable.zip.sha256` — 94 octets.
+- Notes de release : le corps auto-généré par l'action ne contenait que le lien
+  de comparaison ; il a été **remplacé** par les notes de cette version
+  (résumé du CHANGELOG, mesures, limites explicites), via l'API GitHub.
+- Note d'environnement : les *fichiers* d'actifs ne peuvent pas être
+  téléchargés depuis ce bac à sable (leur hôte de téléchargement
+  `release-assets.githubusercontent.com` n'est pas dans la liste réseau
+  autorisée). Leur **existence, leurs tailles et le succès de l'exécution**
+  sont en revanche vérifiés via l'API GitHub (api.github.com).
 
 ---
 
