@@ -414,20 +414,29 @@ class AudioIO:
     def output_pending_bytes(self) -> int:
         """Octets de voix de Jarvis pas encore sortis des haut-parleurs.
 
-        Somme de la file réseau (``q``) et du tampon déjà délivré à la carte
-        son (``buffer``) : c'est l'avance audio réelle, celle que l'utilisateur
+        Avance audio réelle — file réseau (``q``) plus le tampon déjà délivré à
+        la carte son (``buffer``) : c'est la voix de Jarvis que l'utilisateur
         entend encore. Primitives utilisées par le traçage et par la porte
         micro anti-écho.
 
         Lecture O(1) du compteur ``_queued_bytes`` : c'est LUI la source de
         vérité depuis la correction de comptage v1.7.2 (``_out`` ne décompte
         qu'à la sortie réelle). Recalculer la somme en parcourant la file à
-        chaque appel était redondant et coûteux dans un chemin appelé à chaque
-        bloc audio (mesuré : 4,0 µs/appel sur une rafale réseau de 5 s, contre
-        0,03 µs pour la lecture du compteur).
+        chaque appel était redondant et coûteux dans un chemin appelé trois
+        fois par bloc audio (worker, porte anti-écho, détection de barge-in).
+
+        Lecture SANS verrou, volontairement : un ``LOAD_ATTR`` est atomique
+        sous le GIL, la valeur est un entier, et une valeur vieille d'un bloc
+        (80 ms) est sans conséquence pour ces trois usages (moniteur d'avance
+        audio, porte anti-écho, journal de trace) — la borne négative est déjà
+        replafonnée hors verrou par ``_out``. Prendre ``self.lock`` ici faisait
+        entrer le worker audio en CONCURRENCE avec le callback temps réel
+        ``_out`` (qui tient ce verrou le temps de remplir la carte son) :
+        mesuré en charge réelle, 4,6 µs/appel sous contention contre 0,3 µs
+        hors contention — et un verrou partagé avec la sortie audio n'a rien à
+        faire dans un chemin de surveillance.
         """
-        with self.lock:
-            return max(0, self._queued_bytes)
+        return max(0, self._queued_bytes)
 
     def output_pending_seconds(self) -> float:
         """Secondes de voix de Jarvis encore à jouer (haut-parleurs)."""
