@@ -57,6 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.settings import DEFAULT_MODEL  # noqa: E402
 from tests.real_gemini_harness import RealVoiceLab, redact  # noqa: E402
 
 FOLLOW_UP_SECONDS = 8.0  # doit rester synchronisé avec src/audio.py
@@ -754,7 +755,7 @@ async def main() -> int:
         print_verdicts({}, ["aucune clé API disponible dans cet environnement."])
         return 2
 
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
     tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 
     notes: list[str] = []

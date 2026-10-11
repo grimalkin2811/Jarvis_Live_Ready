@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src import paths, settings, wakeword  # noqa: E402
+from src.settings import DEFAULT_MODEL  # noqa: E402
 from src.background_tasks.config import BackgroundModelConfig  # noqa: E402
 from src.background_tasks.discovery import (  # noqa: E402
     LiveModelDiscoveryError,
@@ -130,7 +131,7 @@ def configured_main_model() -> str:
         model = str(settings.load_file_config().get("model") or "").strip()
     except Exception:
         model = ""
-    return model or "gemini-2.5-flash-native-audio-preview-12-2025"
+    return model or DEFAULT_MODEL
 
 
 def preflight(report: Report) -> None:
