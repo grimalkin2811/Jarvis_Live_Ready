@@ -251,7 +251,7 @@ class BackgroundModelGateway:
     ) -> TextModelResponse:
         trace = LiveCycleTrace(started_at=time.monotonic())
 
-        async def operation():
+        async def operation() -> TextModelResponse:
             trace.attempt += 1
             trace.phase = "configuration"
             trace.messages = 0
@@ -397,7 +397,7 @@ class BackgroundModelGateway:
                 f"historique_erreurs={trace.error_history[-3:]}"
             )
 
-        async def run_cycle():
+        async def run_cycle() -> TextModelResponse:
             try:
                 return await self._with_bounded_retry(
                     operation, retry_live_resource=True
@@ -439,7 +439,7 @@ class BackgroundModelGateway:
         temperature: float = 0.25,
         before_attempt=None,
     ) -> TextModelResponse:
-        async def operation():
+        async def operation() -> TextModelResponse:
             config: dict = {"temperature": temperature}
             if system_instruction:
                 config["system_instruction"] = system_instruction

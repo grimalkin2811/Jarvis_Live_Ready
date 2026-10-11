@@ -18,6 +18,8 @@ ni aucun test de non-régression — n'a besoin d'être réécrit.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from .desktop.overlay import (  # noqa: F401
     DesktopControlsWindow,
     DesktopOverlay,
@@ -41,7 +43,7 @@ __all__ = [
 ]
 
 
-def build_presence_hook(overlay: DesktopOverlay):
+def build_presence_hook(overlay: DesktopOverlay) -> Callable[[str], None]:
     """Retourne un callable ``presence_hook`` compatible avec ``AudioIO``.
 
     Conservé tel quel depuis la 1.5.3 : le backend continue d'émettre des

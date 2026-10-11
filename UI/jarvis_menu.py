@@ -553,7 +553,7 @@ class MorphingOrbWidget(QWidget):
     # ANIMATION
     # =========================================================
 
-    def tick(self):
+    def tick(self) -> None:
 
         # advance time with global timescale for increased responsiveness
         dt = 0.016 * getattr(self, 'time_scale', 1.0)
@@ -1031,11 +1031,11 @@ class MorphingOrbWidget(QWidget):
     # EVENTS
     # =========================================================
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.center = QPointF(self.width() / 2, self.height() / 2)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
         pos = event.position()
         self.cursor = pos
 
@@ -1064,7 +1064,7 @@ class MorphingOrbWidget(QWidget):
 
         self.update()
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event) -> None:
         if self._menu_drag_index >= 0:
             # Fin de glissement : on force la sauvegarde immédiate.
             self._menu_drag_index = -1
@@ -1074,7 +1074,7 @@ class MorphingOrbWidget(QWidget):
         self.update()
         super().mouseReleaseEvent(event)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         # Clic droit : ferme le menu radial ouvert (geste d'annulation).
         if event.button() == Qt.RightButton:
             if self._menu_sector >= 0 or self._menu_alpha > 0.05:
@@ -1120,7 +1120,7 @@ class MorphingOrbWidget(QWidget):
 
         super().mousePressEvent(event)
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event) -> None:
         if self._menu_nodes:
             direction = 1 if event.angleDelta().y() > 0 else -1
             # Le nœud actif est celui du focus clavier s'il existe, sinon
@@ -1184,7 +1184,7 @@ class MorphingOrbWidget(QWidget):
                     break
         return best_index, node, spec, item
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event) -> None:
         # Échap : ferme d'abord le menu radial ouvert ; ce n'est que s'il
         # n'y a plus rien à fermer qu'Échap quitte Jarvis. On évite ainsi
         # les fermetures accidentelles de l'application.
@@ -1288,7 +1288,7 @@ class MorphingOrbWidget(QWidget):
 
         super().keyPressEvent(event)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         # Sauvegarde via les wrappers (le flag « dirty » du slider
         # d'opacité est also consigné) : quels que soient le chemin de
         # fermeture (Échap, System → Quit, icône de notification,
@@ -3394,7 +3394,7 @@ class MorphingOrbWidget(QWidget):
     # PAINT
     # =========================================================
 
-    def paintEvent(self, event):
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.Antialiasing)

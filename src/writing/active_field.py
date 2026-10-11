@@ -145,7 +145,7 @@ class MemoryClipboard:
         self.fail_capture = False
         self.fail_restore = False
 
-    def capture(self):
+    def capture(self) -> str:
         if self.fail_capture:
             raise OSError("presse-papiers verrouillé")
         return self.value
@@ -397,7 +397,7 @@ class Win32Keyboard:
 class Win32Clipboard:
     """Presse-papiers Win32 : capture des formats HGLOBAL, puis restauration."""
 
-    def capture(self):
+    def capture(self) -> list[tuple[int, bytes]]:
         return _clipboard_snapshot()
 
     def set_text(self, text: str) -> None:

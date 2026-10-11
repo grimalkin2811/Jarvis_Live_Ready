@@ -279,7 +279,8 @@ class TaskManager:
             total_steps=route.estimated_steps, progress=10, current_step="Plan validé",
         )
 
-        def update(progress, step, number, total, waiting=False):
+        def update(progress: float, step: str, number: int, total: int,
+                   waiting: bool = False) -> None:
             self._mutate(
                 task_id, status=TaskStatus.WAITING_FOR_TOOL if waiting else TaskStatus.RUNNING,
                 progress=max(0, min(99, int(progress))), current_step=str(step),

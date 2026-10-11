@@ -179,7 +179,7 @@ def _run_smoke_test() -> int:
     return 0
 
 
-async def run_headless():
+async def run_headless() -> None:
     import asyncio
 
     from .audio import AudioIO
@@ -213,7 +213,7 @@ async def run_headless():
     scheduler = None
     task_manager = None
 
-    def mic(pcm):
+    def mic(pcm: bytes) -> None:
         if gemini is not None and gemini.can_send():
             # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
             # thread audio, au moment exact de la capture : send_audio() les
@@ -232,7 +232,7 @@ async def run_headless():
                 loop,
             )
 
-    def on_barge_in():
+    def on_barge_in() -> None:
         """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
         if gemini is not None:
             gemini.request_interrupt()

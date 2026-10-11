@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QPainter, QPixmap
@@ -32,6 +33,10 @@ from . import paths, protocols, settings
 from UI import appearance_actions
 from UI import menu_state
 from UI.notification_bridge import NotificationBridge
+
+if TYPE_CHECKING:  # pragma: no cover - annotations uniquement (imports paresseux)
+    from UI.desktop.overlay import DesktopOverlay
+    from UI.jarvis_menu import MorphingOrbWidget
 
 
 def __getattr__(name: str):
@@ -95,11 +100,11 @@ class InterfaceModeController(QObject):
         self.desktop_event.connect(self._route_desktop_event)
 
     @property
-    def blob(self):
+    def blob(self) -> MorphingOrbWidget | None:
         return self._blob
 
     @property
-    def overlay(self):
+    def overlay(self) -> DesktopOverlay | None:
         return self._overlay
 
     def current_mode(self) -> str:
@@ -371,7 +376,7 @@ def _run_voice_loop(
     audio = None
     task_manager = None
 
-    def mic(pcm):
+    def mic(pcm: bytes) -> None:
         if gemini is not None and gemini.can_send():
             # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
             # thread audio, au moment exact de la capture : send_audio() les
@@ -390,12 +395,12 @@ def _run_voice_loop(
                 loop,
             )
 
-    def on_barge_in():
+    def on_barge_in() -> None:
         """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
         if gemini is not None:
             gemini.request_interrupt()
 
-    def stop_speaking():
+    def stop_speaking() -> None:
         """Interruption manuelle (bouton du menu radial / touche S)."""
         if audio is not None:
             audio.stop_speaking()
@@ -409,7 +414,7 @@ def _run_voice_loop(
         except Exception:
             pass
 
-    def on_interrupted():
+    def on_interrupted() -> None:
         # L'évènement est publié AVANT ``clear_output()`` : ce dernier émet
         # « listening » (réouverture du micro), et l'ordre visible doit être
         # « interrompu » puis « à l'écoute », pas l'inverse.

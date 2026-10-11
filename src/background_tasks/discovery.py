@@ -137,7 +137,7 @@ class LiveModelResolver:
     async def _list_models(self, timeout: float | None = None) -> list:
         effective_timeout = min(self.list_timeout, timeout or self.list_timeout)
 
-        async def list_once():
+        async def list_once() -> list:
             pager = await asyncio.wait_for(
                 self.client.aio.models.list(), timeout=effective_timeout
             )

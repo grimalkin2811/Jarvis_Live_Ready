@@ -52,7 +52,7 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
-from PySide6.QtGui import QColor, QGuiApplication, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QScreen
 from PySide6.QtWidgets import QWidget
 
 from src.logging_setup import get_logger
@@ -214,7 +214,7 @@ class DesktopOverlay(QWidget):
     # ------------------------------------------------------------------
 
     @property
-    def appearance_state(self):
+    def appearance_state(self) -> cfg.DesktopAppearanceConfig:
         return self._appearance_state
 
     @appearance_state.setter
@@ -315,7 +315,7 @@ class DesktopOverlay(QWidget):
         except Exception:  # pragma: no cover - dépend de la plateforme
             log.debug("signaux d'écran indisponibles")
 
-    def target_screen(self):
+    def target_screen(self) -> QScreen | None:
         """Écran qui doit porter l'overlay.
 
         Priorité : l'écran sous le curseur (c'est là que l'utilisateur

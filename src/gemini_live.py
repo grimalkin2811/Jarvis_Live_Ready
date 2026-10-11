@@ -803,11 +803,11 @@ class GeminiLive:
             return False, "jarvis parle"
         return True, ""
 
-    def can_send(self):
+    def can_send(self) -> bool:
         allowed, _reason = self._can_send_now()
         return allowed
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Ouvre la session Live, avec repli automatique sur handle refusé.
 
         Un handle de reprise peut être refusé par le serveur (expiration
@@ -1207,7 +1207,7 @@ class GeminiLive:
             raise
 
     async def send_audio(self, pcm, *, capture_generation: int | None = None,
-                          capture_turn_epoch: int | None = None):
+                          capture_turn_epoch: int | None = None) -> None:
         """Envoie un bloc micro à Gemini — SEUL point d'entrée autoritaire.
 
         RACE CORRIGÉE (v1.7.3 — double-cycle / « Dis-moi tout » superposé) :
@@ -1313,7 +1313,7 @@ class GeminiLive:
             )
         )
 
-    async def receive_loop(self):
+    async def receive_loop(self) -> None:
         try:
             await self._receive_loop()
         except BaseException:
@@ -1980,7 +1980,7 @@ class GeminiLive:
             except Exception:
                 pass
 
-    async def close(self):
+    async def close(self) -> None:
         task = self._watcher_task
         self._watcher_task = None
         if task is not None and task is not asyncio.current_task() and not task.done():

@@ -37,7 +37,7 @@ try:
         validate_install_dir,  # noqa: F401 (ré-exporté pour les tests)
     )
 except ImportError:  # pragma: no cover - sécurité distribution minimale
-    def validate_app_dir(app_path, strict=False):  # type: ignore[no-redef]
+    def validate_app_dir(app_path, strict=False) -> tuple[bool, list[str], list[str]]:  # type: ignore[no-redef]
         base = Path(app_path)
         missing = []
         forbidden = []
@@ -49,7 +49,7 @@ except ImportError:  # pragma: no cover - sécurité distribution minimale
                 forbidden.append(rel)
         return (not missing and not forbidden), missing, forbidden
 
-    def validate_install_dir(install_path):  # type: ignore[no-redef]
+    def validate_install_dir(install_path) -> tuple[bool, list[str], list[str]]:  # type: ignore[no-redef]
         base = Path(install_path)
         missing = []
         forbidden = []

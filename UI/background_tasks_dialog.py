@@ -128,7 +128,7 @@ class BackgroundTasksDialog(QDialog):
 _DIALOG = None
 
 
-def show_background_tasks_dialog(parent=None):
+def show_background_tasks_dialog(parent=None) -> BackgroundTasksDialog | None:
     global _DIALOG
     try:
         from src.background_tasks import get_default_task_manager

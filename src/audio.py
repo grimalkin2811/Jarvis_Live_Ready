@@ -283,7 +283,7 @@ class AudioIO:
     # DÉMARRAGE
     # =========================================================
 
-    def start(self):
+    def start(self) -> None:
         if self.running:
             return
 
@@ -1018,7 +1018,7 @@ class AudioIO:
     # FIN DE RÉPONSE GEMINI
     # =========================================================
 
-    def extend_listening(self):
+    def extend_listening(self) -> None:
         """
         Cette fonction est appelée lorsque Gemini termine
         réellement son tour.
@@ -1055,7 +1055,7 @@ class AudioIO:
             f"{self.FOLLOW_UP_SECONDS:.0f} secondes."
         )
 
-    def begin_speaking(self):
+    def begin_speaking(self) -> None:
         """Jarvis commence à parler (début d'une réponse Gemini)."""
         self._set_speaking(True)
 
@@ -1231,7 +1231,7 @@ class AudioIO:
         except Exception:
             return pcm
 
-    def play(self, pcm):
+    def play(self, pcm: bytes) -> None:
 
         if not pcm or not self.running:
             return
@@ -1263,7 +1263,7 @@ class AudioIO:
     # INTERRUPTION DE GEMINI
     # =========================================================
 
-    def clear_output(self):
+    def clear_output(self) -> None:
 
         with self.lock:
 
@@ -1298,7 +1298,7 @@ class AudioIO:
     # ARRÊT
     # =========================================================
 
-    def stop(self):
+    def stop(self) -> None:
 
         self.running = False
         self.audio_started = False
