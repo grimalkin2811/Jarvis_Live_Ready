@@ -1,6 +1,6 @@
 # Rapport de maintenance — Jarvis Live Ready v1.8.2
 
-Version publiée : **1.8.2** (release de maintenance).
+Version publiée : **1.8.2** (release de maintenance), tag `v1.8.2` sur `f2eac2b`.
 Branche : `arena/9076c6a8-jarvis-live-ready`, à partir de `66d53f6` (= `v1.8.1`).
 
 Ce document distingue systématiquement :
@@ -292,9 +292,15 @@ menus tombent de la même façon sur les deux versions.
   6. `36dc5fe` — `refactor: one JSON state helper for the four local state files (dedup + atomic writes)`
   7. `f4df2a7` — `refactor(typing): annotate the return types of the remaining public APIs`
   8. `6b8e415` — `perf(audio): read the pending-audio counter without the output lock`
-  9. (commit de version) — `chore(release): v1.8.2`
-- Diff total vs `v1.8.1` : 36 fichiers, +301 / −368 (dont
-  `src/json_state.py` et `tests/test_json_state.py` ajoutés).
+  9. `f2eac2b` — `chore(release): v1.8.2 — nettoyage, factorisation et optimisation mesurée`
+     (**c'est le commit porté par le tag `v1.8.2`**) ;
+  10. `1b27564`, `f1bc5e6` — documentation du rapport et de la publication
+      (postérieurs au tag, donc absents des binaires publiés ; sans effet sur
+      le code livré).
+- Diff total `v1.8.1` → HEAD : **40 fichiers, +735 / −371**, dont
+  `src/json_state.py`, `docs/RAPPORT_MAINTENANCE_V1.8.2.md` et
+  `tests/test_json_state.py` ajoutés ; l'essentiel des ajouts de lignes vient
+  des deux documents.
 - Tag annoté `v1.8.2` → commit `f2eac2b` (vérifié : `git ls-remote` renvoie
   `refs/tags/v1.8.2` pointant sur `f2eac2b`).
 - **Publication déclenchée par le push du tag** (workflow `Build & Release`,
