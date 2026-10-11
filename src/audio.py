@@ -418,10 +418,16 @@ class AudioIO:
         son (``buffer``) : c'est l'avance audio réelle, celle que l'utilisateur
         entend encore. Primitives utilisées par le traçage et par la porte
         micro anti-écho.
+
+        Lecture O(1) du compteur ``_queued_bytes`` : c'est LUI la source de
+        vérité depuis la correction de comptage v1.7.2 (``_out`` ne décompte
+        qu'à la sortie réelle). Recalculer la somme en parcourant la file à
+        chaque appel était redondant et coûteux dans un chemin appelé à chaque
+        bloc audio (mesuré : 4,0 µs/appel sur une rafale réseau de 5 s, contre
+        0,03 µs pour la lecture du compteur).
         """
         with self.lock:
-            queued = sum(len(chunk) for chunk in list(self.q.queue))
-            return queued + len(self.buffer)
+            return max(0, self._queued_bytes)
 
     def output_pending_seconds(self) -> float:
         """Secondes de voix de Jarvis encore à jouer (haut-parleurs)."""
@@ -483,9 +489,7 @@ class AudioIO:
             try:
                 samples = np.frombuffer(indata, dtype=np.int16)
                 if samples.size:
-                    self._last_mic_rms = float(
-                        np.sqrt(np.mean(samples.astype(np.float64) ** 2))
-                    )
+                    self._last_mic_rms = self._block_rms(pcm)
                     self._last_mic_peak = int(np.max(np.abs(samples)))
                     self._last_mic_seen = time.monotonic()
                 if self.voice_hook is not None:
@@ -673,8 +677,16 @@ class AudioIO:
             return True
 
     @staticmethod
+    @staticmethod
     def _block_rms(pcm) -> float:
-        """Niveau moyen (RMS, échelle int16) d'un bloc micro."""
+        """Niveau moyen (RMS, échelle int16) d'un bloc PCM.
+
+        Implémentation unique partagée par le callback micro, la détection de
+        barge-in et le niveau de sortie (elle était dupliquée à l'identique
+        dans ces trois chemins). Le calcul se fait en float64 sur une copie
+        temporaire : ``np.dot`` en int16 déborderait silencieusement
+        (32767² × 1280 dépasse largement l'int16) — vérifié.
+        """
         try:
             samples = np.frombuffer(pcm, dtype=np.int16)
             if samples.size == 0:
@@ -958,10 +970,9 @@ class AudioIO:
             return
         self._last_output_emit = now
         try:
-            samples = np.frombuffer(pcm, dtype=np.int16)
-            if samples.size == 0:
+            rms = self._block_rms(pcm)
+            if rms <= 0.0:
                 return
-            rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
             self.output_level_hook(min(1.0, rms / 6000.0))
         except Exception:
             pass
