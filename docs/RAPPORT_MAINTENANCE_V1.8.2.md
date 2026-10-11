@@ -294,10 +294,13 @@ menus tombent de la même façon sur les deux versions.
   8. `6b8e415` — `perf(audio): read the pending-audio counter without the output lock`
   9. `f2eac2b` — `chore(release): v1.8.2 — nettoyage, factorisation et optimisation mesurée`
      (**c'est le commit porté par le tag `v1.8.2`**) ;
-  10. `1b27564`, `f1bc5e6` — documentation du rapport et de la publication
-      (postérieurs au tag, donc absents des binaires publiés ; sans effet sur
-      le code livré).
-- Diff total `v1.8.1` → HEAD : **40 fichiers, +735 / −371**, dont
+  10. `1b27564`, `f1bc5e6`, `0a237a0` — documentation du rapport et de la
+      publication (postérieurs au tag, donc absents des binaires publiés ;
+      sans effet sur le code livré) ;
+  11. `9b4455e` — `test(echo-loop): compter les evenements residuels au lieu
+      de les horodater` (voir § 8.1, qui documente l'incident de la PR #44).
+- Diff total `v1.8.1` → HEAD : **41 fichiers, +752 / −374** (mesuré à
+  `9b4455e`, donc hors lignes ajoutées par la section § 8.1 ci-dessous), dont
   `src/json_state.py`, `docs/RAPPORT_MAINTENANCE_V1.8.2.md` et
   `tests/test_json_state.py` ajoutés ; l'essentiel des ajouts de lignes vient
   des deux documents.
@@ -334,6 +337,45 @@ menus tombent de la même façon sur les deux versions.
   `release-assets.githubusercontent.com` n'est pas dans la liste réseau
   autorisée). Leur **existence, leurs tailles et le succès de l'exécution**
   sont en revanche vérifiés via l'API GitHub (api.github.com).
+
+### 8.1 Incident postérieur au tag : échec `Tests (Windows)` de la PR #44
+
+- Le contrôle `Tests (Windows)` de la PR #44 (exécution **38163474330**, commit
+  `0a237a0`, échec au bout de 13 min 30 s) a signalé **un seul test en échec** :
+  `tests/test_echo_loop.py::TestF_NoFollowUp::test_response_goes_straight_to_hidden_and_stays_there`,
+  sur l'assertion `presence_states(since=mark) == []` qui renvoyait `['hidden']`.
+  Les 23 ré-exécutions `diag:` par module du même travail étaient toutes
+  vertes, et le code sous test était **identique octet pour octet** à celui du
+  tag `v1.8.2` (déjà validé deux fois en vert sur Windows) : l'échec ne pouvait
+  donc venir que du test lui-même.
+- **Cause identifiée et reproduite** : le test prenait son marqueur temporel
+  `mark = time.monotonic()` quelques microsecondes après la mise en veille,
+  puis comptait les événements d'horodatage `ts >= mark`. Sur Windows,
+  `time.monotonic()` (GetTickCount64) est **quantifié au tick système
+  (~15,6 ms)** : le marqueur peut porter le même horodatage que la mise en
+  veille, qui est alors comptée à tort comme un événement résiduel.
+  Reproduction locale avec une horloge explicitement quantifiée à 15,625 ms
+  (**simulation**, pas une mesure du comportement Windows) : **2 échecs sur 6**
+  sur HEAD et **3 sur 6** sur l'arbre v1.8.1 vierge (`66d53f6`) — la fragilité
+  est donc **antérieure à cette release** — avec un message d'échec identique
+  à celui de la CI.
+- **Correctif** (commit `9b4455e`, tests uniquement) : la comparaison se fait
+  désormais par **compteurs** (`presences_before` / `resets_before` relevés
+  juste avant les callbacks résiduels) et non par horodatage ; l'intention du
+  test est inchangée. Contrôles exécutés :
+  - horloge quantifiée à 15,625 ms sur le test corrigé : **8 réussites sur 8**
+    (contre 2 échecs sur 6 avant) ; horloge réelle : 12/12 sur HEAD et 12/12
+    sur l'arbre v1.8.1 ;
+  - **pouvoir de détection préservé** : avec un plugin qui ré-injecte le bug
+    (un « vieux `on_interrupted` » rouvrant l'écoute d'un Jarvis endormi), le
+    test corrigé échoue bien — comme le test d'origine ;
+  - module complet `tests/test_echo_loop.py` : **20 réussites en 4 min 29 s**.
+- Les autres marqueurs temporels du même fichier (`TestE_FollowUpListening`,
+  `TestListenModeRenewal`) ne présentent pas ce risque : leur événement de
+  référence le plus proche précède le marqueur de plusieurs secondes, donc
+  jamais dans le même tick système.
+- **Aucun impact sur les binaires publiés** : ce correctif est postérieur au tag
+  `v1.8.2` et ne touche que les tests ; la release et ses actifs sont inchangés.
 
 ---
 
