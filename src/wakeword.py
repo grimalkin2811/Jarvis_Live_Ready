@@ -123,6 +123,19 @@ def download_allowed(explicit: bool | None = None) -> bool:
 # Emplacements candidats
 # ---------------------------------------------------------------------------
 
+def _pyinstaller_bundle_root() -> Path | None:
+    """Retourne la racine extraite du bundle quand ``_MEIPASS`` est présent.
+
+    ``_MEIPASS`` est l'indicateur qui porte le chemin des ressources. Il est
+    suffisant et plus précis que ``sys.frozen`` pour cette résolution : exiger
+    les deux rendait la priorité dépendante d'un second attribut mutable.
+    """
+    value = getattr(sys, "_MEIPASS", None)
+    if value is None or not str(value).strip():
+        return None
+    return Path(str(value))
+
+
 def candidate_dirs() -> list[Path]:
     """Répertoires où chercher les modèles, du plus spécifique au général.
 
@@ -130,20 +143,25 @@ def candidate_dirs() -> list[Path]:
     ``.venv/Lib/site-packages`` existe sur la machine de l'utilisateur.
     """
     dirs: list[Path] = []
-    # 1. Dossier utilisateur (modèles téléchargés au premier lancement,
-    #    préservés lors des mises à jour).
-    dirs.append(paths.openwakeword_models_dir())
-    # 2. Ressources embarquées dans le bundle PyInstaller (_MEIPASS).
-    if getattr(sys, "frozen", False) and getattr(sys, "_MEIPASS", None):
-        meipass = Path(str(sys._MEIPASS))  # type: ignore[attr-defined]
+    bundle_root = _pyinstaller_bundle_root()
+    if bundle_root is not None:
+        # 1. Dans une application gelée, le jeu de modèles embarqué avec le
+        #    binaire est cohérent avec sa version et doit primer sur un ancien
+        #    téléchargement utilisateur.
+        meipass = bundle_root
         # a. Emplacement d'origine du paquet openwakeword : le build y copie
         #    les .onnx (voir packaging/jarvis.spec) pour que même la
         #    résolution par défaut d'openWakeWord fonctionne.
         dirs.append(meipass / "openwakeword" / "resources" / "models")
-        # b. Dossier de ressources fourni par le build.
+        # b. Dossiers de ressources fournis par le build.
         dirs.append(meipass / "resources" / "openwakeword")
         dirs.append(meipass / "resources" / "models")
-    else:
+
+    # 2. Repli utilisateur : modèles téléchargés au premier lancement et
+    #    préservés lors des mises à jour. En développement, il reste prioritaire.
+    dirs.append(paths.openwakeword_models_dir())
+
+    if bundle_root is None:
         # 3. En développement : dossier resources/ du dépôt (rempli par
         #    scripts/download_models.py).
         repo_resources = paths.app_dir() / "resources" / "openwakeword"
@@ -319,25 +337,6 @@ def download_models_to_user_dir() -> bool:
     resolved = resolve_onnx_models()
     return all(resolved.values())
 
-
-def ensure_onnx_models(*, download: bool | None = None) -> dict[str, Path | None]:
-    """Garantit (si possible) la présence des trois ONNX et les retourne.
-
-    Si des fichiers manquent et que le téléchargement est autorisé, un
-    téléchargement vers le dossier utilisateur est tenté une fois.
-    """
-    resolved = resolve_onnx_models()
-    if all(resolved.values()):
-        return resolved
-    if download_allowed(download):
-        download_models_to_user_dir()
-        resolved = resolve_onnx_models()
-    return resolved
-
-
-# ---------------------------------------------------------------------------
-# Création du modèle openWakeWord
-# ---------------------------------------------------------------------------
 
 def detect_score_key(model: Any, *, preferred: str = WAKEWORD_NAME) -> str:
     """Détecte la clé de score à lire dans ``model.predict(...)``.

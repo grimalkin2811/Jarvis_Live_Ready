@@ -20,7 +20,9 @@ from pathlib import Path
 
 from . import settings
 
-DEFAULT_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+#: Réexporté depuis la source unique (``src.settings``) : le nom reste
+#: disponible pour l'assistant de configuration, sans littéral dupliqué.
+DEFAULT_MODEL = settings.DEFAULT_MODEL
 
 
 def _ask(prompt: str, default: str | None = None, secret: bool = False) -> str:

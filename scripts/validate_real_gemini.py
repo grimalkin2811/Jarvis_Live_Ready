@@ -54,6 +54,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import gemini_live as gl  # noqa: E402
+from src.settings import DEFAULT_MODEL  # noqa: E402
 from src.conversation import ConversationContext  # noqa: E402
 
 TURN_TIMEOUT = 60.0  # le natif audio peut être lent au premier tour
@@ -544,7 +545,7 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
 
 async def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--model", default=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025"))
+    parser.add_argument("--model", default=os.getenv("GEMINI_MODEL", DEFAULT_MODEL))
     parser.add_argument("--tts-model", default="gemini-2.5-flash-preview-tts")
     parser.add_argument(
         "--mode",
@@ -658,9 +659,7 @@ async def run_selftest() -> int:
     server.oracle.register(r"code", lambda pairs: "Le code retourné par l'outil est KILO-7.")
     _install_fake_wire_tap(server)
 
-    runner = RealRunner(
-        "cle-factice-selftest", "gemini-2.5-flash-native-audio-preview-12-2025", None
-    )
+    runner = RealRunner("cle-factice-selftest", DEFAULT_MODEL, None)
     # Le faux client remplace le vrai : aucune requête réseau n'est émise.
     runner.gemini.client = FakeClient(server)
     # 3 chunks de 100 ms (le pas de speak_pcm) : la file d'attente du faux

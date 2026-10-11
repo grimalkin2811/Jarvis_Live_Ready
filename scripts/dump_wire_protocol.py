@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from google import genai  # noqa: E402
 from google.genai import _common, _live_converters as lc, _transformers as t, types  # noqa: E402
 
+from src.settings import DEFAULT_MODEL  # noqa: E402
 from tests.live_harness import FakeLiveServer  # noqa: E402
 from tests.voice_harness import VoiceHarness  # noqa: E402
 
@@ -142,7 +143,7 @@ async def _lifecycle(suppress_handles: bool) -> tuple:
 
 
 async def main() -> int:
-    model = "gemini-2.5-flash-native-audio-preview-12-2025"
+    model = DEFAULT_MODEL
     print(f"# Dump du câble — sérialisation SDK google-genai réelle, modèle {model}")
     # --- Scénario A : seed (aucun handle délivré) ---------------------------
     server, harness = await _lifecycle(suppress_handles=True)

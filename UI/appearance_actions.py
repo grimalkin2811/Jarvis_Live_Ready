@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import json
-import os
 from dataclasses import dataclass, field
+
+from src.json_state import load_dict, save_dict
 
 from PySide6.QtGui import QColor
 
@@ -136,43 +136,18 @@ def apply_state_dict(state: AppearanceState, payload: dict) -> None:
 
 def load_state(path: str) -> AppearanceState:
     state = AppearanceState()
-    if not path or not os.path.exists(path):
-        return state
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if isinstance(payload, dict):
-            apply_state_dict(state, payload)
-    except Exception:
-        pass
+    payload = load_dict(path)
+    if payload:
+        apply_state_dict(state, payload)
     return state
 
 
 def save_state(state: AppearanceState, path: str) -> None:
-    if not path:
-        return
-    try:
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(state_to_dict(state), handle, indent=2)
-    except Exception:
-        pass
+    save_dict(path, state_to_dict(state))
 
 
 def _print_action(name: str) -> None:
     print(f"[appearance] {name}")
-
-
-def set_theme_blue(state: AppearanceState) -> None:
-    _apply_theme(state, "blue")
-    _print_action("theme=blue")
-
-
-def set_theme_white(state: AppearanceState) -> None:
-    _apply_theme(state, "white")
-    _print_action("theme=white")
 
 
 def cycle_theme(state: AppearanceState) -> None:

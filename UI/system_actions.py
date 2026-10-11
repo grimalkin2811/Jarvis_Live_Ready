@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
+
+from src.json_state import load_dict, save_dict
 from pathlib import Path
 
 # Modes de réponse de Jarvis (verbosité). Adapté à Gemini Live :
@@ -128,36 +129,16 @@ def _apply_payload(state: SystemState, payload: dict) -> None:
 
 def load_state(path: str) -> SystemState:
     state = SystemState()
-    if not path or not os.path.exists(path):
-        return state
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        if isinstance(payload, dict):
-            _apply_payload(state, payload)
-    except Exception:
-        pass
+    payload = load_dict(path)
+    if payload:
+        _apply_payload(state, payload)
     return state
 
 
 def save_state(state: SystemState, path: str) -> None:
-    if not path:
-        return
-    try:
-        directory = os.path.dirname(path)
-        if directory:
-            os.makedirs(directory, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(_state_payload(state), handle, indent=2)
-    except Exception:
-        pass
+    save_dict(path, _state_payload(state))
 
 
 def cycle_response_mode(state: SystemState) -> None:
     state.response_mode_index = (state.response_mode_index + 1) % len(RESPONSE_MODES)
     print(f"[system] response_mode={state.response_mode_label}")
-
-
-def response_mode_info(state: SystemState) -> dict:
-    entry = RESPONSE_MODES[state.response_mode_index % len(RESPONSE_MODES)]
-    return {"label": entry["label"], "description": entry["description"]}

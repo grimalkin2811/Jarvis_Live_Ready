@@ -167,6 +167,21 @@ def notes_file() -> Path:
     return data_dir() / "notes.json"
 
 
+def background_tasks_file() -> Path:
+    """Historique et état des tâches v1.8 (données utilisateur)."""
+    return data_dir() / "background_tasks.json"
+
+
+def background_quota_file() -> Path:
+    """Compteurs locaux persistants du quota Gemini 3.8."""
+    return data_dir() / "background_quota.json"
+
+
+def background_task_results_dir() -> Path:
+    """Documents produits par les tâches v1.8."""
+    return user_content_dir() / "tasks"
+
+
 def user_content_dir() -> Path:
     """Dossier des fichiers ``.txt`` générés par le système d'écriture.
 
@@ -234,13 +249,6 @@ def app_log_file() -> Path:
 # Utilitaires
 # ---------------------------------------------------------------------------
 
-def ensure_dir(path: Path | str) -> Path:
-    """Crée le dossier parent (et tous ses parents) s'il n'existe pas."""
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    return target
-
-
 def ensure_data_dirs() -> None:
     """Crée l'arborescence de données utilisateur au démarrage."""
     for directory in (
@@ -252,15 +260,3 @@ def ensure_data_dirs() -> None:
         cache_dir(),
     ):
         directory.mkdir(parents=True, exist_ok=True)
-
-
-def resource_dir(name: str | None = None) -> Path:
-    """Répertoire des ressources embarquées du programme.
-
-    En bundle PyInstaller, les ``datas`` sont extraites dans ``sys._MEIPASS``.
-    En dev, le dossier ``resources/`` du dépôt est utilisé.
-    """
-    base = Path(getattr(sys, "_MEIPASS", None)) if is_frozen() else app_dir() / "resources"
-    if name:
-        return base / name
-    return base

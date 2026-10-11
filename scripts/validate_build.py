@@ -21,8 +21,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.logging_setup import force_utf8_stdio
-from src.packaging_validation import (
+from src.logging_setup import force_utf8_stdio  # noqa: E402
+from src.packaging_validation import (  # noqa: E402
     format_validation_result,
     format_wakeword_result,
     validate_app_dir,

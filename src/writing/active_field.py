@@ -12,7 +12,6 @@ du presse-papiers. Hors Windows, l'action échoue proprement.
 from __future__ import annotations
 
 import os
-import sys
 import time
 from dataclasses import dataclass
 
@@ -146,7 +145,7 @@ class MemoryClipboard:
         self.fail_capture = False
         self.fail_restore = False
 
-    def capture(self):
+    def capture(self) -> str:
         if self.fail_capture:
             raise OSError("presse-papiers verrouillé")
         return self.value
@@ -398,7 +397,7 @@ class Win32Keyboard:
 class Win32Clipboard:
     """Presse-papiers Win32 : capture des formats HGLOBAL, puis restauration."""
 
-    def capture(self):
+    def capture(self) -> list[tuple[int, bytes]]:
         return _clipboard_snapshot()
 
     def set_text(self, text: str) -> None:
@@ -644,7 +643,3 @@ def _set_format(fmt: int, data: bytes) -> None:
     if not user32.SetClipboardData(fmt, handle):
         kernel32.GlobalFree(handle)
         raise OSError("SetClipboardData a échoué")
-
-
-def running_on_windows() -> bool:
-    return sys.platform.startswith("win")

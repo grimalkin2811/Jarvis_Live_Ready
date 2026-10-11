@@ -28,10 +28,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.settings import DEFAULT_MODEL  # noqa: E402
 from tests.live_harness import FakeLiveServer  # noqa: E402
 from tests.voice_harness import VoiceHarness  # noqa: E402
 
-MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+MODEL = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
 
 
 def _verdict(label: str, ok: bool, detail: str = "") -> None:

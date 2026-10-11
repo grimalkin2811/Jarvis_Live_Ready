@@ -470,13 +470,21 @@ class TestF_NoFollowUp(_EchoTestCase):
         self.assertFalse(lab.audio.awake)
 
         # Callbacks résiduels simulés (ancienne session, vieux timer) :
-        mark = time.monotonic()
+        # Comparaison par COMPTEURS et non par horodatage : la mise en veille
+        # vient de se produire (quelques microsecondes avant), et sur Windows
+        # ``time.monotonic()`` est quantifié au tick système (~15,6 ms) : un
+        # marqueur temporel pris ici peut porter le MÊME horodatage que la
+        # mise en veille, qui serait alors comptée à tort comme un événement
+        # résiduel (échec intermittent observé en CI Windows ; reproduction
+        # locale : horloge quantifiée à 15,625 ms, y compris sur v1.8.1).
+        resets_before = len(lab.resets())
+        presences_before = len(lab.presence_log)
         lab.audio.clear_output()        # vieux on_interrupted
         lab.audio.extend_listening()    # vieux turn_complete
         lab.wait(3.0)
 
-        self.assertEqual(len(lab.resets(since=mark)), 0)
-        self.assertEqual(lab.presence_states(since=mark), [])
+        self.assertEqual(len(lab.resets()) - resets_before, 0)
+        self.assertEqual(lab.presence_log[presences_before:], [])
         self.assertFalse(lab.audio.awake)
 
 

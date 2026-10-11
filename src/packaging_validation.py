@@ -240,21 +240,6 @@ def format_wakeword_result(is_valid: bool, missing: list[str], found: list[str])
 # Validation de ZIP
 # ---------------------------------------------------------------------------
 
-def _zip_contains(zip_file: zipfile.ZipFile, rel_path: str) -> bool:
-    """Vrai si le ZIP contient un fichier ou dossier avec ce chemin."""
-    # Normalise les séparateurs
-    rel_path = rel_path.replace("\\", "/")
-    names = zip_file.namelist()
-    # Exact match ou préfixe pour dossiers
-    for name in names:
-        normalized = name.replace("\\", "/")
-        if normalized == rel_path or normalized.startswith(rel_path.rstrip("/") + "/"):
-            return True
-        # Cas où le ZIP contient app/ comme racine (ex: app/Jarvis.exe)
-        # On accepte aussi sans préfixe app/ si on valide un app dir
-    return False
-
-
 def _zip_has_flattened(zip_file: zipfile.ZipFile) -> list[str]:
     """Détecte les fichiers aplatis à la racine du ZIP."""
     found: list[str] = []
@@ -271,13 +256,12 @@ def _zip_has_flattened(zip_file: zipfile.ZipFile) -> list[str]:
     return found
 
 
-def validate_zip(zip_path: str | Path, *, expect_app_prefix: bool = False) -> tuple[bool, list[str], list[str]]:
+def validate_zip(zip_path: str | Path) -> tuple[bool, list[str], list[str]]:
     """Valide une archive portable.
 
-    Args:
-        zip_path: Chemin vers le ZIP
-        expect_app_prefix: Si True, le ZIP doit contenir app/ comme dossier racine.
-                          Si False, il doit contenir Jarvis.exe à la racine (ou dans app/).
+    Le format est détecté depuis l'archive elle-même : avec préfixe ``app/``
+    (ZIP des mises à jour) ou à la racine (ZIP portable publié). Aucun appelant
+    n'a donc à déclarer le format attendu.
 
     Retourne (is_valid, missing, forbidden_found).
     """
@@ -338,16 +322,6 @@ def validate_zip(zip_path: str | Path, *, expect_app_prefix: bool = False) -> tu
         return False, [f"Erreur lecture ZIP: {exc}"], []
 
 
-def validate_zip_strict(zip_path: str | Path) -> tuple[bool, list[str], list[str]]:
-    """Validation stricte : le ZIP doit contenir Jarvis.exe et _internal/ à la racine,
-    sans préfixe app/ (c'est le format attendu pour les updates)."""
-    return validate_zip(zip_path, expect_app_prefix=False)
-
-
-# ---------------------------------------------------------------------------
-# Helpers pour logs
-# ---------------------------------------------------------------------------
-
 def format_validation_result(is_valid: bool, missing: list[str], forbidden: list[str]) -> str:
     """Formate un résultat de validation pour les logs CI.
 
@@ -376,27 +350,3 @@ def format_validation_result(is_valid: bool, missing: list[str], forbidden: list
     # ZIP, etc.) peuvent contenir n'importe quel caractère ; on les échappe
     # plutôt que de risquer un UnicodeEncodeError dans la console.
     return "\n".join(lines).encode("ascii", errors="backslashreplace").decode("ascii")
-
-
-def assert_app_dir(app_path: str | Path, *, strict: bool = False) -> None:
-    """Lève une exception si le dossier app est invalide (pour build)."""
-    is_valid, missing, forbidden = validate_app_dir(app_path, strict=strict)
-    if not is_valid:
-        msg = f"Layout invalide pour {app_path}:\n" + format_validation_result(is_valid, missing, forbidden)
-        raise RuntimeError(msg)
-
-
-def assert_zip(zip_path: str | Path) -> None:
-    """Lève une exception si le ZIP est invalide."""
-    is_valid, missing, forbidden = validate_zip(zip_path)
-    if not is_valid:
-        msg = f"ZIP invalide {zip_path}:\n" + format_validation_result(is_valid, missing, forbidden)
-        raise RuntimeError(msg)
-
-
-def assert_install_dir(install_path: str | Path) -> None:
-    """Lève une exception si l'installation est invalide."""
-    is_valid, missing, forbidden = validate_install_dir(install_path)
-    if not is_valid:
-        msg = f"Installation invalide {install_path}:\n" + format_validation_result(is_valid, missing, forbidden)
-        raise RuntimeError(msg)

@@ -19,8 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.logging_setup import force_utf8_stdio
-from src.packaging_validation import validate_app_dir
+from src.logging_setup import force_utf8_stdio  # noqa: E402
+from src.packaging_validation import validate_app_dir  # noqa: E402
 
 # Script exécuté en CI Windows (console cp1252) : force un affichage sans
 # risque d'UnicodeEncodeError quel que soit le texte loggé.

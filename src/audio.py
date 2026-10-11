@@ -283,7 +283,7 @@ class AudioIO:
     # DÉMARRAGE
     # =========================================================
 
-    def start(self):
+    def start(self) -> None:
         if self.running:
             return
 
@@ -414,14 +414,29 @@ class AudioIO:
     def output_pending_bytes(self) -> int:
         """Octets de voix de Jarvis pas encore sortis des haut-parleurs.
 
-        Somme de la file réseau (``q``) et du tampon déjà délivré à la carte
-        son (``buffer``) : c'est l'avance audio réelle, celle que l'utilisateur
+        Avance audio réelle — file réseau (``q``) plus le tampon déjà délivré à
+        la carte son (``buffer``) : c'est la voix de Jarvis que l'utilisateur
         entend encore. Primitives utilisées par le traçage et par la porte
         micro anti-écho.
+
+        Lecture O(1) du compteur ``_queued_bytes`` : c'est LUI la source de
+        vérité depuis la correction de comptage v1.7.2 (``_out`` ne décompte
+        qu'à la sortie réelle). Recalculer la somme en parcourant la file à
+        chaque appel était redondant et coûteux dans un chemin appelé trois
+        fois par bloc audio (worker, porte anti-écho, détection de barge-in).
+
+        Lecture SANS verrou, volontairement : un ``LOAD_ATTR`` est atomique
+        sous le GIL, la valeur est un entier, et une valeur vieille d'un bloc
+        (80 ms) est sans conséquence pour ces trois usages (moniteur d'avance
+        audio, porte anti-écho, journal de trace) — la borne négative est déjà
+        replafonnée hors verrou par ``_out``. Prendre ``self.lock`` ici faisait
+        entrer le worker audio en CONCURRENCE avec le callback temps réel
+        ``_out`` (qui tient ce verrou le temps de remplir la carte son) :
+        mesuré en charge réelle, 4,6 µs/appel sous contention contre 0,3 µs
+        hors contention — et un verrou partagé avec la sortie audio n'a rien à
+        faire dans un chemin de surveillance.
         """
-        with self.lock:
-            queued = sum(len(chunk) for chunk in list(self.q.queue))
-            return queued + len(self.buffer)
+        return max(0, self._queued_bytes)
 
     def output_pending_seconds(self) -> float:
         """Secondes de voix de Jarvis encore à jouer (haut-parleurs)."""
@@ -483,9 +498,7 @@ class AudioIO:
             try:
                 samples = np.frombuffer(indata, dtype=np.int16)
                 if samples.size:
-                    self._last_mic_rms = float(
-                        np.sqrt(np.mean(samples.astype(np.float64) ** 2))
-                    )
+                    self._last_mic_rms = self._block_rms(pcm)
                     self._last_mic_peak = int(np.max(np.abs(samples)))
                     self._last_mic_seen = time.monotonic()
                 if self.voice_hook is not None:
@@ -673,8 +686,16 @@ class AudioIO:
             return True
 
     @staticmethod
+    @staticmethod
     def _block_rms(pcm) -> float:
-        """Niveau moyen (RMS, échelle int16) d'un bloc micro."""
+        """Niveau moyen (RMS, échelle int16) d'un bloc PCM.
+
+        Implémentation unique partagée par le callback micro, la détection de
+        barge-in et le niveau de sortie (elle était dupliquée à l'identique
+        dans ces trois chemins). Le calcul se fait en float64 sur une copie
+        temporaire : ``np.dot`` en int16 déborderait silencieusement
+        (32767² × 1280 dépasse largement l'int16) — vérifié.
+        """
         try:
             samples = np.frombuffer(pcm, dtype=np.int16)
             if samples.size == 0:
@@ -958,10 +979,9 @@ class AudioIO:
             return
         self._last_output_emit = now
         try:
-            samples = np.frombuffer(pcm, dtype=np.int16)
-            if samples.size == 0:
+            rms = self._block_rms(pcm)
+            if rms <= 0.0:
                 return
-            rms = float(np.sqrt(np.mean(samples.astype(np.float64) ** 2)))
             self.output_level_hook(min(1.0, rms / 6000.0))
         except Exception:
             pass
@@ -1007,7 +1027,7 @@ class AudioIO:
     # FIN DE RÉPONSE GEMINI
     # =========================================================
 
-    def extend_listening(self):
+    def extend_listening(self) -> None:
         """
         Cette fonction est appelée lorsque Gemini termine
         réellement son tour.
@@ -1044,7 +1064,7 @@ class AudioIO:
             f"{self.FOLLOW_UP_SECONDS:.0f} secondes."
         )
 
-    def begin_speaking(self):
+    def begin_speaking(self) -> None:
         """Jarvis commence à parler (début d'une réponse Gemini)."""
         self._set_speaking(True)
 
@@ -1220,7 +1240,7 @@ class AudioIO:
         except Exception:
             return pcm
 
-    def play(self, pcm):
+    def play(self, pcm: bytes) -> None:
 
         if not pcm or not self.running:
             return
@@ -1252,7 +1272,7 @@ class AudioIO:
     # INTERRUPTION DE GEMINI
     # =========================================================
 
-    def clear_output(self):
+    def clear_output(self) -> None:
 
         with self.lock:
 
@@ -1287,7 +1307,7 @@ class AudioIO:
     # ARRÊT
     # =========================================================
 
-    def stop(self):
+    def stop(self) -> None:
 
         self.running = False
         self.audio_started = False

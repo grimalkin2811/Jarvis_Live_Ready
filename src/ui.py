@@ -16,6 +16,7 @@ from __future__ import annotations
 import sys
 import threading
 import traceback
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import QObject, Qt, Signal, Slot
 from PySide6.QtGui import QActionGroup, QColor, QIcon, QPainter, QPixmap
@@ -33,11 +34,9 @@ from UI import appearance_actions
 from UI import menu_state
 from UI.notification_bridge import NotificationBridge
 
-
-class PresenceBridge(QObject):
-    """Signal émis depuis n'importe quel thread, délivré dans le thread Qt."""
-
-    presence_changed = Signal(str)
+if TYPE_CHECKING:  # pragma: no cover - annotations uniquement (imports paresseux)
+    from UI.desktop.overlay import DesktopOverlay
+    from UI.jarvis_menu import MorphingOrbWidget
 
 
 def __getattr__(name: str):
@@ -56,16 +55,6 @@ def __getattr__(name: str):
         globals()["PresenceRouter"] = DesktopOverlayController
         return DesktopOverlayController
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-class VoiceEnergyRouter(QObject):
-    """Relie le niveau micro (AudioIO) à l'énergie vocale de l'orbe."""
-
-    @Slot(float)
-    def handle_level(self, level: float) -> None:
-        from UI import jarvis_menu
-
-        jarvis_menu.set_voice_energy(level)
 
 
 class InterfaceModeController(QObject):
@@ -111,11 +100,11 @@ class InterfaceModeController(QObject):
         self.desktop_event.connect(self._route_desktop_event)
 
     @property
-    def blob(self):
+    def blob(self) -> MorphingOrbWidget | None:
         return self._blob
 
     @property
-    def overlay(self):
+    def overlay(self) -> DesktopOverlay | None:
         return self._overlay
 
     def current_mode(self) -> str:
@@ -385,8 +374,9 @@ def _run_voice_loop(
 
     gemini = None
     audio = None
+    task_manager = None
 
-    def mic(pcm):
+    def mic(pcm: bytes) -> None:
         if gemini is not None and gemini.can_send():
             # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
             # thread audio, au moment exact de la capture : send_audio() les
@@ -405,12 +395,12 @@ def _run_voice_loop(
                 loop,
             )
 
-    def on_barge_in():
+    def on_barge_in() -> None:
         """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
         if gemini is not None:
             gemini.request_interrupt()
 
-    def stop_speaking():
+    def stop_speaking() -> None:
         """Interruption manuelle (bouton du menu radial / touche S)."""
         if audio is not None:
             audio.stop_speaking()
@@ -424,7 +414,7 @@ def _run_voice_loop(
         except Exception:
             pass
 
-    def on_interrupted():
+    def on_interrupted() -> None:
         # L'évènement est publié AVANT ``clear_output()`` : ce dernier émet
         # « listening » (réouverture du micro), et l'ordre visible doit être
         # « interrompu » puis « à l'écoute », pas l'inverse.
@@ -432,7 +422,7 @@ def _run_voice_loop(
         audio.clear_output()
 
     async def _main():
-        nonlocal gemini, audio
+        nonlocal gemini, audio, task_manager
         # Tant que le modèle wake word n'est pas chargé, l'UI affiche un état
         # « initialisation » : l'utilisateur sait qu'il ne doit pas parler
         # dans le vide.
@@ -458,6 +448,14 @@ def _run_voice_loop(
             start_default_scheduler()
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
+
+        # v1.8 : le Task Manager possède son propre thread et sa propre boucle.
+        try:
+            from .background_tasks import configure_default_task_manager
+
+            task_manager = configure_default_task_manager(config.api_key)
+        except Exception as exc:
+            print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
 
         audio = AudioIO(
             mic,
@@ -559,6 +557,11 @@ def _run_voice_loop(
             get_default_scheduler().stop()
         except Exception:
             pass
+        if task_manager is not None:
+            try:
+                task_manager.close(wait=False)
+            except Exception:
+                pass
         if audio is not None:
             audio.stop()
         loop.close()
@@ -698,6 +701,17 @@ def _build_tray_icon(
 
         routines_action = menu.addAction("Routines…")
         routines_action.triggered.connect(_show_routines_if_allowed)
+
+        def _show_background_tasks() -> None:
+            try:
+                from UI.background_tasks_dialog import show_background_tasks_dialog
+
+                show_background_tasks_dialog()
+            except Exception as exc:
+                print(f"[Tasks] Interface indisponible : {exc}")
+
+        tasks_action = menu.addAction("Tâches d'arrière-plan…")
+        tasks_action.triggered.connect(_show_background_tasks)
 
         def _show_desktop_appearance() -> None:
             """Éditeur d'apparence Desktop — accessible SANS menu radial.

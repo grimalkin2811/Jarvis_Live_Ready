@@ -1,4 +1,6 @@
-google-genai
+# 2.23+ reconnaît interaction_status=IDLE pour la complétion dynamique Live.
+# La borne majeure évite une rupture silencieuse du protocole WebSocket.
+google-genai>=2.23,<3
 sounddevice
 numpy
 openwakeword

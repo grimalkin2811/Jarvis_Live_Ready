@@ -1,5 +1,114 @@
 # Changelog
 
+## 1.8.2 — Nettoyage, factorisation et optimisation mesurée
+
+Release de maintenance : aucun changement de fonctionnalité, aucun changement
+de modèle, de protocole, de quota ni d'architecture.
+
+### Nettoyage (code mort vérifié, pas estimé)
+
+Chaque symbole retiré a été confirmé sans appelant (référence statique,
+recherche de chaîne pour les noms manipulés dynamiquement, tests inclus) :
+
+- `src/logging_setup.py` : `_log_dir`, `log_exception`
+- `src/paths.py` : `ensure_dir`, `resource_dir`
+- `src/updater.py` : `assert_valid_app_dir`, `show_prerelease`, repli `expect_app_prefix`
+- `src/packaging_validation.py` : `validate_zip(expect_app_prefix)`, `validate_zip_strict`,
+  `_zip_contains`, `assert_app_dir`, `assert_zip`, `assert_install_dir`
+  (le format de l'archive est désormais détecté depuis l'archive elle-même)
+- `src/settings.py` : `_field_defaults`
+- `src/ui.py` : `PresenceBridge`, `VoiceEnergyRouter`
+- `src/background_tasks/gateway.py` : `api_status_code`
+- `src/background_tasks/manager.py` : `reset_default_task_manager_for_tests`
+- `src/music/intents.py` : `intent_to_tool_args`
+- `src/music/providers/deezer.py` : `MatchCandidate`
+- `src/wakeword.py` : `ensure_onnx_models`
+- `src/writing/active_field.py` : `running_on_windows`
+- `UI/appearance_actions.py` : `set_theme_blue`, `set_theme_white`
+- `UI/system_actions.py` : `response_mode_info`
+- `UI/visibility_bridge.py` : `valid_menu_names`
+- `src/gemini_live.py` : `_resumable` (écrit à chaque mise à jour de reprise, jamais lu)
+- `UI/jarvis_menu.py` : sept réglages de menu jamais lus (`_menu_drag_axis`,
+  `_menu_wheel_index`, `_menu_exit_seconds`, `_menu_distance_close_enabled`,
+  `_menu_open_projection`, `_menu_close_projection`, `_menu_open_lateral`)
+
+Caches et rapports d'outils ajoutés au `.gitignore` (`.pytest_cache/`,
+`.ruff_cache/`, `.mypy_cache/`, `pytest-results.xml`, `*.junit.xml`,
+`.coverage`, `htmlcov/`).
+
+### Lisibilité et fiabilité
+
+- **Source unique du modèle principal** : `src/settings.DEFAULT_MODEL` alimente
+  la configuration persistante, l'assistant de premier lancement, la
+  configuration des tâches d'arrière-plan et les cinq scripts de
+  validation/diagnostic réels. Même valeur qu'avant
+  (`gemini-2.5-flash-native-audio-preview-12-2025`), surcharges
+  `--model` / `GEMINI_MODEL` inchangées.
+- **`src/json_state.py`** : mécanique d'E/S JSON partagée par les quatre
+  fichiers d'état locaux (menu, apparence, système, modes) ; chaque module
+  garde son schéma et ses défauts. Écritures désormais **atomiques**
+  (fichier temporaire + `os.replace`) — une interruption d'écriture ne peut
+  plus laisser un état tronqué. Les erreurs masquées sont limitées aux cas
+  attendus (`OSError`, `ValueError`) au lieu d'un `except Exception` aveugle.
+  Équivalence de comportement vérifiée par comparaison automatisée
+  ancien/nouveau code sur sept états de fichier par module (21 comparaisons,
+  0 divergence).
+- **Annotations de retour** : les 42 dernières fonctions publiques de `src/`,
+  `UI/` et `launcher/` (hors `src/tools.py`, dont les signatures suivent les
+  schémas d'outils Gemini) sont annotées avec le type réellement retourné —
+  gestionnaires Qt (`-> None`), cycle de vie audio/Gemini, passerelles de
+  tâches (`-> TextModelResponse`), presse-papiers d'écriture, validations du
+  launcher (`-> tuple[bool, list[str], list[str]]`).
+
+### Optimisation (mesurée, sans changement de comportement)
+
+- **`AudioIO.output_pending_bytes()`** — appelée trois fois par bloc audio
+  (worker, porte anti-écho, détection de barge-in) — relisait toute la file
+  de sortie à chaque appel, sous verrou. Elle lit maintenant le compteur
+  `_queued_bytes` (source de vérité depuis le correctif de comptage v1.7.2)
+  **sans verrou** : la lecture d'un entier est atomique, une valeur vieille
+  d'un bloc est sans effet sur ces usages, et le worker audio n'entre plus en
+  concurrence avec le callback temps réel `_out` qui tient ce verrou.
+  Mesures : microbenchmark 5,21 µs → 0,18 µs par appel (÷ 29) ; en charge
+  réelle (trois scénarios du pipeline audio complet, ~180 s de conversation
+  simulée, faux serveur Live, deux exécutions par variante) 6,41–6,91 µs →
+  2,92–3,65 µs par appel, soit ~40–43 ms → ~18–23 ms de temps cumulé.
+- **Formule RMS unique** : la même formule float64 était dupliquée dans trois
+  chemins (callback micro, barge-in, niveau de sortie) ; elle est regroupée
+  dans `_block_rms`. L'implémentation « `np.dot` int16 » (trois fois plus
+  rapide) a été écartée après vérification du débordement silencieux de
+  l'accumulateur int16.
+
+### Validation
+
+- Suite complète exécutée module par module (73 modules) sur la version 1.8.2
+  et sur la version 1.8.1 : jeu d'anomalies **identique** (cinq modules
+  concernés par un arrêt connu de PySide6 6.12.0 hors écran au démontage Qt,
+  identique sur les deux versions), 1178 tests verts contre 1168, les
+  dix tests supplémentaires étant ceux du nouveau `tests/test_json_state.py`.
+- Aucune modification du modèle principal, des protocoles, des quotas ni de
+  l'architecture des tâches d'arrière-plan.
+
+## 1.8.1 — Correctif du pipeline de publication
+
+- Le job Windows installe désormais `requirements-dev.txt` en plus des dépendances de production, afin que `pytest` soit réellement disponible pendant la validation de release.
+- La suite principale du workflow utilise `pytest`, qui collecte les tests `unittest` historiques ainsi que les tests v1.8 basés sur les fonctions, fixtures et paramétrages pytest.
+- Aucun changement du routage, des modèles Gemini, des quotas ou de l’architecture des tâches d’arrière-plan.
+
+## 1.8.0 — Tâches d’arrière-plan asynchrones
+
+- Task Manager central, thread et boucle asyncio indépendants de Gemini Live.
+- Découverte dynamique d’un Gemini 3 Live généraliste : variantes transcribe/translate/thinking filtrées, candidats et durée totale bornés, puis validation par cycle Bidi AUDIO + transcription + signal terminal officiel.
+- Cycle background compatible avec `generation_complete`, `turn_complete` et `interaction_status=IDLE`; interruption et réponse partielle restent des échecs, avec diagnostics du signal reçu.
+- Client GenAI et primitives asyncio background créés sur la boucle worker dédiée, sans transfert inter-boucles.
+- États terminaux protégés contre les résultats tardifs, résultats non vides, fichiers réellement présents, sources de grounding, non-lus, annulation, timeouts et persistance après redémarrage.
+- Retry borné 429/503; une unique reprise avec jitter pour une 1011 Live explicitement `Resource has been exhausted`.
+- Classification runtime/harness unifiée : quota explicite en 1011 reconnu comme `EXTERNAL_QUOTA`, trace Live et message fournisseur conservés; aucune reprise inutile après `You exceeded your current quota`.
+- Validation de concurrence avec quota local isolé et classification fournisseur/local/code explicite.
+- Protection du quota 3.8 (RPM/RPD/TPM/concurrence), comptée à chaque appel SDK réellement tenté.
+- Six outils conversationnels, dialogue Qt, compteur radial et notifications silencieuses.
+- Tests de routage, concurrence, non-blocage, quota, erreurs, fichiers et consultation.
+
 Le projet suit le [versionnage sémantique](https://semver.org/lang/fr/) :
 `MAJOR.MINOR.PATCH`. Une **MINOR** ajoute des fonctionnalités compatibles avec
 l'existant (comme ici), une **PATCH** corrige un bug, une **MAJOR** casse la

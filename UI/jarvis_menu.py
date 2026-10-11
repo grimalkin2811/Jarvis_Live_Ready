@@ -263,6 +263,7 @@ MENU_SPECS = [
             MenuItemSpec("Long-term Memory", "toggle"),
             MenuItemSpec("Memory Count", "status"),
             MenuItemSpec("Model State", "status"),
+            MenuItemSpec("Background Tasks", "buttonless"),
         ],
         reveal_scale=1.00,
         branch_bias=1.28,
@@ -432,17 +433,12 @@ class MorphingOrbWidget(QWidget):
         self._routines_cache: dict[str, str] = {}
         self._menu_hold_seconds = 0.30
         self._menu_release_seconds = 0.18
-        self._menu_exit_seconds = 0.24
-        # Distance-based close + sector switching: interaction du menu radial.
-        self._menu_distance_close_enabled = True
         # Interactions directes sur les nœuds (sliders / molette).
         self._menu_drag_index = -1
-        self._menu_drag_axis = ""
         self._menu_drag_start_x = 0.0
         self._menu_drag_start_y = 0.0
         self._menu_drag_start_value = 0
         self._menu_drag_perp = (1.0, 0.0)
-        self._menu_wheel_index = -1
         # Focus clavier dans le menu ouvert (navigation flèches + Entrée).
         self._menu_focus_index = -1
         # Vrai quand le menu a été ouvert par raccourci clavier : il reste
@@ -508,9 +504,6 @@ class MorphingOrbWidget(QWidget):
         if self.menu_state.always_on_top:
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self._apply_transparency(self.menu_state.transparency)
-        self._menu_open_projection = self.base_radius * 0.42
-        self._menu_close_projection = self.base_radius * 3.00
-        self._menu_open_lateral = self.base_radius * 1.15
 
         # SHAPE
         self.num_points = 84
@@ -560,7 +553,7 @@ class MorphingOrbWidget(QWidget):
     # ANIMATION
     # =========================================================
 
-    def tick(self):
+    def tick(self) -> None:
 
         # advance time with global timescale for increased responsiveness
         dt = 0.016 * getattr(self, 'time_scale', 1.0)
@@ -1038,11 +1031,11 @@ class MorphingOrbWidget(QWidget):
     # EVENTS
     # =========================================================
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self.center = QPointF(self.width() / 2, self.height() / 2)
 
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
         pos = event.position()
         self.cursor = pos
 
@@ -1071,18 +1064,17 @@ class MorphingOrbWidget(QWidget):
 
         self.update()
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event) -> None:
         if self._menu_drag_index >= 0:
             # Fin de glissement : on force la sauvegarde immédiate.
             self._menu_drag_index = -1
-            self._menu_drag_axis = ""
             self._save_menu_state(force=True)
             if self._appearance_state_dirty:
                 self._save_appearance_state(force=True)
         self.update()
         super().mouseReleaseEvent(event)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         # Clic droit : ferme le menu radial ouvert (geste d'annulation).
         if event.button() == Qt.RightButton:
             if self._menu_sector >= 0 or self._menu_alpha > 0.05:
@@ -1111,7 +1103,6 @@ class MorphingOrbWidget(QWidget):
                 if spec is not None and item is not None and self._menu_is_slider(spec, item):
                     # Démarre un glisser-ajuster sur le slider, sans déclencher le callback.
                     self._menu_drag_index = index
-                    self._menu_drag_axis = item.label
                     self._menu_drag_start_x = event.position().x()
                     self._menu_drag_start_y = event.position().y()
                     self._menu_drag_start_value = self._menu_slider_value(spec, item)
@@ -1129,7 +1120,7 @@ class MorphingOrbWidget(QWidget):
 
         super().mousePressEvent(event)
 
-    def wheelEvent(self, event):
+    def wheelEvent(self, event) -> None:
         if self._menu_nodes:
             direction = 1 if event.angleDelta().y() > 0 else -1
             # Le nœud actif est celui du focus clavier s'il existe, sinon
@@ -1193,7 +1184,7 @@ class MorphingOrbWidget(QWidget):
                     break
         return best_index, node, spec, item
 
-    def keyPressEvent(self, event):
+    def keyPressEvent(self, event) -> None:
         # Échap : ferme d'abord le menu radial ouvert ; ce n'est que s'il
         # n'y a plus rien à fermer qu'Échap quitte Jarvis. On évite ainsi
         # les fermetures accidentelles de l'application.
@@ -1297,7 +1288,7 @@ class MorphingOrbWidget(QWidget):
 
         super().keyPressEvent(event)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event) -> None:
         # Sauvegarde via les wrappers (le flag « dirty » du slider
         # d'opacité est also consigné) : quels que soient le chemin de
         # fermeture (Échap, System → Quit, icône de notification,
@@ -1807,6 +1798,12 @@ class MorphingOrbWidget(QWidget):
                 manager = get_default_memory_manager()
                 return "On" if manager.enabled and manager.available else "Off"
             return self._cached_status("memory_state", _state)
+        if label == "Background Tasks":
+            def _tasks():
+                from src.background_tasks import get_default_task_manager
+                manager = get_default_task_manager()
+                return f"{len(manager.list_active_tasks())} / {len(manager.list_unread_completed_tasks())} new"
+            return self._cached_status("background_tasks", _tasks)
         return ""
 
     def _menu_value(self, spec: MenuSpec, item: MenuItemSpec) -> str:
@@ -2329,6 +2326,10 @@ class MorphingOrbWidget(QWidget):
                 self._flash(f"Réponses : {self.system_state.response_mode_label}")
             elif name == "System" and label == "Mode Apps":
                 self._open_mode_apps_dialog()
+            elif name == "Memory" and label == "Background Tasks":
+                from .background_tasks_dialog import show_background_tasks_dialog
+                self._close_radial_menu()
+                show_background_tasks_dialog(self)
             elif name == "System" and label == "Reset Settings":
                 self._reset_settings()
             elif name == "System" and label == "Quit":
@@ -3393,7 +3394,7 @@ class MorphingOrbWidget(QWidget):
     # PAINT
     # =========================================================
 
-    def paintEvent(self, event):
+    def paintEvent(self, event) -> None:
         painter = QPainter(self)
         try:
             painter.setRenderHint(QPainter.Antialiasing)

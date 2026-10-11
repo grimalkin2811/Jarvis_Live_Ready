@@ -179,7 +179,7 @@ def _run_smoke_test() -> int:
     return 0
 
 
-async def run_headless():
+async def run_headless() -> None:
     import asyncio
 
     from .audio import AudioIO
@@ -211,8 +211,9 @@ async def run_headless():
     gemini = None
     audio = None
     scheduler = None
+    task_manager = None
 
-    def mic(pcm):
+    def mic(pcm: bytes) -> None:
         if gemini is not None and gemini.can_send():
             # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
             # thread audio, au moment exact de la capture : send_audio() les
@@ -231,7 +232,7 @@ async def run_headless():
                 loop,
             )
 
-    def on_barge_in():
+    def on_barge_in() -> None:
         """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
         if gemini is not None:
             gemini.request_interrupt()
@@ -255,6 +256,15 @@ async def run_headless():
             scheduler = start_default_scheduler()
         except Exception as exc:
             print(f"[Scheduler] Demarrage impossible : {exc}")
+
+        # v1.8 : boucle dédiée, distincte de la boucle Gemini Live principale.
+        # Une panne de ce sous-système ne doit jamais empêcher la voix de démarrer.
+        try:
+            from .background_tasks import configure_default_task_manager
+
+            task_manager = configure_default_task_manager(config.api_key)
+        except Exception as exc:
+            print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
 
         audio = AudioIO(
             mic,
@@ -339,6 +349,11 @@ async def run_headless():
         if scheduler is not None:
             try:
                 scheduler.stop()
+            except Exception:
+                pass
+        if task_manager is not None:
+            try:
+                task_manager.close(wait=False)
             except Exception:
                 pass
         if audio is not None:

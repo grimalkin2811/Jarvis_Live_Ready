@@ -331,7 +331,6 @@ class GeminiLive:
         # la rouvre — ça supprime la course « audio envoyé pendant le rejeu »,
         # c'est-à-dire l'audio arrivant AVANT l'historique sur le WebSocket.
         self._session_ready = True
-        self._resumable = False
         self._turn_user_text = []
         # Transcription de la réponse de Jarvis pour le tour en cours, et
         # portion de la demande utilisateur déjà versée au contexte (la
@@ -804,11 +803,11 @@ class GeminiLive:
             return False, "jarvis parle"
         return True, ""
 
-    def can_send(self):
+    def can_send(self) -> bool:
         allowed, _reason = self._can_send_now()
         return allowed
 
-    async def connect(self):
+    async def connect(self) -> None:
         """Ouvre la session Live, avec repli automatique sur handle refusé.
 
         Un handle de reprise peut être refusé par le serveur (expiration
@@ -940,6 +939,12 @@ class GeminiLive:
             "'focus' pour une session de concentration ; 'stand_down' pour la mise en veille. "
             "Le protocole se joue en arrière-plan : annonce-le brièvement (« Séquence d'allumage engagée ») "
             "puis commente sobrement le résultat, sans réciter toutes les étapes. "
+            "Pour une demande explicitement longue ou d'arrière-plan (recherche poussée, analyse en profondeur, comparaison complexe, préparation d'un document pendant que l'utilisateur continue), "
+            "appelle start_background_task UNE fois avec la demande complète et un titre court, puis confirme immédiatement le lancement sans attendre le résultat. "
+            "La conversation normale, les questions rapides et les actions PC restent dans cette session Gemini 2.5 Native Audio : ne les transforme pas inutilement en tâches. "
+            "Pour « mes tâches », « qu'est-ce qui tourne », « qu'est-ce qui est terminé/non vu », utilise list_background_tasks. "
+            "Pour ouvrir un résultat, utilise get_background_task_result ; pour annuler, cancel_background_task ; pour réessayer un échec/quota, retry_background_task. "
+            "Le Task Manager est toujours la source de vérité : n'invente jamais un statut, une progression ou un résultat. "
             f"{writing_system_instruction()} "
             "Tu contrôles aussi la musique via Deezer (intégration native v1.5.2). "
             "Pour toute demande musicale (« mets de la musique », « joue Daft Punk », "
@@ -1202,7 +1207,7 @@ class GeminiLive:
             raise
 
     async def send_audio(self, pcm, *, capture_generation: int | None = None,
-                          capture_turn_epoch: int | None = None):
+                          capture_turn_epoch: int | None = None) -> None:
         """Envoie un bloc micro à Gemini — SEUL point d'entrée autoritaire.
 
         RACE CORRIGÉE (v1.7.3 — double-cycle / « Dis-moi tout » superposé) :
@@ -1308,7 +1313,7 @@ class GeminiLive:
             )
         )
 
-    async def receive_loop(self):
+    async def receive_loop(self) -> None:
         try:
             await self._receive_loop()
         except BaseException:
@@ -1438,14 +1443,12 @@ class GeminiLive:
             if sru is not None:
                 if sru.new_handle:
                     self.resumption_handle = sru.new_handle
-                    self._resumable = True
                 elif getattr(sru, "resumable", None) is False:
                     # Le serveur indique que la session n'est PAS reprenable à
                     # cet instant (exécution d'outil en cours, génération…).
                     # On garde le dernier handle valide (reprendre un état
-                    # légèrement antérieur vaut mieux que tout perdre), mais
-                    # l'état est tracé pour le diagnostic.
-                    self._resumable = False
+                    # légèrement antérieur vaut mieux que tout perdre) ; le
+                    # diagnostic passe par le journal ci-dessous.
                     log.debug(
                         "session gen=%s momentanément non reprenable (handle conservé)",
                         self.session_generation,
@@ -1977,7 +1980,7 @@ class GeminiLive:
             except Exception:
                 pass
 
-    async def close(self):
+    async def close(self) -> None:
         task = self._watcher_task
         self._watcher_task = None
         if task is not None and task is not asyncio.current_task() and not task.done():
