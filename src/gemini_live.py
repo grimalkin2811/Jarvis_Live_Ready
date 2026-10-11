@@ -331,7 +331,6 @@ class GeminiLive:
         # la rouvre — ça supprime la course « audio envoyé pendant le rejeu »,
         # c'est-à-dire l'audio arrivant AVANT l'historique sur le WebSocket.
         self._session_ready = True
-        self._resumable = False
         self._turn_user_text = []
         # Transcription de la réponse de Jarvis pour le tour en cours, et
         # portion de la demande utilisateur déjà versée au contexte (la
@@ -1444,14 +1443,12 @@ class GeminiLive:
             if sru is not None:
                 if sru.new_handle:
                     self.resumption_handle = sru.new_handle
-                    self._resumable = True
                 elif getattr(sru, "resumable", None) is False:
                     # Le serveur indique que la session n'est PAS reprenable à
                     # cet instant (exécution d'outil en cours, génération…).
                     # On garde le dernier handle valide (reprendre un état
-                    # légèrement antérieur vaut mieux que tout perdre), mais
-                    # l'état est tracé pour le diagnostic.
-                    self._resumable = False
+                    # légèrement antérieur vaut mieux que tout perdre) ; le
+                    # diagnostic passe par le journal ci-dessous.
                     log.debug(
                         "session gen=%s momentanément non reprenable (handle conservé)",
                         self.session_generation,

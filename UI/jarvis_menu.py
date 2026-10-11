@@ -433,17 +433,12 @@ class MorphingOrbWidget(QWidget):
         self._routines_cache: dict[str, str] = {}
         self._menu_hold_seconds = 0.30
         self._menu_release_seconds = 0.18
-        self._menu_exit_seconds = 0.24
-        # Distance-based close + sector switching: interaction du menu radial.
-        self._menu_distance_close_enabled = True
         # Interactions directes sur les nœuds (sliders / molette).
         self._menu_drag_index = -1
-        self._menu_drag_axis = ""
         self._menu_drag_start_x = 0.0
         self._menu_drag_start_y = 0.0
         self._menu_drag_start_value = 0
         self._menu_drag_perp = (1.0, 0.0)
-        self._menu_wheel_index = -1
         # Focus clavier dans le menu ouvert (navigation flèches + Entrée).
         self._menu_focus_index = -1
         # Vrai quand le menu a été ouvert par raccourci clavier : il reste
@@ -509,9 +504,6 @@ class MorphingOrbWidget(QWidget):
         if self.menu_state.always_on_top:
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self._apply_transparency(self.menu_state.transparency)
-        self._menu_open_projection = self.base_radius * 0.42
-        self._menu_close_projection = self.base_radius * 3.00
-        self._menu_open_lateral = self.base_radius * 1.15
 
         # SHAPE
         self.num_points = 84
@@ -1076,7 +1068,6 @@ class MorphingOrbWidget(QWidget):
         if self._menu_drag_index >= 0:
             # Fin de glissement : on force la sauvegarde immédiate.
             self._menu_drag_index = -1
-            self._menu_drag_axis = ""
             self._save_menu_state(force=True)
             if self._appearance_state_dirty:
                 self._save_appearance_state(force=True)
@@ -1112,7 +1103,6 @@ class MorphingOrbWidget(QWidget):
                 if spec is not None and item is not None and self._menu_is_slider(spec, item):
                     # Démarre un glisser-ajuster sur le slider, sans déclencher le callback.
                     self._menu_drag_index = index
-                    self._menu_drag_axis = item.label
                     self._menu_drag_start_x = event.position().x()
                     self._menu_drag_start_y = event.position().y()
                     self._menu_drag_start_value = self._menu_slider_value(spec, item)
