@@ -1404,6 +1404,9 @@ notification. Voir [l’architecture v1.8](docs/ARCHITECTURE_TASKS_V1.8.md) et l
 - **Journal d'activité** : désactivé par défaut. `JARVIS_ACTIVITY_ENABLED=1`
   active une rétention de 30 jours des noms d'outils/date/succès uniquement.
   `get_activity_log` et `clear_activity_log` permettent lecture et effacement.
+  Le stockage local ne rend pas Gemini hors ligne : une consultation vocale
+  transmet au modèle les données retournées (tâches, métadonnées du journal,
+  ou textes du presse-papiers explicitement conservés).
 - **Sauvegardes** : `backup_data(confirm=true)` crée une archive non chiffrée
   dans le dossier de données Jarvis, sous `backups`. Mémoire, rappels, routines,
   notes, TODO et journal sont inclus ; configuration, clés API et OAuth exclus.
@@ -1460,3 +1463,18 @@ Le lancement se fait hors du thread graphique et les doubles clics sont ignorés
 pendant une exécution dans ce panneau. Fermer le panneau n’annule pas une routine
 déjà lancée. Le catalogue défilant montre toutes les routines ; les six raccourcis radiaux
 restent réservés aux macros personnelles actives, sans pagination additionnelle.
+
+### Contrôle de préservation des releases historiques
+
+Après `git fetch origin main --tags`, avec `gh` authentifié :
+
+```bash
+python scripts/check_release_lineage.py
+python scripts/check_integration_preservation.py
+```
+
+Le second contrôle compare les tags distants, les notes v1.8.0 et les
+métadonnées/empreintes API de la release v1.8.2 à la baseline de mission.
+Il ne télécharge pas les exécutables et ne prétend pas recalculer leur empreinte.
+Pour cette vérification binaire supplémentaire, utilisez le workflow existant
+**Verify Release**, sans republier ni remplacer aucun asset.

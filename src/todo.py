@@ -5,7 +5,8 @@ pas d'état « fait / à faire ». Ce module ajoute une véritable **todo list**
 durable, stockée en SQLite comme la mémoire (``memory.db``) et les rappels
 (``schedule.db``) :
 
-``~/.jarvis/todo.db`` (``JARVIS_TODO_DATABASE_PATH`` pour changer le chemin).
+``paths.data_dir()/todo.db`` (LOCALAPPDATA/Jarvis sur Windows ;
+``JARVIS_TODO_DATABASE_PATH`` pour changer le chemin).
 
 Philosophie identique au reste du projet :
 

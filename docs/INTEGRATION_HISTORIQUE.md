@@ -1,5 +1,69 @@
 # Intégration historique — suivi persistant
 
+## Synthèse de livraison du code
+
+Les fonctionnalités retenues sont intégrées sur main via trois PR séquentielles :
+
+| PR | Commit de travail | Commit de fusion | Validation PR |
+|---|---|---|---|
+| [#46](https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/46) | `140ec8f` | `26b6ddad83d1d8b3bf659cf84aaf4a6870ad9aa2` | Windows/Lint verts, run `38630511105` |
+| [#47](https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/47) | `c0cd0d6` | `5dbc9fe5f01f3003829362df5b9ac7fb58fd9c49` | Windows/Lint verts, run `38632295383` |
+| [#48](https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/48) | `d918282` | `d564c429ed148748caaa63f62b029461fbc369af` | Windows/Lint verts, run `38634041376` |
+
+État produit après #48 : **148 outils** (23 ajoutés) et **24 presets** (12 ajoutés).
+Aucun ancien moteur de presets repris. Lancement graphique adapté au catalogue
+actuel, sans pagination supplémentaire. Aucun changement des binaires publiés :
+les nouveautés sont sur main, dans la section **Non publié** du changelog.
+
+La clôture ajoute un contrôle de préservation reproductible et retire seulement
+un helper d'activité sans appelant et deux libellés d'outils anciens ; pas de
+nouvelle fonctionnalité ou dépendance. Les tests de cette clôture sont mockés.
+
+### Reprise et preuve de l'état distant final
+
+Ne pas interpréter les paragraphes historiques « en cours » plus bas comme
+l'état courant : ils retracent les vérifications à leur date d'exécution.
+La CI de main après #46 et après #47 est verte. La CI de PR #48, **incluant les
+nouveaux tests Qt**, est verte (Windows 11 min 30 s). Pour l'état du commit
+courant, y compris la dernière PR de clôture, utiliser les commandes ci-dessous ;
+le dernier commentaire de livraison de cette PR consigne le SHA et les runs finaux.
+
+```bash
+git fetch origin main
+git rev-parse origin/main
+gh pr list --state open
+gh run list --branch main --limit 5
+python scripts/check_release_lineage.py
+python scripts/check_integration_preservation.py
+```
+
+La branche de session reste `arena/b23e104f-jarvis-live-ready`. Aucun push direct
+main, force push, réécriture, suppression de branche ou modification de tag.
+Toutes les têtes historiques listées ci-dessous ont été relues après intégration
+et restent identiques à l'inventaire initial. Le statut de leurs sessions n'étant
+pas vérifiable, **toutes sont conservées**, même quand leur contenu est déjà couvert.
+
+### Limites externes, sans contournement
+
+- **Recertification binaire de v1.8.2 non exécutée** : téléchargements bloqués
+  par l'accès au domaine de stockage GitHub ; dispatch du workflow Verify Release
+  refusé HTTP 403. Les identités, dates, tailles, SHA-256 publiés, corps de release,
+  tags et notes v1.8.0 sont vérifiés inchangés par API/Git, pas par relecture des
+  octets des exécutables. Action externe suffisante : autoriser le déclenchement
+  du workflow existant `verify-release.yml` sur la connexion GitHub, ou le lancer
+  depuis GitHub avec `tag=v1.8.2`. Ne modifier ni les assets ni les tags.
+- **Gemini/audio réel non testable** : workflow sans clé configurée ; ses checks
+  verts annoncent explicitement NON TESTABLE. Les tests de protocole et outils
+  mockés passent. Une validation Live réelle demande la configuration du secret
+  prévu par ce workflow dans GitHub, jamais dans le chat.
+- **UI non exécutable localement** : bibliothèques système Qt absentes. Tests Qt
+  exécutés en CI Windows ; aucun test local ignoré n'est présenté comme réussi.
+- Lecture des protections GitHub refusée HTTP 403, mais toutes les fusions ont
+  utilisé l'opération normale, après checks verts, sans mode administrateur.
+
+Ces limites empêchent d'affirmer une nouvelle certification physique/audio et
+binaire complète. Aucun travail de code indépendant n'est laissé pour cette raison.
+
 ## État initial vérifié (2026-10-14)
 
 - main : `31ca953a78817257c31a6e40cc3b3ff86f6837f3` ; CI Build & Release
@@ -43,12 +107,12 @@ Aucune branche source supprimée : statut de session active non vérifiable.
 
 ### Suivi d'avancement
 
-1. Groupe 1 : livré par #46, CI PR et main vertes.
-2. Groupe 2 : livré par #47, CI PR Windows/Lint vertes ; CI main déclenchée.
-3. Groupe 3 : douze macros et lancement graphique prêts, tests Linux compatibles
-   terminés ; CI Windows, fusion puis CI main à terminer.
-4. Clôture : vérifier à nouveau refs/assets/branches, consigner les SHA et CI
-   observés et les limites d'accès. Aucun nettoyage destructif de branches prévu.
+1. Groupes 1 et 2 : livrés par #46/#47, CI PR et main vertes.
+2. Groupe 3 : livré par #48 après suite Windows/Lint verte, moteur actuel conservé.
+3. Clôture : contrôle de préservation et nettoyage minimal, suite compatible et
+   CI de la dernière PR puis main à vérifier avant le compte rendu de clôture.
+4. Pas de suppression des branches historiques ; limites de certification
+   externe détaillées dans la synthèse ci-dessus.
 
 ## Validation locale initiale
 
@@ -245,3 +309,23 @@ libxkbcommon et libdbus. Dépendances Python installées dans .venv uniquement ;
   sont mockés ; exécution de ces tests Qt sur Windows requise avant fusion.
 - Contrôle API/refs répété : notes v1.8.0, tags et trois assets v1.8.2 inchangés.
   Filiation v1.8.2 vérifiée séparément : OK. Aucun brouillon v1.8.0 présent.
+
+### Dernier ciblage de clôture
+
+- Suite Linux compatible après ajout du vérificateur : **1037 réussis,
+  114 ignorés, 6 désélectionnés, 539 sous-tests**, 413,65 s.
+- Les 114 skips sont tous Qt/OpenGL ; 14 modules Qt exclus à la collecte.
+- Après nettoyage du helper/libellés d'activité : 37 tests ciblés réussis
+  (TODO, activité, vérificateur), et 48 + 444 sous-tests sur le ciblage élargi.
+- `check_integration_preservation.py` réussit en lecture seule sur GitHub :
+  aucune modification de release/assets/tags/notes historiques détectée.
+  Ses tests négatifs couvrent changement d'ID, taille, digest, notes, tag,
+  ajout/retrait d'asset, brouillon et absence d'accès (code 2, jamais faux succès).
+- L'état de CI du commit final sera consigné dans le commentaire de livraison
+  de la PR de clôture, afin de ne pas créer une boucle de commits documentaires
+  qui changeraient à nouveau le SHA qu'ils prétendent vérifier.
+
+Ciblage final avant PR de clôture : **174 tests + 480 sous-tests réussis**
+(outils nouveaux, catalogues, sauvegarde, SDK, version, packaging, vérificateur).
+Ruff dépôt entier, compileall, diff --check, filiation HEAD et contrôle de
+préservation distant réussis sur cet état.
