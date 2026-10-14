@@ -41,6 +41,8 @@ import urllib.request
 import webbrowser
 
 from . import paths
+from .activity import get_default_activity_log, log_action
+from .todo import get_default_todo_manager
 from .memory import get_default_memory_manager
 from .modes import get_default_mode_manager
 from .routines import get_default_routine_manager
@@ -2359,7 +2361,49 @@ def get_background_quota():
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
+def add_todo(text, due="", priority="normale"):
+    """Tâche personnelle, distincte des tâches de génération en arrière-plan."""
+    return get_default_todo_manager().add_task(text, due, priority)
+
+
+def list_todos(status="pending", limit=20):
+    return get_default_todo_manager().list_tasks(status, limit)
+
+
+def complete_todo(todo_id=None, text=""):
+    return get_default_todo_manager().complete_task(todo_id, text)
+
+
+def reopen_todo(todo_id=None, text=""):
+    return get_default_todo_manager().reopen_task(todo_id, text)
+
+
+def delete_todo(todo_id=None, text="", confirm=False):
+    return get_default_todo_manager().delete_task(todo_id, text, confirm)
+
+
+def clear_todos(confirm=False, only_done=False):
+    return get_default_todo_manager().clear_tasks(confirm, only_done)
+
+
+def get_activity_log(day="aujourd'hui", limit=30):
+    return get_default_activity_log().query(day, limit)
+
+
+def clear_activity_log(confirm=False):
+    return get_default_activity_log().clear(confirm)
+
+
 _RAW_TOOL_FUNCTIONS = {
+    "add_todo": add_todo,
+    "list_todos": list_todos,
+    "complete_todo": complete_todo,
+    "reopen_todo": reopen_todo,
+    "delete_todo": delete_todo,
+    "clear_todos": clear_todos,
+    "get_activity_log": get_activity_log,
+    "clear_activity_log": clear_activity_log,
+
     # Applications
     "open_application": open_application,
     "close_application": close_application,
@@ -2531,10 +2575,12 @@ def _guard_tool_function(name, function):
         try:
             blocked = get_default_mode_manager().block_for_tool(name, call_args)
         except Exception:
-            blocked = None
+            return _err("Politique de sécurité indisponible : action refusée.")
         if blocked is not None:
             return blocked
-        return function(*args, **kwargs)
+        result = function(*args, **kwargs)
+        log_action(name, success=isinstance(result, dict) and result.get("success") is True)
+        return result
 
     _wrapped.__signature__ = signature  # type: ignore[attr-defined]
     return _wrapped
@@ -2564,6 +2610,20 @@ _BOOL = {"type": "boolean"}
 
 
 TOOL_DECLARATIONS = [
+    _decl("add_todo", "Ajoute une tâche personnelle (pas une tâche de génération).",
+          {"text": _STR, "due": _STR, "priority": {**_STR, "enum": ["haute", "normale", "basse"]}}, ["text"]),
+    _decl("list_todos", "Liste les tâches personnelles, statut pending, done ou all.",
+          {"status": _STR, "limit": _INT}),
+    _decl("complete_todo", "Termine une tâche par identifiant ou libellé exact non ambigu.",
+          {"todo_id": _INT, "text": _STR}),
+    _decl("reopen_todo", "Rouvre une tâche personnelle.", {"todo_id": _INT, "text": _STR}),
+    _decl("delete_todo", "Supprime une tâche après accord explicite de l'utilisateur (confirm=true).",
+          {"todo_id": _INT, "text": _STR, "confirm": _BOOL}),
+    _decl("clear_todos", "Efface les tâches après accord explicite (confirm=true), éventuellement seulement les terminées.",
+          {"confirm": _BOOL, "only_done": _BOOL}),
+    _decl("get_activity_log", "Journal local opt-in : noms des outils et succès uniquement, sans arguments privés.",
+          {"day": _STR, "limit": _INT}),
+    _decl("clear_activity_log", "Efface le journal après accord explicite (confirm=true).", {"confirm": _BOOL}),
     # --- Applications ---------------------------------------------------
     _decl(
         "open_application",

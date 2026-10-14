@@ -1,0 +1,77 @@
+{
+  "initial_main": "31ca953a78817257c31a6e40cc3b3ff86f6837f3",
+  "tags": [
+    "c013d1279f9939180834a7347ed2e96af9b41304\trefs/tags/v1.0.0",
+    "d5179e78faa11c9ac30fda19a7981513983a1935\trefs/tags/v1.0.1",
+    "68e8da822c85c90d500e87e3de9b2fbb649c596b\trefs/tags/v1.0.2",
+    "5aeb652898f1ba4c5ff6a37d6dac037270205017\trefs/tags/v1.1.0",
+    "b630f3344853143a9b6add6a1b88d17dd1e6905d\trefs/tags/v1.1.1",
+    "a8e4aa3786c61dcee4530629dfcee949007b2d90\trefs/tags/v1.1.1^{}",
+    "c38ccad74022dbd9e82cbc7c648ac0a3274f43ac\trefs/tags/v1.1.2",
+    "a3c2ac9db18240aa9999eeae4b5b5fab761d73d2\trefs/tags/v1.1.2^{}",
+    "255ab82933a69c6a9917ea96d178eea8540b6a6d\trefs/tags/v1.2.0",
+    "33ea01ca48bfe568df77b88e45539a574ca47e5f\trefs/tags/v1.2.0^{}",
+    "b9110c71059d93a07bcc8ab6990c3085071e42e7\trefs/tags/v1.3.0",
+    "acd1088e031a9e44ce3b740b10eaf1e3097e6ca8\trefs/tags/v1.3.0^{}",
+    "49a839ab575094b4fd98c2d726e32b4be0e911b2\trefs/tags/v1.3.1",
+    "b276e5d0dc38bca6cca20c7ec429867d223718f2\trefs/tags/v1.3.1^{}",
+    "ff0d824cf5449fcc8201ce3151c36563bcaac8af\trefs/tags/v1.3.2",
+    "9d900964245c66a182c443998994ddbf454d2ce7\trefs/tags/v1.3.2^{}",
+    "5dca1b5abba2aaa1aca589749a8b99d6f9094199\trefs/tags/v1.4.0",
+    "d7b98415f7ec5178386b95e58439b840ac25a92e\trefs/tags/v1.4.0^{}",
+    "56bfcff76d72b569ec2e69e4e2ffc2d1d163e2c1\trefs/tags/v1.4.1",
+    "9030eab1d72237297aac314c29f3083b6395d40c\trefs/tags/v1.4.1^{}",
+    "bbf3b35a6bd2ef6eb881fb3e5831606dc85c357d\trefs/tags/v1.5.0",
+    "68392d44f406c0652e831367abc617be4113448f\trefs/tags/v1.5.0^{}",
+    "8d4f9bc2188d24b57d84af964eaa045fbfe6ad58\trefs/tags/v1.5.1",
+    "c2f12de15b23f18d2ca98e81fa65f2fd3a302698\trefs/tags/v1.5.1^{}",
+    "e50fc28a5e32613aae4b884b025b4f9bb836cd27\trefs/tags/v1.5.2",
+    "603b22bb6eac8af475648740070fe934775d0565\trefs/tags/v1.5.2^{}",
+    "be800059517986124cfd7a1be284fb7dd819ed94\trefs/tags/v1.5.3",
+    "e465ede289476ca519a047fbe04c3430865f74bd\trefs/tags/v1.6.0",
+    "7afb6f81b5f8ea7aeefe292c45a196c372ac011d\trefs/tags/v1.6.0^{}",
+    "b6d51aaf71b29c3f10b615a4c246757c48056873\trefs/tags/v1.7.0",
+    "82400222c9bb0795541b74da8fb0197c6d161017\trefs/tags/v1.7.0^{}",
+    "0dc1435a84a373115947fa3c676ef8f6bb3a75c4\trefs/tags/v1.7.1",
+    "3861627ed26cfc15b757bf79341eb6ba78325eb4\trefs/tags/v1.7.1^{}",
+    "3b6a091bc9a96f5a2be8967f05cb0d831917465b\trefs/tags/v1.8.0",
+    "1c41df135a0a1d1a3943594ec11a7234c98fd974\trefs/tags/v1.8.0^{}",
+    "000a92a7ca8c44b1892d4a1c5da738da2d582487\trefs/tags/v1.8.1",
+    "66d53f668cc00e48df0c945786d49f504df30933\trefs/tags/v1.8.1^{}",
+    "75844537c3e02ec51075c9f2faf17ca9ae2d9c54\trefs/tags/v1.8.2",
+    "f2eac2b86a1ff8479d26e2505d4f616ef86520db\trefs/tags/v1.8.2^{}"
+  ],
+  "release": {
+    "id": 409837163,
+    "tag_name": "v1.8.2",
+    "draft": false,
+    "prerelease": false,
+    "published_at": "2026-10-11T18:14:30Z"
+  },
+  "assets": [
+    {
+      "id": 631450927,
+      "name": "Jarvis-v1.8.2-portable.zip",
+      "size": 155198858,
+      "digest": "sha256:37f01ba8a8dcd8f3435f361dcb7489f5806effc343f0e0bb71266c9994365ce0",
+      "created_at": "2026-10-11T18:14:23Z",
+      "updated_at": "2026-10-11T18:14:30Z"
+    },
+    {
+      "id": 631450924,
+      "name": "Jarvis-v1.8.2-portable.zip.sha256",
+      "size": 94,
+      "digest": "sha256:12874ef0ae3c8626a8277aeca31fea83af36a074f98cd1581ce690c4a72da378",
+      "created_at": "2026-10-11T18:14:23Z",
+      "updated_at": "2026-10-11T18:14:23Z"
+    },
+    {
+      "id": 631450928,
+      "name": "JarvisSetup-1.8.2.exe",
+      "size": 150746532,
+      "digest": "sha256:d355a6493dd7170454b3727eaf5426a905e669cc860ea20453f7c3dec1ea9285",
+      "created_at": "2026-10-11T18:14:23Z",
+      "updated_at": "2026-10-11T18:14:29Z"
+    }
+  ]
+}
