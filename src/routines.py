@@ -52,6 +52,19 @@ DEFAULT_ROUTINES_PATH = os.environ.get("JARVIS_ROUTINES_PATH", str(paths.routine
 #: ou injection clavier (une routine planifiée ne doit pas taper dans
 #: n'importe quelle fenêtre au premier plan).
 FORBIDDEN_TOOLS = {
+    "sleep_pc",
+    "hibernate_pc",
+    "turn_off_screen",
+    "empty_recycle_bin",
+    "wake_on_lan",
+    "capture_clipboard",
+    "get_clipboard_history",
+    "paste_from_history",
+    "clear_clipboard_history",
+    "read_file_aloud",
+    "backup_data",
+    "restore_backup",
+
     "delete_todo",
     "clear_todos",
     "clear_activity_log",
