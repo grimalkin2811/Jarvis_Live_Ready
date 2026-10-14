@@ -2985,7 +2985,7 @@ TOOL_DECLARATIONS = [
         {"name": _STR},
         ["name"],
     ),
-    _decl("list_routines", "Liste les routines personnelles et les 12 routines preconfigurees, avec leur activation et planification."),
+    _decl("list_routines", "Liste les routines personnelles et le catalogue de routines preconfigurees, avec leur activation et planification."),
     _decl(
         "describe_routine",
         "Detaille les etapes et la planification d'une routine.",

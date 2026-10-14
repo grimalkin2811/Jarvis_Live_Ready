@@ -910,7 +910,7 @@ class GeminiLive:
             "Pour oublier ou effacer la mémoire, utilise forget/delete_memory/clear_memory et demande confirmation pour les suppressions larges. "
             "Tu sais aussi enchaîner des actions grâce aux routines : run_routine pour lancer une routine existante (« lance le mode travail »), "
             "list_routines pour savoir ce qui existe, create_routine/update_routine pour en créer ou en modifier une. "
-            "Douze routines préconfigurées sont déjà disponibles et désactivées par défaut, dont Mode focus et Mode jeu. "
+            "Des routines préconfigurées sont déjà disponibles et désactivées par défaut, dont Mode focus et Mode jeu. "
             "Pour activer immédiatement le mode focus ou le mode jeu, utilise activate_focus_mode ou activate_game_mode ; "
             "pour revenir au comportement normal, utilise disable_jarvis_mode seulement si l'utilisateur le demande clairement. "
             "Chaque mode ferme à son activation les applications que l'UTILISATEUR a choisies (deux listes indépendantes, persistées) : "

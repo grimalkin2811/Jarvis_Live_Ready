@@ -651,12 +651,14 @@ Une routine est un **enchaînement d'outils nommé et rejouable**. Elle ne peut
 rien faire de plus que ce que Jarvis sait déjà faire : la liste blanche est
 préservée, et les outils destructeurs y sont interdits.
 
-### 12 routines préconfigurées — un seul interrupteur
+### Catalogue de routines préconfigurées — un seul interrupteur
 
 Le catalogue est ajouté **automatiquement**, y compris sur une installation
 existante. Toutes les routines sont **désactivées par défaut** : rien ne se
-lance avant votre accord. Aucun compte, logiciel tiers, ville, chemin ou horaire
-à renseigner, et aucun appel Gemini supplémentaire pour les exécuter.
+lance avant votre accord. Les douze presets de base ne demandent aucun compte,
+ville, chemin ou horaire à renseigner. Les douze macros historiques manuelles
+annoncent leurs prérequis (Windows, VS Code ou navigateur) dans leur description.
+Le moteur exécute les étapes localement, sans génération Gemini supplémentaire.
 
 **Pour activer/désactiver :**
 
@@ -1410,6 +1412,9 @@ notification. Voir [l’architecture v1.8](docs/ARCHITECTURE_TASKS_V1.8.md) et l
   Après inspection, fermez Jarvis puis sélectionnez ce dossier par
   `JARVIS_DATA_DIR` pour l'utiliser. Les routines/rappels sauvegardés peuvent
   être actifs au prochain démarrage. Ne restaurez que vos archives de confiance.
+  Le snapshot est cohérent par fichier, pas transactionnel entre tous les fichiers ;
+  évitez les éditions simultanées pendant la sauvegarde. Les textes de notes ou
+  de mémoire peuvent eux-mêmes contenir des informations sensibles.
   Copiez les archives importantes sur un support sûr ; elles ne sont pas chiffrées.
 - **Presse-papiers** : `capture_clipboard` conserve seulement une capture
   explicitement autorisée (20 textes de 4000 caractères maximum), en RAM.
@@ -1433,3 +1438,25 @@ comme étapes de routines automatiques. Les tests système et réseau utilisent
 des mocks ; ils ne vident jamais de corbeille et n'envoient aucun paquet WoL.
 Le détail des décisions d'intégration est dans
 [`docs/INTEGRATION_HISTORIQUE.md`](docs/INTEGRATION_HISTORIQUE.md).
+
+### Macros historiques du catalogue
+
+Douze macros s'ajoutent aux douze presets déjà présents : Poste de travail,
+Ouverture du matin, Pomodoro 25 minutes, Réunion 45 minutes, Pause café 5 minutes,
+Pause musicale, Lire les actualités, Bilan du PC, Je pars, Séance cinéma,
+Nuit calme et Entretien guidé du PC.
+
+Elles sont **désactivées et sans horaire automatique** à l'installation. Activez
+celles qui vous conviennent dans le catalogue défilant, puis utilisez **Lancer**
+ou demandez à la voix « lance Poste de travail », par exemple. L'activation seule n'exécute rien.
+Les descriptions précisent les effets (volume, réduction des fenêtres,
+verrouillage pour « Je pars ») et les dépendances Windows/VS Code/navigateur.
+Les minuteurs Pomodoro/réunion/pause ne survivent pas à la fermeture de Jarvis.
+La durée et les étapes restent modifiables via `update_routine`.
+
+Les routines personnalisées, horaires, activations et suppressions sont conservés
+par le moteur existant. Une macro supprimée ne réapparaît pas au redémarrage.
+Le lancement se fait hors du thread graphique et les doubles clics sont ignorés
+pendant une exécution dans ce panneau. Fermer le panneau n’annule pas une routine
+déjà lancée. Le catalogue défilant montre toutes les routines ; les six raccourcis radiaux
+restent réservés aux macros personnelles actives, sans pagination additionnelle.
