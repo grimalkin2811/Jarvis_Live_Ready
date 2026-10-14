@@ -74,3 +74,76 @@ requirements). La suite de référence rencontre 14 erreurs de collecte UI :
   hors liste réseau autorisée. Vérification Windows distante prévue.
 - Baseline publique et non secrète des tags/assets conservée dans
   `docs/releases/INTEGRATION_BASELINE.json` pour les reprises et comparaisons.
+
+### Groupe 1 — résultats observés et limites externes
+
+- PR [#46](https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/46),
+  commit `140ec8f`. Dernier ciblage : 138 tests + 423 sous-tests réussis.
+- Suite Linux élargie : 959 réussis, 114 ignorés, 482 sous-tests réussis ;
+  six échecs uniquement libGL, après exclusion des 14 modules non collectables.
+- Le workflow Gemini réel est vert mais indique **NON TESTABLE**, faute de clé
+  API. Il ne constitue donc pas une validation audio/Gemini réelle.
+- Dispatch de Verify Release demandé pour v1.8.2 : HTTP 403 (permission Actions
+  absente). Pas de modification de workflow pour contourner cette restriction.
+  La preuve d'intégrité accessible reste la comparaison des références Git et
+  des métadonnées/empreintes publiées, pas un nouveau lancement des binaires.
+
+### Groupe 2 : outils adaptés, préparation de livraison
+
+- Veille/hibernation/écran et corbeille : booléen de confirmation strict,
+  Windows uniquement, erreurs honnêtes, pas de fallback destructif ou forcé.
+- WoL : MAC unicast, IPv4 privée/broadcast local, ports 7/9, un seul paquet,
+  confirmation, aucune prétention de confirmer le réveil.
+- Presse-papiers : capture manuelle confirmée, 20 textes/4000 caractères max,
+  RAM uniquement, pas de veilleur ; recopie confirmée, **pas de frappe clavier**.
+- Dossiers : nom exact dans la liste blanche, racine du profil exclue, scan
+  borné (10000 entrées/3 s), liens sortants exclus, résultat partiel explicite.
+- Lecture : nom relatif exact, UTF-8, extensions textuelles limitées, 1 Mio max,
+  confirmation de transmission au modèle, aucun choix arbitraire d'un fichier.
+- Prévisions 1–7 jours : Open-Meteo, URL fixes, réponse bornée, erreur si données
+  invalides ; mocks réseau. Pas de météo réelle validée dans ce bac à sable.
+- Sauvegarde ZIP locale bornée à 50 Mio, noms générés sans écrasement, snapshots
+  SQLite incluant WAL, routines complètes (journal d'installation inclus).
+  Pas de configuration/clé/OAuth. Restauration avec manifeste et SHA-256 vers
+  **un dossier neuf de préparation** ; jamais vers les données actives.
+  Activation manuelle seulement après fermeture de Jarvis et inspection.
+- Tous ces outils passent par `_RAW_TOOL_FUNCTIONS`, `_guard_tool_function`,
+  `TOOL_FUNCTIONS`, déclarations statiques ; outils sensibles exclus des routines.
+
+### Autres nouveautés de 01a05d20 — décisions exhaustives
+
+| Élément historique | Classement et justification |
+|---|---|
+| show_notification / toasts des rappels et minuteurs | Déjà couvert par notify_user, notifications et scheduler actuels ; ancien PowerShell redondant |
+| type_text | Déjà couvert par Writing System, avec contrôle d'intention et interrupteurs ; ancien injecteur Unicode incorrect écarté |
+| press_key | Écarté : injection arbitraire dans la fenêtre active, possibilité d'exécuter des commandes via Win+R/terminal ; pas de cible/consentement de fenêtre fiable |
+| draft_email | Rédaction déjà couverte par Writing System dans le client actif ; ancien mailto tronquait le corps à 5000 caractères et introduisait une seconde politique d'écriture |
+| find_something_to_watch | Recherche web/site déjà disponible ; simple ouverture de liens JustWatch, sans véritable moteur de recommandation |
+| imdb / allocine / senscritique | Déjà dans SITES sur main |
+| justwatch / letterboxd / themoviedb | Écartés comme ajouts de raccourcis redondants : recherche Web existante, pas d'intégration de service nouvelle |
+| Hooks main/ui du watcher | Écartés : collecte silencieuse permanente de données privées |
+| Ancien wrapper d'activité | Remplacé par journal opt-in dans le garde actuel, sans arguments ni erreurs privées |
+| Ancien export JSON partiel | Remplacé : tronquait mémoire/rappels et omettait le WAL ; backup/restore borné sans écrasement |
+
+- Groupe 2, ciblage intermédiaire : 207 tests + 468 sous-tests réussis.
+  Contrôle SDK ajouté après détection et correction locale d'un enum numérique
+  refusé par Google GenAI (port WoL). Le port reste validé strictement à l'exécution.
+- Ruff, compileall, diff --check et filiation : OK ; suite Linux compatible en cours.
+- Les validations physiques (hibernation, corbeille, réseau local) sont volontairement
+  mockées. Aucune action réelle de ce type n'a été exécutée.
+
+### Livraison groupe 1
+
+PR #46 fusionnée normalement : merge
+`26b6ddad83d1d8b3bf659cf84aaf4a6870ad9aa2`.
+CI PR `38630511105` : Tests Windows (11 min 15 s) et Lint réussis.
+Main récupéré et avancé fast-forward sur la branche de session avant le lot suivant.
+CI main `38632176672` déclenchée automatiquement, à vérifier avec la CI finale.
+
+### Contrôles groupe 2 avant PR
+
+- 66 tests ciblés + 444 sous-tests réussis sur les nouveaux outils, sauvegarde,
+  météo, déclarations SDK et connexion Gemini mockée (après corrections).
+- 207 tests + 468 sous-tests du ciblage élargi précédent réussis.
+- Suite compatible Linux en cours, hors modules/classes bloqués par les bibliothèques
+  Qt système manquantes. Les sources nouvelles n'ajoutent aucune dépendance externe.

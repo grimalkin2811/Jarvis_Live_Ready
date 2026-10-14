@@ -1,5 +1,16 @@
 # Changelog
 
+## Non publié — Intégration historique
+
+- Tâches personnelles SQLite et journal opt-in sans contenu privé.
+- Outils système confirmés, WoL local, presse-papiers manuel en RAM, lecture
+  et mesure de dossiers bornées, prévisions Open-Meteo.
+- Sauvegardes locales sans écrasement et restauration préparée dans un dossier
+  neuf, sans activation ni remplacement des données en cours.
+- Sécurité du registre : une erreur du contrôle de mode refuse désormais l’action ;
+  validation des schémas par le SDK Google ajoutée aux tests.
+- Aucun tag ni binaire publié modifié : ces ajouts ne sont **pas** dans v1.8.2.
+
 ## 1.8.2 — Nettoyage, factorisation et optimisation mesurée
 
 Release de maintenance : aucun changement de fonctionnalité, aucun changement

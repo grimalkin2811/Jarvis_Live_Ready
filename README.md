@@ -1393,3 +1393,43 @@ simples/moyennes; Gemini 3.8 Flash reste réservé aux tâches complexes. L’hi
 non vus et l’annulation sont accessibles depuis le menu Memory et l’icône de
 notification. Voir [l’architecture v1.8](docs/ARCHITECTURE_TASKS_V1.8.md) et la
 [procédure de validation réelle Windows](docs/VALIDATION_REELLE_V1.8.md).
+
+## Outils locaux récupérés des branches historiques
+
+- **Tâches personnelles** : `add_todo`, `list_todos`, `complete_todo`,
+  `reopen_todo`, `delete_todo`, `clear_todos`. Elles ne sont pas les tâches de
+  génération Gemini. Utilisez l'identifiant ou un libellé exact non ambigu.
+- **Journal d'activité** : désactivé par défaut. `JARVIS_ACTIVITY_ENABLED=1`
+  active une rétention de 30 jours des noms d'outils/date/succès uniquement.
+  `get_activity_log` et `clear_activity_log` permettent lecture et effacement.
+- **Sauvegardes** : `backup_data(confirm=true)` crée une archive non chiffrée
+  dans le dossier de données Jarvis, sous `backups`. Mémoire, rappels, routines,
+  notes, TODO et journal sont inclus ; configuration, clés API et OAuth exclus.
+  `list_backups` donne les noms utilisables avec `restore_backup`.
+  **La restauration prépare un nouveau dossier, sans écraser les données actives.**
+  Après inspection, fermez Jarvis puis sélectionnez ce dossier par
+  `JARVIS_DATA_DIR` pour l'utiliser. Les routines/rappels sauvegardés peuvent
+  être actifs au prochain démarrage. Ne restaurez que vos archives de confiance.
+  Copiez les archives importantes sur un support sûr ; elles ne sont pas chiffrées.
+- **Presse-papiers** : `capture_clipboard` conserve seulement une capture
+  explicitement autorisée (20 textes de 4000 caractères maximum), en RAM.
+  `get_clipboard_history` la relit ; `paste_from_history` recopie vers le
+  presse-papiers, **sans taper dans la fenêtre active**. Fermer Jarvis ou appeler
+  `clear_clipboard_history` oublie cet historique. Évitez d'y conserver des secrets.
+- **Système Windows** : veille, hibernation, extinction d'écran, vidage de
+  corbeille. Accord explicite obligatoire ; aucun privilège administrateur demandé.
+  Wake-on-LAN est limité au réseau local privé/broadcast et aux ports 7/9 ;
+  l'envoi d'un paquet ne prouve pas que le PC distant s'est réveillé.
+- **Lecture et diagnostics** : `get_folder_size` mesure un dossier autorisé
+  avec limite de scan ; `read_file_aloud` lit un fichier UTF-8 relatif nommé
+  exactement (`.txt`, `.md`, `.csv`, `.srt`, `.rst`, 1 Mio maximum), uniquement
+  après accord pour transmettre son texte au modèle vocal. Racine du profil,
+  traversées de chemins et liens sortants refusés.
+- **Prévisions météo** : `get_forecast(city, days)` interroge Open-Meteo pour
+  1 à 7 jours, sans clé API ; le nom de ville est envoyé à ce service.
+
+Les actions sensibles et lectures privées ci-dessus ne sont pas autorisées
+comme étapes de routines automatiques. Les tests système et réseau utilisent
+des mocks ; ils ne vident jamais de corbeille et n'envoient aucun paquet WoL.
+Le détail des décisions d'intégration est dans
+[`docs/INTEGRATION_HISTORIQUE.md`](docs/INTEGRATION_HISTORIQUE.md).

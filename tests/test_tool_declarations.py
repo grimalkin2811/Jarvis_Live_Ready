@@ -114,3 +114,11 @@ class ToolDeclarationSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+def test_declarations_are_accepted_by_google_sdk():
+    """Le SDK refuse notamment les enums numériques malgré leur validité JSON Schema."""
+    import pytest
+    types = pytest.importorskip("google.genai.types")
+    for declaration in tools.TOOL_DECLARATIONS:
+        types.FunctionDeclaration(**declaration)
