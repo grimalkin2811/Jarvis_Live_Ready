@@ -1,8 +1,9 @@
 """Journal d'activité local de Jarvis.
 
-Sur activation explicite via JARVIS_ACTIVITY_ENABLED=1, chaque action déclenchée par Gemini (appel d'outil) est enregistrée localement
-dans SQLite — ``~/.jarvis/activity.db`` — afin de pouvoir répondre à
-« qu'as-tu fait aujourd'hui ? » sans rien envoyer sur Internet.
+Sur activation explicite via JARVIS_ACTIVITY_ENABLED=1, les appels d'outils
+sont enregistrés dans ``paths.data_dir()/activity.db`` (LOCALAPPDATA/Jarvis
+sur Windows). Le stockage est local ; une consultation vocale transmet les
+métadonnées retournées au modèle, jamais les arguments ou contenus des actions.
 
 Le journal est **volontairement sobre** :
 
@@ -11,7 +12,7 @@ Le journal est **volontairement sobre** :
 * les outils de lecture pure (heure, journal lui-même…) sont ignorés pour ne
   pas polluer le récit ;
 * les entrées plus vieilles que ``JARVIS_ACTIVITY_RETENTION_DAYS`` (30 jours
-  par défaut) sont purgées automatiquement ;
+  par défaut) sont purgées lors de l’initialisation et des écritures actives ;
 * toute erreur est avalée : le journal ne doit jamais casser une action.
 """
 
@@ -20,7 +21,6 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 import datetime as dt
-import json
 import os
 import sqlite3
 import threading
@@ -70,8 +70,7 @@ LABELS = {
     "complete_todo": "termine une tache",
     "remember": "memorise une information",
     "run_routine": "lance une routine",
-    "show_notification": "affiche une notification",
-    "draft_email": "prepare un email",
+    "notify_user": "affiche une notification",
     "backup_data": "sauvegarde les donnees",
 }
 
@@ -309,7 +308,3 @@ def log_action(tool: str, arguments=None, success: bool = True, error: str = "")
         get_default_activity_log().log(tool, arguments, success, error)
     except Exception:
         pass
-
-
-def dumps(payload) -> str:  # pragma: no cover - utilitaire
-    return json.dumps(payload, ensure_ascii=False, indent=2)

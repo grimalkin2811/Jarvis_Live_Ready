@@ -1,6 +1,6 @@
 """Tests de la liste de tâches persistante (``src.todo``).
 
-    python -m unittest discover tests
+    python -m pytest tests/test_todo.py
 """
 
 import os

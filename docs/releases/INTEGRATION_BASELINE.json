@@ -46,7 +46,9 @@
     "tag_name": "v1.8.2",
     "draft": false,
     "prerelease": false,
-    "published_at": "2026-10-11T18:14:30Z"
+    "published_at": "2026-10-11T18:14:30Z",
+    "name": "Jarvis v1.8.2",
+    "body_sha256": "20015d611578fdc87f9121a19326709fdda00bd030dacf9e8581348395cd6b6f"
   },
   "assets": [
     {
@@ -73,5 +75,6 @@
       "created_at": "2026-10-11T18:14:23Z",
       "updated_at": "2026-10-11T18:14:29Z"
     }
-  ]
+  ],
+  "notes_v180_blob": "c65eb2f94731d5b9e5ddd857b94b0f55d97f8658"
 }

@@ -1,6 +1,6 @@
-"""Tests du journal d'activité local et de la sauvegarde JSON.
+"""Tests du journal local opt-in, de la confidentialité et des garde-fous.
 
-    python -m unittest discover tests
+    python -m pytest tests/test_activity.py
 """
 
 import datetime as dt
@@ -124,3 +124,8 @@ def test_mode_policy_failure_denies_execution(monkeypatch):
     result = tools._guard_tool_function("test", callback)()
     assert not result["success"]
     callback.assert_not_called()
+
+
+def test_activity_labels_only_reference_current_tools():
+    from src import tools
+    assert set(activity_module.LABELS) <= set(tools.TOOL_FUNCTIONS)
