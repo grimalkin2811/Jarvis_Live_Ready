@@ -64,3 +64,6 @@ user_content/*
 .idea/
 .vscode/
 *.log
+
+# Agent scratch (never ship audit downloads or local test data)
+.arena/
