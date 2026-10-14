@@ -1,7 +1,8 @@
-"""Catalogue livré avec Jarvis : douze routines locales, prêtes à activer.
+"""Catalogue livré avec Jarvis : routines locales, prêtes à activer.
 
-Aucun compte, chemin personnel ou logiciel tiers à renseigner. Les identifiants
-stables servent à la migration ; les noms restent libres et prononçables.
+Aucun chemin personnel à renseigner. Les macros manuelles indiquent leurs
+prérequis (Windows, VS Code, navigateur) et leurs effets dans leur description.
+Les identifiants stables servent à la migration ; les noms restent libres et prononçables.
 Les plages horaires suivent l'heure locale du PC, borne de fin incluse.
 """
 
@@ -142,6 +143,261 @@ _PRESETS = (
         "schedule": None,
         "steps": [{"tool": "activate_game_mode", "args": {}}],
     },
+    # Catalogues historiques : macros manuelles, désactivées comme tous les presets.
+    {
+        "preset_id": "work_setup",
+        "name": "Poste de travail",
+        "description": "Ouvre VS Code et GitHub, puis règle le volume à 30 %. VS Code doit être installé.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "open_application",
+                "args": {
+                    "application": "vscode"
+                }
+            },
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "github"
+                }
+            },
+            {
+                "tool": "set_volume",
+                "args": {
+                    "volume": 30
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "morning_dashboard",
+        "name": "Ouverture du matin",
+        "description": "Ouvre Google Agenda, Gmail et France Info. Aucun accès aux comptes : connexion éventuelle dans le navigateur.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "google agenda"
+                }
+            },
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "gmail"
+                }
+            },
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "france info"
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "pomodoro_timer",
+        "name": "Pomodoro 25 minutes",
+        "description": "Coupe le son et lance un minuteur de session de 25 minutes. Ne rétablit pas le volume automatiquement.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "mute_audio",
+                "args": {}
+            },
+            {
+                "tool": "set_timer",
+                "args": {
+                    "minutes": 25,
+                    "label": "Fin du Pomodoro"
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "meeting_timer",
+        "name": "Réunion 45 minutes",
+        "description": "Coupe le son, réduit les fenêtres et lance un minuteur de session de 45 minutes.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "mute_audio",
+                "args": {}
+            },
+            {
+                "tool": "show_desktop",
+                "args": {}
+            },
+            {
+                "tool": "set_timer",
+                "args": {
+                    "minutes": 45,
+                    "label": "Fin de réunion"
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "coffee_timer",
+        "name": "Pause café 5 minutes",
+        "description": "Rétablit le son et lance un minuteur de session de 5 minutes.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "unmute_audio",
+                "args": {}
+            },
+            {
+                "tool": "set_timer",
+                "args": {
+                    "minutes": 5,
+                    "label": "Fin de la pause café"
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "music_break",
+        "name": "Pause musicale",
+        "description": "Ouvre Spotify dans le navigateur et règle le volume à 40 %. Ne démarre pas automatiquement une lecture.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "spotify"
+                }
+            },
+            {
+                "tool": "set_volume",
+                "args": {
+                    "volume": 40
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "news_reading",
+        "name": "Lire les actualités",
+        "description": "Ouvre France Info puis Le Monde. Ne lit ni ne résume automatiquement les pages.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "france info"
+                }
+            },
+            {
+                "tool": "open_website",
+                "args": {
+                    "site": "le monde"
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "system_review",
+        "name": "Bilan du PC",
+        "description": "Retourne connexion, batterie, disque et informations système. Le résultat est disponible à la voix ; sans batterie, une erreur est annoncée.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "check_internet",
+                "args": {}
+            },
+            {
+                "tool": "get_battery_status",
+                "args": {}
+            },
+            {
+                "tool": "get_disk_usage",
+                "args": {}
+            },
+            {
+                "tool": "get_system_info",
+                "args": {}
+            }
+        ]
+    },
+    {
+        "preset_id": "leaving_desk",
+        "name": "Je pars",
+        "description": "Arrête le média, coupe le son et verrouille la session Windows. Enregistrez votre travail avant de lancer cette routine.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "media_stop",
+                "args": {}
+            },
+            {
+                "tool": "mute_audio",
+                "args": {}
+            },
+            {
+                "tool": "lock_workstation",
+                "args": {}
+            }
+        ]
+    },
+    {
+        "preset_id": "cinema_setup",
+        "name": "Séance cinéma",
+        "description": "Réduit les fenêtres et règle le volume à 40 %, sans ouvrir de vidéo.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "show_desktop",
+                "args": {}
+            },
+            {
+                "tool": "set_volume",
+                "args": {
+                    "volume": 40
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "quiet_night",
+        "name": "Nuit calme",
+        "description": "Arrête le média et abaisse le volume à 10 %. Aucun verrouillage, changement de luminosité ou arrêt automatique.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "media_stop",
+                "args": {}
+            },
+            {
+                "tool": "set_volume",
+                "args": {
+                    "volume": 10
+                }
+            }
+        ]
+    },
+    {
+        "preset_id": "guided_maintenance",
+        "name": "Entretien guidé du PC",
+        "description": "Ouvre Téléchargements puis le nettoyage de disque Windows. Aucune suppression exécutée par Jarvis : vous choisissez dans Windows.",
+        "schedule": None,
+        "steps": [
+            {
+                "tool": "open_folder",
+                "args": {
+                    "folder": "telechargements"
+                }
+            },
+            {
+                "tool": "open_application",
+                "args": {
+                    "application": "nettoyage de disque"
+                }
+            }
+        ]
+    },
+
 )
 
 

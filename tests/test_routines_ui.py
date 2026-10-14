@@ -16,6 +16,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
 from src import notifications, routines, scheduler
+from src.routine_presets import builtin_routines
 from UI import jarvis_menu
 from UI.notification_bridge import NotificationBridge
 from UI.routines_dialog import RoutinesDialog
@@ -45,16 +46,16 @@ class RoutinesDialogTests(unittest.TestCase):
         self.dialog.deleteLater()
         self.app.processEvents()
 
-    def test_all_twelve_presets_are_visible_in_scrollable_catalogue(self):
-        self.assertEqual(len(self.dialog.rows), 12)
+    def test_all_presets_are_visible_in_scrollable_catalogue(self):
+        self.assertEqual(len(self.dialog.rows), len(builtin_routines()))
         self.assertFalse(self.dialog.grab().isNull())
         self.assertGreater(self.dialog.scroll.verticalScrollBar().maximum(), 0)
-        last = self.dialog.rows["Espace disque"]["toggle"]
+        last = self.dialog.rows[builtin_routines()[-1]["name"]]["toggle"]
         self.dialog.scroll.ensureWidgetVisible(last)
         self.app.processEvents()
         self.assertTrue(last.isVisibleTo(self.dialog.scroll))
         self.assertFalse(last.isChecked())
-        self.assertIn("0 / 12", self.dialog.summary.text())
+        self.assertIn(f"0 / {len(builtin_routines())}", self.dialog.summary.text())
 
     def test_toggle_by_keyboard_persists_without_running_routine(self):
         toggle = self.dialog.rows["Hydratation"]["toggle"]
@@ -66,7 +67,7 @@ class RoutinesDialogTests(unittest.TestCase):
             self.assertTrue(toggle.isChecked())
             reopened = routines.RoutineManager(self.path)
             self.assertTrue(reopened.describe_routine("Hydratation")["active"])
-            self.assertIn("1 / 12", self.dialog.summary.text())
+            self.assertIn(f"1 / {len(builtin_routines())}", self.dialog.summary.text())
             QTest.keyClick(toggle, Qt.Key_Space)
             self.assertFalse(toggle.isChecked())
             self.assertFalse(reopened.describe_routine("Hydratation")["active"])
@@ -98,9 +99,76 @@ class RoutinesDialogTests(unittest.TestCase):
         for index in range(8):
             self.manager.create_routine(f"Personnelle {index}", "flip_coin()")
         self.dialog.refresh(force=True)
-        self.assertEqual(len(self.dialog.rows), 20)
+        self.assertEqual(len(self.dialog.rows), len(builtin_routines()) + 8)
         self.dialog.rows["Personnelle 7"]["toggle"].click()
         self.assertFalse(self.manager.describe_routine("Personnelle 7")["active"])
+
+    def test_run_button_requires_activation_and_does_not_run_on_toggle(self):
+        row = self.dialog.rows["Poste de travail"]
+        self.assertFalse(row["run"].isEnabled())
+        self.assertFalse(row["run"].autoDefault())
+        with patch.object(self.manager, "run_routine") as run:
+            self.dialog._run_routine("Poste de travail")
+            row["toggle"].click()
+            self.assertTrue(row["run"].isEnabled())
+            run.assert_not_called()
+
+    def test_launch_is_deferred_no_double_run_and_result_is_delivered_by_signal(self):
+        self.manager.update_routine("Poste de travail", enabled=True)
+        self.dialog.refresh(force=True)
+        with (
+            patch("UI.routines_dialog.threading.Thread") as thread,
+            patch.object(self.manager, "run_routine", return_value={"success": True}) as run,
+        ):
+            self.dialog.rows["Poste de travail"]["run"].click()
+            self.dialog._run_routine("Poste de travail")
+            thread.assert_called_once()
+            thread.return_value.start.assert_called_once()
+            run.assert_not_called()
+            self.assertTrue(all(not row["run"].isEnabled() for row in self.dialog.rows.values()))
+            thread.call_args.kwargs["target"]()
+            run.assert_called_once_with("Poste de travail")
+            self.app.processEvents()
+            self.assertIsNone(self.dialog._running_name)
+            self.assertIn("terminée", self.dialog.feedback.text())
+            self.assertTrue(self.dialog.rows["Poste de travail"]["run"].isEnabled())
+
+    def test_run_failure_is_visible_and_buttons_recover(self):
+        self.manager.update_routine("Poste de travail", enabled=True)
+        self.dialog.refresh(force=True)
+        with (
+            patch("UI.routines_dialog.threading.Thread") as thread,
+            patch.object(self.manager, "run_routine", side_effect=RuntimeError("failure")),
+        ):
+            self.dialog._run_routine("Poste de travail")
+            thread.call_args.kwargs["target"]()
+            self.app.processEvents()
+            self.assertIn("impossible", self.dialog.feedback.text())
+            self.assertIsNone(self.dialog._running_name)
+            self.assertTrue(self.dialog.rows["Poste de travail"]["run"].isEnabled())
+
+    def test_worker_start_failure_restores_buttons(self):
+        self.manager.update_routine("Poste de travail", enabled=True)
+        self.dialog.refresh(force=True)
+        with patch("UI.routines_dialog.threading.Thread") as thread:
+            thread.return_value.start.side_effect = RuntimeError("no thread")
+            self.dialog._run_routine("Poste de travail")
+        self.assertIsNone(self.dialog._running_name)
+        self.assertTrue(self.dialog.rows["Poste de travail"]["run"].isEnabled())
+        self.assertIn("Impossible", self.dialog.feedback.text())
+
+    def test_closing_destroyed_panel_does_not_crash_worker(self):
+        from shiboken6 import delete
+        dialog = RoutinesDialog(manager=self.manager, scheduler=self.scheduler)
+        self.manager.update_routine("Poste de travail", enabled=True)
+        with (
+            patch("UI.routines_dialog.threading.Thread") as thread,
+            patch.object(self.manager, "run_routine", return_value={"success": True}),
+        ):
+            dialog._run_routine("Poste de travail")
+            worker = thread.call_args.kwargs["target"]
+            delete(dialog)
+            worker()  # Le signal vers un QObject détruit est ignoré proprement.
 
     def test_tray_menu_keeps_catalogue_action_alive(self):
         fake_audio = sys.modules.get("sounddevice", types.ModuleType("sounddevice"))

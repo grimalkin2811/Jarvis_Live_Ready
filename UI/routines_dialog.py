@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer, Signal
+import threading
+
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -21,10 +23,13 @@ from src.scheduler import get_default_scheduler
 
 class RoutinesDialog(QDialog):
     routines_changed = Signal()
+    _run_finished = Signal(str, object)
 
     def __init__(self, parent=None, *, manager=None, scheduler=None) -> None:
         super().__init__(parent)
         self.manager = manager if manager is not None else get_default_routine_manager()
+        self._running_name = None
+        self._run_finished.connect(self._on_run_finished, Qt.QueuedConnection)
         self.scheduler = scheduler if scheduler is not None else get_default_scheduler()
         self.setWindowTitle("Jarvis — Routines")
         self.resize(720, 660)
@@ -76,6 +81,7 @@ class RoutinesDialog(QDialog):
         self.scroll.setWidget(self.content)
         layout.addWidget(self.scroll, 1)
         self.feedback = QLabel("Les choix sont sauvegardés automatiquement.")
+        self.feedback.setTextFormat(Qt.PlainText)
         self.feedback.setWordWrap(True)
         layout.addWidget(self.feedback)
         footer = QHBoxLayout()
@@ -111,6 +117,13 @@ class RoutinesDialog(QDialog):
             "Enregistré immédiatement. L'activation autorise les prochains déclenchements."
         )
         header.addWidget(toggle)
+        run = QPushButton("Lancer")
+        run.setAutoDefault(False)
+        run.setDefault(False)
+        run.setAccessibleName(f"Lancer {name}")
+        run.setToolTip("Exécute une fois la routine activée, sans changer son horaire.")
+        run.clicked.connect(lambda checked=False, name=name: self._run_routine(name))
+        header.addWidget(run)
         box.addLayout(header)
         description = QLabel()
         description.setTextFormat(Qt.PlainText)
@@ -124,6 +137,7 @@ class RoutinesDialog(QDialog):
         self.rows[name] = {
             "card": card,
             "toggle": toggle,
+            "run": run,
             "description": description,
             "schedule": schedule,
         }
@@ -185,16 +199,68 @@ class RoutinesDialog(QDialog):
             toggle.setChecked(routine["enabled"])
             toggle.setText("Activée" if routine["enabled"] else "Désactivée")
             toggle.blockSignals(False)
+            row["run"].setEnabled(routine["enabled"] and self._running_name is None)
+            row["run"].setText("En cours…" if self._running_name == routine["name"] else "Lancer")
             row["description"].setText(routine["description"] or "Routine personnelle")
             planning = routine["planification"]
             if planning == "aucune":
-                planning = "À la demande, par la voix ou le menu radial"
+                planning = "À la demande, par la voix ou le bouton Lancer"
+                if not routine.get("preset_id"):
+                    planning += " ou le menu radial"
             row["schedule"].setText(planning)
         enabled = sum(item["enabled"] for item in routines)
         presets = sum(bool(item.get("preset_id")) for item in routines)
         self.summary.setText(
             f"{presets} préconfigurées · {enabled} / {len(routines)} activées"
         )
+
+    def _run_routine(self, name: str) -> None:
+        """Un lancement explicite, jamais un effet de l'activation ou du rafraîchissement."""
+        if self._running_name is not None:
+            return
+        try:
+            state = self.manager.describe_routine(name)
+        except Exception:
+            self.feedback.setText("Routine inaccessible ; aucune action lancée.")
+            return
+        if not state.get("success") or not state.get("active"):
+            self.feedback.setText("Activez d'abord cette routine pour la lancer.")
+            return
+        self._running_name = name
+        self.refresh(force=True)
+        self.feedback.setText(f"{name} : exécution en cours…")
+        manager = self.manager
+        finished = self._run_finished
+
+        def worker():
+            try:
+                result = manager.run_routine(name)
+            except Exception:
+                result = {"success": False, "error": "Exécution impossible."}
+            try:
+                # Livraison dans le thread Qt. Fermer le panneau n'annule pas
+                # une routine déjà lancée ; son résultat reste dans le gestionnaire.
+                finished.emit(name, result)
+            except RuntimeError:
+                pass  # Le panneau a été détruit pendant l'exécution.
+
+        try:
+            threading.Thread(target=worker, name="jarvis-catalogue-routine", daemon=True).start()
+        except RuntimeError:
+            self._on_run_finished(name, {"success": False, "error": "Impossible de lancer le worker."})
+
+    @Slot(str, object)
+    def _on_run_finished(self, name: str, result: object) -> None:
+        if self._running_name != name:
+            return
+        self._running_name = None
+        self.refresh(force=True)
+        if isinstance(result, dict) and result.get("success"):
+            self.feedback.setText(f"{name} : terminée.")
+        else:
+            error = (result.get("error") or "échec partiel : une ou plusieurs étapes ont échoué") if isinstance(result, dict) else "résultat invalide"
+            self.feedback.setText(f"{name} : {error}.")
+        self.routines_changed.emit()
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
         try:

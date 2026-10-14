@@ -83,13 +83,13 @@ class PresetTestCase(unittest.TestCase):
 
 
 class PresetInstallationTests(PresetTestCase):
-    def test_twelve_complete_disabled_presets_are_installed(self):
+    def test_complete_disabled_presets_are_installed(self):
         result = self.manager.list_routines()
-        self.assertEqual(result["count"], 12)
+        self.assertEqual(result["count"], len(builtin_routines()))
         self.assertTrue(all(not item["enabled"] for item in result["routines"]))
         self.assertEqual(self.manager.scheduled_routines(), [])
         self.publish.assert_not_called()
-        self.assertEqual(len({item["preset_id"] for item in result["routines"]}), 12)
+        self.assertEqual(len({item["preset_id"] for item in result["routines"]}), len(builtin_routines()))
 
     def test_every_preset_uses_valid_tools_arguments_and_schedules(self):
         for preset in builtin_routines():
@@ -108,7 +108,7 @@ class PresetInstallationTests(PresetTestCase):
         before = self.path.read_bytes()
         self.manager.install_presets()
         reopened = routines.RoutineManager(self.path)
-        self.assertEqual(reopened.list_routines()["count"], 12)
+        self.assertEqual(reopened.list_routines()["count"], len(builtin_routines()))
         self.assertEqual(self.path.read_bytes(), before)
 
     def test_activation_and_personal_changes_survive_restart(self):
@@ -132,7 +132,7 @@ class PresetInstallationTests(PresetTestCase):
     def test_deleted_preset_does_not_reappear(self):
         self.manager.delete_routine("Hydratation", confirm=True)
         reopened = routines.RoutineManager(self.path)
-        self.assertEqual(reopened.list_routines()["count"], 11)
+        self.assertEqual(reopened.list_routines()["count"], len(builtin_routines()) - 1)
         self.assertFalse(reopened.describe_routine("Hydratation")["success"])
 
     def test_existing_custom_routines_and_homonyms_are_preserved(self):
@@ -143,7 +143,7 @@ class PresetInstallationTests(PresetTestCase):
         before = old.describe_routine("Hydratation")
         migrated = routines.RoutineManager(path)
         self.assertEqual(migrated.describe_routine("Hydratation"), before)
-        self.assertEqual(migrated.list_routines()["count"], 13)
+        self.assertEqual(migrated.list_routines()["count"], len(builtin_routines()) + 1)
         preset = migrated.describe_routine("hydration")
         self.assertEqual(preset["nom"], "Hydratation (Jarvis)")
         self.assertFalse(preset["active"])
@@ -176,7 +176,7 @@ class PresetInstallationTests(PresetTestCase):
                 old.create_routine(f"custom {index}", "flip_coin()")["success"]
             )
         migrated = routines.RoutineManager(path)
-        self.assertEqual(migrated.list_routines()["count"], routines.MAX_ROUTINES + 12)
+        self.assertEqual(migrated.list_routines()["count"], routines.MAX_ROUTINES + len(builtin_routines()))
         self.assertFalse(
             migrated.create_routine("une de trop", "flip_coin()")["success"]
         )
@@ -209,7 +209,7 @@ class PresetInstallationTests(PresetTestCase):
 
 
 class PresetExecutionTests(PresetTestCase):
-    def test_all_twelve_execute_successfully_with_no_user_parameters(self):
+    def test_original_twelve_execute_successfully_with_no_user_parameters(self):
         mode_presets = {"focus_mode", "game_mode"}
         with (
             patch.object(
@@ -232,6 +232,14 @@ class PresetExecutionTests(PresetTestCase):
             ),
         ):
             for preset in builtin_routines():
+                # Les 12 macros historiques sont exécutées avec un registre mocké
+                # dans test_historical_presets, jamais avec les outils système réels.
+                if preset["preset_id"] not in {
+                    "morning_briefing", "hydration", "eye_break", "movement_break", "lunch_break",
+                    "end_of_day", "tomorrow_briefing", "weekly_review", "low_battery", "low_disk_space",
+                    "focus_mode", "game_mode",
+                }:
+                    continue
                 with self.subTest(preset=preset["name"]):
                     self.manager.update_routine(preset["name"], enabled=True)
                     result = self.manager.run_routine(preset["name"])

@@ -9,6 +9,8 @@
   neuf, sans activation ni remplacement des données en cours.
 - Sécurité du registre : une erreur du contrôle de mode refuse désormais l’action ;
   validation des schémas par le SDK Google ajoutée aux tests.
+- Douze macros historiques supplémentaires, manuelles et désactivées par défaut,
+  dans le moteur de presets existant (24 entrées au total), sans pagination radiale supplémentaire.
 - Aucun tag ni binaire publié modifié : ces ajouts ne sont **pas** dans v1.8.2.
 
 ## 1.8.2 — Nettoyage, factorisation et optimisation mesurée

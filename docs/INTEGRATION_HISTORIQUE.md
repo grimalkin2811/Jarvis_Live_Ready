@@ -41,13 +41,14 @@ Aucune branche source supprimée : statut de session active non vérifiable.
   Le journal est branché après le garde de mode ; un outil bloqué n'est pas exécuté.
 - Suppressions exclues des routines ; confirmation booléenne stricte.
 
-### Étapes restantes
+### Suivi d'avancement
 
-1. Valider puis livrer groupe 1 (tests locaux, CI Windows, fusion).
-2. Adapter outils système, réseau, fichiers, sauvegarde et presse-papiers ;
-   classer aussi météo, films, mail, clavier et lecture de texte.
-3. Retenir les presets utiles sans nouveau moteur ; évaluer l'interface.
-4. Suite finale, CI main, filiation, intégrité releases/tags, état des branches.
+1. Groupe 1 : livré par #46, CI PR et main vertes.
+2. Groupe 2 : livré par #47, CI PR Windows/Lint vertes ; CI main déclenchée.
+3. Groupe 3 : douze macros et lancement graphique prêts, tests Linux compatibles
+   terminés ; CI Windows, fusion puis CI main à terminer.
+4. Clôture : vérifier à nouveau refs/assets/branches, consigner les SHA et CI
+   observés et les limites d'accès. Aucun nettoyage destructif de branches prévu.
 
 ## Validation locale initiale
 
@@ -147,3 +148,100 @@ CI main `38632176672` déclenchée automatiquement, à vérifier avec la CI fina
 - 207 tests + 468 sous-tests du ciblage élargi précédent réussis.
 - Suite compatible Linux en cours, hors modules/classes bloqués par les bibliothèques
   Qt système manquantes. Les sources nouvelles n'ajoutent aucune dépendance externe.
+
+### Groupe 3 — comparaison complète des catalogues
+
+Douze macros retenues, toutes manuelles et désactivées ; 24 presets au total.
+Seulement des données au format actuel : aucun ancien moteur/importeur repris.
+Les dépendances et effets de bord sont décrits dans chaque entrée. Le moteur
+continue les étapes indépendantes après erreur et rapporte les échecs : comportement
+actuel conservé et testé, aucune prétention de succès complet si une étape échoue.
+
+| Source 01a07d57 (14 entrées) | Décision |
+|---|---|
+| mode travail | Intégré : Poste de travail, fusionné avec le catalogue 5f |
+| focus | Intégré comme Pomodoro 25 minutes ; distinct du vrai Mode focus actuel |
+| réunion | Intégré : Réunion 45 minutes |
+| pause café | Intégré : Pause café 5 minutes |
+| capture | Déjà couvert par take_screenshot ; ouvrir « images » après une capture n'apporte pas de garantie sur son emplacement |
+| musique | Intégré : Pause musicale (ouverture Spotify, pas lecture prétendue) |
+| actualités | Intégré : Lire les actualités |
+| bonjour | Briefing actuel + outils date/météo/notes ; ancienne suite sans rendu consolidé, météo Paris imposée, lecture privée des notes non retenue |
+| bilan système | Intégré : Bilan du PC (résultat à la voix, absence de batterie signalée) |
+| je pars | Intégré : Je pars, manuel, verrouillage annoncé |
+| je reviens | Redondant : unmute_audio et heure déjà disponibles ; aucune nouvelle séquence utile |
+| mode cinéma | Intégré : Séance cinéma, volume prudent 40 % au lieu de 80 % |
+| bonne nuit | Fusionné avec Nuit calme ; luminosité forcée et verrouillage programmé écartés, verrouillage manuel couvert par Je pars |
+| réveil | Ouverture du matin couvre les liens matinaux ; audio/radio imposés à 7h30 écartés, actions audio existantes personnalisables |
+
+| Source 01a07d5f (13 entrées) | Décision |
+|---|---|
+| réveil | Même décision que 57 : pas d'audio/radio automatiques imposés |
+| journal du matin | Intégré : Ouverture du matin |
+| mode travail | Intégré : Poste de travail (VS Code, GitHub, volume) |
+| pomodoro | Fusionné avec Pomodoro 25 minutes, durée modifiable, pas deux doublons 25/50 minutes |
+| pause café | Fusionné avec Pause café 5 minutes |
+| déjeuner | Déjà couvert par Pause déjeuner ; ancien mute/bureau/minuteur 45 min redondant avec actions de pause/réunion |
+| reprise d'après-midi | Redondant avec Poste de travail et actions audio ; pas de second lancement planifié de VS Code |
+| bilan du soir | Fin de journée et Préparer demain déjà présents ; notes factices quotidiennes + Trello imposé écartés |
+| mode détente | Fermeture forcée de Teams/Slack écartée (travail non sauvegardé) ; sites et Pause musicale existants |
+| nuit calme | Intégré : Nuit calme |
+| mode gaming | Vrai Mode jeu déjà présent et configurable ; ouvrir Steam + volume 70 % n'est pas une optimisation système |
+| entretien du PC | Intégré : Entretien guidé du PC ; ouvre Windows, ne supprime rien |
+| préparation de la semaine | Revue hebdomadaire actuelle + Ouverture du matin ; création de notes factices et choix Trello écartés |
+
+### Interface : décision pagination
+
+Le code actuel de `UI/routines_dialog.py` fournit déjà un QScrollArea pour
+**toutes** les routines, y compris les personnelles au-delà des six raccourcis.
+`UI/jarvis_menu.py` réserve ces six emplacements aux macros personnelles actives.
+L'ancien menu paginé 5f concurrencerait ce panneau sans rendre une routine
+supplémentaire accessible. Il est donc écarté. Tests Qt adaptés pour vérifier
+les 24 entrées, l'accès à la dernière et les macros personnelles au-delà de six.
+La fonction « Lancer » de 5f est en revanche retenue : bouton par carte du
+catalogue, désactivé tant que la routine ne l'est pas, worker hors thread Qt,
+signal de résultat en file Qt, protection contre les doubles clics. Aucun code
+ancien de suivi du survol/nom tronqué n'est repris. Fermer le panneau n'annule
+pas une routine déjà lancée. Aucun changement du solveur anti-chevauchement.
+
+Autres éléments 57/5f : l'installation initiale et les interrupteurs d'activation
+sont déjà couverts par le moteur/panneau actuel. `restore_preset_routines`, le
+bouton de réinstallation forcée et leurs tombstones concurrents sont écartés :
+ils réintroduiraient une seconde politique de suppression/résurrection sans
+confirmation. Le journal `installed_presets` actuel reste l'unique autorité.
+
+### Groupe 2 — suite Linux compatible terminée
+
+1008 tests réussis, 114 ignorés, 6 désélectionnés, 527 sous-tests réussis
+(413,87 s). Les 14 modules non collectables ont été exclus explicitement ;
+les six méthodes de la classe Qt AppearanceStateIntegration ont été désélectionnées.
+Ce résultat ne remplace pas la suite Windows complète de la PR #47
+(commit `c0cd0d6`, workflow `38632295383`).
+
+### Groupe 3 — ciblage et couverture
+
+128 tests + 480 sous-tests réussis : catalogues, exécution avec mocks, erreurs,
+mode bloquant, collisions de noms, suppression/non-résurrection, SDK et backup.
+Tests Qt du bouton Lancer et des 24 cartes ajoutés, exécution confiée à Windows.
+Le pipeline Linux final compatible est également lancé (pas présenté comme suite UI).
+Ruff et compileall réussis ; recherche de signatures usuelles de secrets dans
+le diff cumulé : aucune correspondance ; aucun artefact local destiné à Git.
+
+Les bibliothèques système Qt manquantes identifiées par ldd sont libGL, libEGL,
+libxkbcommon et libdbus. Dépendances Python installées dans .venv uniquement ;
+`pip check` réussit (Google GenAI 2.30.1 conforme à >=2.23,<3).
+
+### Livraison groupe 2 et validation groupe 3 avant PR
+
+- PR [#47](https://github.com/grimalkin2811/Jarvis_Live_Ready/pull/47) fusionnée
+  normalement, merge `5dbc9fe5f01f3003829362df5b9ac7fb58fd9c49`.
+  Tests Windows 11 min 16 s et Lint réussis (`38632295383`).
+- CI main du groupe 1 `38632176672` : réussite confirmée.
+- Branche de session avancée fast-forward sur main après #47 avant commit suivant.
+- Suite Linux finale compatible : **1026 réussis, 114 ignorés, 6 désélectionnés,
+  539 sous-tests réussis**, 414,14 s. Même exclusions Qt explicites que précédemment.
+- UI nouvelle : tests de lancement différé, double clic, erreur de routine,
+  échec de création du thread, fermeture/destruction du panneau. Tous les effets
+  sont mockés ; exécution de ces tests Qt sur Windows requise avant fusion.
+- Contrôle API/refs répété : notes v1.8.0, tags et trois assets v1.8.2 inchangés.
+  Filiation v1.8.2 vérifiée séparément : OK. Aucun brouillon v1.8.0 présent.
