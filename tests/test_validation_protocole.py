@@ -335,3 +335,12 @@ def test_final_window_without_interaction_answers_nothing(tmp_path):
     reponses = json.loads(sortie.read_text(encoding="utf-8"))
     assert reponses["captures"] == "non répondu" and reponses["notification_vue"] == "non répondu"
     assert reponses["micro"] == {"teste": False} and reponses["haut_parleur"]["teste"] is False
+
+
+def test_report_groups_series_of_checks_with_the_same_cause():
+    items = [P.Controle(f"D{i:02d}", f"d{i}", statut=P.NON_TESTE,
+                        raison=f"pas de Windows natif (offscreen) : répétition = RÉUSSI — détail {i}") for i in range(1, 5)]
+    items.append(P.Controle("E01", "e1", statut=P.NON_TESTE, raison="clé indisponible"))
+    lignes = P.regrouper(items)
+    assert lignes[0].startswith("D01–D04 (4 contrôles) : NON TESTÉ — pas de Windows natif (offscreen)")
+    assert lignes[1].startswith("E01 « e1 » : NON TESTÉ — clé indisponible") and len(lignes) == 2

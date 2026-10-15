@@ -495,14 +495,18 @@ def d10(ctx: Contexte):
     native_details = "non demandée"
     native_ok = True
     if ctx.notification_native:
+        premier_plan = len(ctx.tray_messages)
         controller.hide_window()
         pomper(ctx, 0.2)
-        center.notify("task_completed", "Validation Jarvis", "Notification Windows de test (aucune action requise)",
+        attendu = "Notification Windows de test"
+        center.notify("task_completed", "Validation Jarvis", f"{attendu} (aucune action requise)",
                       key="validation:windows")
-        pomper(ctx, 1.0)
-        native_ok = bool(ctx.tray_messages)
-        native_details = (f"bulle Windows émise via la zone de notification ({len(ctx.tray_messages)})" if native_ok
-                          else "aucune bulle émise")
+        # Le relais espace les bulles de 8,5 s (UI/notification_bridge.py) : attente bornée de CETTE bulle.
+        native_ok = attendre(ctx, lambda: any(attendu in m for _t, m in ctx.tray_messages), 12)
+        native_details = ("bulle Windows émise via la zone de notification pour la notification reçue Dashboard "
+                          "masqué" if native_ok else "aucune bulle pour la notification reçue Dashboard masqué")
+        if premier_plan:
+            native_details += " (la notification de premier plan a aussi produit une bulle : fenêtre non active)"
         controller.open()
         attendre(ctx, controller.is_open, 3)
     ok = item is not None and toast_ok and center.unread_count() > before and native_ok

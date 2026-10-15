@@ -130,6 +130,31 @@ class Rapport:
 # ---------------------------------------------------------------------------
 
 
+def _cause(item: "Controle") -> str:
+    texte = item.raison or item.resultat or ""
+    return texte.split(" : ")[0].split(" — ")[0].strip()
+
+
+def regrouper(items: list["Controle"], seuil: int = 3) -> list[str]:
+    """Une ligne par contrôle, sauf pour les séries partageant statut et cause (« D01–D17 (16) … »)."""
+    lignes: list[str] = []
+    index = 0
+    while index < len(items):
+        fin = index + 1
+        while (fin < len(items) and items[fin].statut == items[index].statut
+               and _cause(items[fin]) == _cause(items[index]) and _cause(items[index])):
+            fin += 1
+        groupe = items[index:fin]
+        if len(groupe) >= seuil:
+            lignes.append(f"{groupe[0].id}–{groupe[-1].id} ({len(groupe)} contrôles) : {groupe[0].statut} — "
+                          f"{_cause(groupe[0])} (détail par contrôle en §5 et §11)")
+        else:
+            for item in groupe:
+                lignes.append(f"{item.id} « {item.titre} » : {item.statut} — {item.raison or item.resultat}")
+        index = fin
+    return lignes
+
+
 def calculer_verdict(rapport: Rapport) -> tuple[str, int, list[str]]:
     """Verdict global, code de sortie et justification (liste de phrases)."""
     raisons: list[str] = []
@@ -147,8 +172,7 @@ def calculer_verdict(rapport: Rapport) -> tuple[str, int, list[str]]:
                 raisons.append(f"Problème bloquant : {probleme.titre}")
         return VERDICT_BLOQUEE, CODE_BLOQUEE, raisons
     if rapport.erreur_protocole or not rapport.termine or manquants or not requis:
-        for item in manquants:
-            raisons.append(f"{item.id} « {item.titre} » : {item.statut} — {item.raison or item.resultat}")
+        raisons.extend(regrouper(manquants))
         if not rapport.termine and not rapport.erreur_protocole:
             raisons.append("Le protocole n'est pas allé à son terme (interruption).")
         if not requis:

@@ -48,6 +48,7 @@ def main(argv=None) -> int:
     parser.add_argument("--sortie", required=True)
     parser.add_argument("--auto", action="store_true", help="aucune interaction : toutes les réponses « non répondu »")
     parser.add_argument("--fermer-apres", type=int, default=0, help=argparse.SUPPRESS)  # tests : fermeture en ms
+    parser.add_argument("--capture", default="", help=argparse.SUPPRESS)  # tests : capture PNG avant fermeture
     args = parser.parse_args(argv)
     contexte = json.loads(Path(args.entree).read_text(encoding="utf-8"))
     reponses: dict = {
@@ -71,9 +72,31 @@ def main(argv=None) -> int:
 
     from PySide6.QtCore import QEvent, QObject, Qt, QTimer
     from PySide6.QtGui import QPixmap
-    from PySide6.QtWidgets import (QApplication, QButtonGroup, QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                                   QLineEdit, QMessageBox, QPushButton, QRadioButton, QScrollArea, QVBoxLayout,
-                                   QWidget)
+    from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog, QGridLayout, QGroupBox, QHBoxLayout,
+                                   QLabel, QLineEdit, QMessageBox, QPushButton, QRadioButton, QScrollArea,
+                                   QVBoxLayout, QWidget)
+
+    class Vignette(QLabel):
+        """Miniature cliquable : ouvre la capture en taille réelle."""
+
+        def __init__(self, path: str) -> None:
+            super().__init__()
+            self.path = path
+            self.setPixmap(QPixmap(path).scaledToWidth(300, Qt.SmoothTransformation))
+            self.setToolTip(f"{Path(path).name} — cliquer pour agrandir")
+            self.setCursor(Qt.PointingHandCursor)
+
+        def mousePressEvent(self, event):  # noqa: N802
+            dialog = QDialog(self.window())
+            dialog.setWindowTitle(Path(self.path).name)
+            dialog.resize(1280, 860)
+            area = QScrollArea(dialog)
+            image = QLabel()
+            image.setPixmap(QPixmap(self.path))
+            area.setWidget(image)
+            box = QVBoxLayout(dialog)
+            box.addWidget(area)
+            dialog.exec()
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = QWidget()
@@ -108,20 +131,17 @@ def main(argv=None) -> int:
 
     captures = [c for c in contexte.get("captures", []) if Path(c).is_file()]
     if captures:
-        box = QGroupBox(f"Captures du Dashboard réel ({len(captures)}) — rendu {contexte.get('rendu', '?')}")
+        box = QGroupBox(f"Captures du Dashboard réel ({len(captures)}) — rendu {contexte.get('rendu', '?')} — "
+                        "cliquer sur une capture pour l'agrandir")
         grid = QGridLayout(box)
         for index, path in enumerate(captures[:24]):
-            thumb = QLabel()
-            pixmap = QPixmap(path)
-            thumb.setPixmap(pixmap.scaledToWidth(240, Qt.SmoothTransformation))
-            thumb.setToolTip(Path(path).name)
             name = QLabel(Path(path).stem)
             cell = QVBoxLayout()
-            cell.addWidget(thumb)
+            cell.addWidget(Vignette(path))
             cell.addWidget(name)
             holder = QWidget()
             holder.setLayout(cell)
-            grid.addWidget(holder, index // 4, index % 4)
+            grid.addWidget(holder, index // 3, index % 3)
         layout.addWidget(box)
         layout.addWidget(question("Ces captures sont-elles correctes (texte lisible, rien de coupé ni de superposé, "
                                   "thèmes appliqués) ?", "captures", ["oui", "non", "je ne sais pas"]))
@@ -133,10 +153,14 @@ def main(argv=None) -> int:
     audio_layout = QVBoxLayout(audio)
     python = contexte.get("python_audio") or sys.executable
     inventaire = contexte.get("audio") or {}
+    def oui_non(value) -> str:
+        return "oui" if value else "non"
+
     resume = QLabel(
-        f"Entrée par défaut : {(inventaire.get('entree_defaut') or {}).get('type', 'aucune')} — utilisable : "
-        f"{inventaire.get('entree_utilisable')} ; sortie par défaut : "
-        f"{(inventaire.get('sortie_defaut') or {}).get('type', 'aucune')} — utilisable : {inventaire.get('sortie_utilisable')}")
+        f"Entrée par défaut : {(inventaire.get('entree_defaut') or {}).get('type', 'aucune')} — utilisable par Jarvis : "
+        f"{oui_non(inventaire.get('entree_utilisable'))} ; sortie par défaut : "
+        f"{(inventaire.get('sortie_defaut') or {}).get('type', 'aucune')} — utilisable par Jarvis : "
+        f"{oui_non(inventaire.get('sortie_utilisable'))}")
     resume.setWordWrap(True)
     audio_layout.addWidget(resume)
     avertissement = QLabel(
@@ -224,6 +248,8 @@ def main(argv=None) -> int:
     activite = Activite(window)
     app.installEventFilter(activite)
     if args.fermer_apres:
+        if args.capture:
+            QTimer.singleShot(max(0, args.fermer_apres - 200), lambda: window.grab().save(args.capture))
         QTimer.singleShot(args.fermer_apres, lambda: terminer("fermeture automatique (test)"))
     window.show()
     window.raise_()

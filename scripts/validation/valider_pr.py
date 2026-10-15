@@ -723,7 +723,10 @@ def instantane(x: Execution) -> dict:
                     continue
                 entry = [st.st_size, st.st_mtime_ns]
                 parts = path.relative_to(racine).parts
-                lourd = parts[:1] in (("app",), ("models",), ("cache",)) or st.st_size > 64 * 1024 * 1024
+                # Gros fichiers sans données personnelles (installation, sauvegardes de mise à jour,
+                # modèles) : taille et date seulement ; tout le reste est haché (SHA-256).
+                lourd = (parts[:1] in (("app",), ("models",), ("cache",), (".jarvis-backups",))
+                         or st.st_size > 64 * 1024 * 1024)
                 if not lourd:
                     try:
                         entry.append(sha256_fichier(path))
@@ -843,26 +846,7 @@ def verifier_depot(x: Execution) -> None:
             x.ctl("A02", "").regler(P.REUSSI, f"branche {r.depot.get('branche_locale')} alignée sur la PR ({local[:12]})")
     # CI et commentaires.
     if x.commit_teste and pr:
-        try:
-            runs = x.api_github(f"commits/{x.commit_teste}/check-runs?per_page=100").get("check_runs", [])
-            lignes = [f"{c.get('name')}={c.get('conclusion') or c.get('status')}" for c in runs]
-            r.pr["ci"] = lignes
-            pending = [c for c in runs if c.get("status") != "completed"]
-            bad = [c for c in runs if c.get("status") == "completed"
-                   and c.get("conclusion") not in ("success", "skipped", "neutral")]
-            if not runs:
-                x.ctl("A06", "").regler(P.NON_TESTE, raison="aucune exécution de CI pour ce commit (encore)")
-            elif bad:
-                x.ctl("A06", "").regler(P.ECHEC, "échecs CI : " + ", ".join(c.get("name", "?") for c in bad),
-                                        "; ".join(lignes))
-            elif pending:
-                x.ctl("A06", "").regler(P.NON_TESTE, raison="CI en cours : " + ", ".join(c.get("name", "?") for c in pending))
-            else:
-                x.ctl("A06", "").regler(P.REUSSI, f"{len(runs)} vérifications terminées sans échec "
-                                        "(NB : « Validation réelle » est verte même quand son verdict est NON TESTABLE)",
-                                        "; ".join(lignes))
-        except (urllib.error.URLError, OSError, ValueError, AttributeError) as exc:
-            x.ctl("A06", "").regler(P.NON_TESTE, raison=f"API GitHub injoignable ({type(exc).__name__})")
+        verifier_ci(x)
         try:
             comments = x.api_github(f"issues/{x.args.pr}/comments?since={DATE_AUDIT}&per_page=100")
             nouveaux = [c for c in comments if str(c.get("created_at", "")) > DATE_AUDIT]
@@ -878,6 +862,32 @@ def verifier_depot(x: Execution) -> None:
     elif not pr:
         x.ctl("A06", "").regler(P.NON_TESTE, raison="API GitHub injoignable")
         x.ctl("A07", "").regler(P.NON_TESTE, raison="API GitHub injoignable")
+
+
+def verifier_ci(x: Execution, moment: str = "au début") -> None:
+    """État des vérifications GitHub du commit testé (relu en fin d'exécution si encore en cours)."""
+    try:
+        runs = x.api_github(f"commits/{x.commit_teste}/check-runs?per_page=100").get("check_runs", [])
+    except (urllib.error.URLError, OSError, ValueError, AttributeError) as exc:
+        x.ctl("A06", "").regler(P.NON_TESTE, raison=f"API GitHub injoignable ({type(exc).__name__})")
+        return
+    lignes = [f"{c.get('name')}={c.get('conclusion') or c.get('status')}" for c in runs]
+    x.rapport.pr["ci"] = lignes
+    x.rapport.pr["ci_relue"] = moment
+    pending = [c for c in runs if c.get("status") != "completed"]
+    bad = [c for c in runs if c.get("status") == "completed"
+           and c.get("conclusion") not in ("success", "skipped", "neutral")]
+    if not runs:
+        x.ctl("A06", "").regler(P.NON_TESTE, raison=f"aucune exécution de CI pour ce commit ({moment})")
+    elif bad:
+        x.ctl("A06", "").regler(P.ECHEC, "échecs CI : " + ", ".join(c.get("name", "?") for c in bad), "; ".join(lignes))
+    elif pending:
+        x.ctl("A06", "").regler(P.NON_TESTE, raison=f"CI en cours ({moment}) : "
+                                + ", ".join(c.get("name", "?") for c in pending))
+    else:
+        x.ctl("A06", "").regler(P.REUSSI, f"{len(runs)} vérifications terminées sans échec, relues {moment} "
+                                "(NB : « Validation réelle » est verte même quand son verdict est NON TESTABLE)",
+                                "; ".join(lignes))
 
 
 def creer_copie_isolee(x: Execution) -> None:
@@ -1469,7 +1479,7 @@ def gemini_et_audio(x: Execution) -> None:
             x.ctl(cid, "").regler(P.NON_TESTE, raison="étape sautée à la demande (--sauter gemini)")
         return
     if not x.consentements.get("gemini_reel") or not x.cle:
-        raison = ("NON TESTÉ — clé indisponible" if not x.sources_cle else
+        raison = ("clé indisponible" if not x.sources_cle else
                   "non autorisé dans la fenêtre de lancement" if not x.consentements.get("gemini_reel") else
                   "clé illisible")
         for cid in ids:
@@ -1797,6 +1807,9 @@ def finaliser_depot(x: Execution) -> None:
                 x.git("worktree", "prune")
         else:
             shutil.rmtree(x.worktree, ignore_errors=True)
+    a06 = x.ctl("A06", "")
+    if x.commit_teste and a06.statut == P.NON_TESTE and "CI en cours" in a06.raison:
+        verifier_ci(x, "en fin d'exécution")
     apres = statut_git(x)
     main_apres = etat_main(x)
     x.rapport.depot["main_apres"] = main_apres
@@ -1815,6 +1828,37 @@ def finaliser_depot(x: Execution) -> None:
         x.ctl("A04", "").regler(P.REUSSI if same_local and same_remote else P.ECHEC,
                                 f"main local {str(main_apres['local'])[:12]}, distant {str(main_apres['distant'])[:12]} — "
                                 "identiques avant/après ; aucune commande push/merge/tag n'existe dans le protocole")
+
+
+def emplacement(x: Execution, rel: str, motif: str) -> str:
+    """« fichier:ligne » du motif dans la copie TESTÉE (exact pour ce commit), sinon le fichier seul."""
+    racine = x.worktree if x.worktree is not None and x.worktree.exists() else x.depot
+    try:
+        for numero, ligne in enumerate((racine / rel).read_text(encoding="utf-8").splitlines(), start=1):
+            if motif in ligne:
+                return f"{rel}:{numero}"
+    except OSError:
+        pass
+    return rel
+
+
+def points_connus(x: Execution) -> None:
+    """Points relevés par l'audit (docs/dashboard/AUDIT_PRE_FUSION.md), non corrigés car optionnels."""
+    if x.ctl("E10", "").statut != P.REUSSI:
+        x.probleme("important", "Intention du modèle face à une simple mention du « tableau de bord » non validée : "
+                   "aucune garde locale, seule la description de l'outil guide Gemini",
+                   "Couvert par E10 (Gemini réel) ; tant que E10 n'est pas RÉUSSI, le risque d'ouverture intempestive "
+                   "reste non mesuré.", emplacement(x, "src/tools.py", '"open_dashboard",'), "E10")
+    x.probleme("mineur", "Deux notifications pour une même panne audio (« Problème audio » et « Backend vocal "
+               "indisponible »)", "Choix d'ergonomie relevé par l'audit, sans impact de stabilité.",
+               emplacement(x, "UI/dashboard/hub.py", '"Backend vocal indisponible"'), "")
+    x.probleme("mineur", "Message écrit : l'overlay Desktop affiche brièvement « à l'écoute » alors que le micro "
+               "n'écoute pas", "Évènement « transcription » réutilisé pour le texte ; à confirmer visuellement sous "
+               "Windows (liste de contrôle, item 4/14).",
+               emplacement(x, "src/gemini_live.py", "self._notify(self.on_user_transcript, cleaned, True)"), "")
+    x.probleme("mineur", "`python -m unittest discover tests` ne charge pas conftest.py (isolation des données "
+               "seulement avec pytest)", "Sans conséquence pendant ce protocole : C09 tourne sous la garde avec des "
+               "données redirigées.", emplacement(x, "tests/conftest.py", "_ISOLATED_DATA_ENV"), "C09")
 
 
 def resume_windows(x: Execution) -> None:
@@ -1858,6 +1902,11 @@ def calculer_ecarts(x: Execution) -> None:
                          else "") + ". Elle sera remplacée par le build de la PR (build_windows.ps1 → requirements.txt).")
     elif WINDOWS:
         lignes.append("Aucune installation quotidienne détectée : Jarvis est utilisé depuis le dépôt (.venv).")
+    b08 = x.ctl("B08", "")
+    if b08.statut in (P.REUSSI, P.ECHEC):
+        lignes.append("Packaging de la PR : scripts/build_windows.ps1 installe requirements.txt (PySide6 < 6.12) "
+                      "puis PyInstaller — le prochain exécutable embarquera la même série PySide6 que l'environnement "
+                      f"de test ; inspection : {b08.statut}.")
     x.rapport.ecarts[:0] = lignes
 
 
@@ -1871,7 +1920,7 @@ def recommandation(x: Execution) -> None:
     elif verdict == P.VERDICT_INSUFFISANTE:
         lignes.append("Aucun échec bloquant démontré, mais la validation est INCOMPLÈTE : la PR ne peut pas être "
                       "déclarée prête. Contrôles requis restant à exécuter :")
-        lignes += [f"- {c.id} {c.titre} — {c.raison or c.statut}" for c in manuels[:40]]
+        lignes += [f"- {ligne}" for ligne in P.regrouper(manuels)]
         lignes.append("Relancer `valider_pr.bat` sur le PC Windows de l'utilisateur, avec la clé Gemini disponible et "
                       "en répondant aux confirmations de la fenêtre finale.")
     else:
@@ -1966,7 +2015,7 @@ def main(argv=None) -> int:
             except Exception as exc:
                 x.probleme("important", f"Vérification finale « {step.__name__} » impossible", str(exc))
         x.cle = ""
-        for step in (resume_windows, calculer_ecarts):
+        for step in (points_connus, resume_windows, calculer_ecarts):
             try:
                 step(x)
             except Exception as exc:
