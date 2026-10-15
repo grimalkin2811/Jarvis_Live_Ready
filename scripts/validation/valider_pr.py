@@ -55,6 +55,11 @@ OUTILLAGE = ("scripts/validation/", "valider_pr.bat", "docs/validation/", "tests
 VARIABLES_SENSIBLES = re.compile(r"(?i)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)")
 PYSIDE_EXCLUE = "6.12.0"
 #: Lignes de verdict des scripts réels officiels (« AUDIO RÉEL : PASS », « S5 RECONNEXION REELLE : FAIL »…).
+AVERTISSEMENT_FENETRES = (
+    "Pendant les contrôles du Dashboard et de Gemini, de vraies fenêtres du Dashboard s'ouvrent, se ferment et "
+    "passent brièvement en plein écran, et une icône Jarvis temporaire apparaît dans la zone de notification : "
+    "ne cliquez pas dedans et ne fermez pas la console. Fermer Jarvis avant de lancer rend la preuve de "
+    "non-modification des données concluante.")
 VERDICT_RE = r"^([A-ZÀ-Ü0-9+][A-ZÀ-Ü0-9+ ]*?) : (PASS|FAIL|NON TESTABLE)\s*$"
 
 VUES = [
@@ -613,6 +618,7 @@ def fenetre_lancement(x: Execution) -> None:
             choix["gemini_reel"] = False
     for key, value in choix.items():
         afficher(f"   {key} : {'oui' if value else 'non'}")
+    afficher(f"\n   ATTENTION : {AVERTISSEMENT_FENETRES}")
 
 
 def fenetre_tk(x: Execution, defauts: dict, memoire: bool) -> tuple[dict, str]:
@@ -631,7 +637,8 @@ def fenetre_tk(x: Execution, defauts: dict, memoire: bool) -> tuple[dict, str]:
         f"Installation quotidienne : {'détectée' if x.installation else 'absente'} — "
         f"Jarvis ouvert : {', '.join(x.jarvis_ouvert) or 'non'}\n"
         f"Clé Gemini : {', '.join(x.sources_cle) or 'introuvable'} (jamais affichée ni enregistrée)\n\n"
-        "Durée : 30 à 60 min (la première fois, installation d'un environnement isolé d'environ 1 Go).")
+        "Durée : 30 à 60 min (la première fois, installation d'un environnement isolé d'environ 1 Go).\n"
+        f"{AVERTISSEMENT_FENETRES}")
     tk.Label(frame, text=texte, justify="left", wraplength=620).pack(anchor="w")
     variables = {}
     libelles = {

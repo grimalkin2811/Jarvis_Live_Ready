@@ -13,6 +13,11 @@ valider_pr.bat
 Durée : 30 à 60 minutes. La première exécution installe un environnement Python isolé (environ 1 Go,
 réutilisé ensuite).
 
+Avant de lancer : **fermer Jarvis** (sinon la preuve par instantané de la non-modification des données
+n'est pas concluante). Pendant les contrôles du Dashboard et de Gemini, de vraies fenêtres du Dashboard
+s'ouvrent, se ferment et passent brièvement en plein écran, et une icône Jarvis temporaire apparaît
+dans la zone de notification : ne pas cliquer dedans et ne pas fermer la console.
+
 ## Ce qui est vérifié
 
 | Section | Contenu |
