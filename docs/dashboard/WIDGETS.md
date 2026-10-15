@@ -67,13 +67,16 @@ masquée ou réduite.
 
 `set_state(state, message)` avec `state` parmi :
 
-| État | Signification | Affichage du cadre |
+| État | Signification | Affichage |
 |---|---|---|
-| `loading` | Données en cours de chargement. | Message « Chargement… ». |
+| `loading` | Données en cours de chargement. | Voile du cadre « Chargement… ». |
 | `ready` | Données affichées. | Le contenu du widget. |
-| `empty` | Source joignable mais vide. | Message explicite (ex. « Aucune tâche »). |
-| `error` | Erreur réelle de la source. | Message + bouton « Réessayer » (`refresh()`). |
-| `unavailable` | Dépendance absente (moteur arrêté, Task Manager non démarré…). | Raison réelle de l'indisponibilité. |
+| `empty` | Source joignable mais vide. | Le widget reste utilisable (ex. champ d'ajout) et affiche lui-même un état vide explicite (ex. « Aucune tâche personnelle en attente. »). |
+| `error` | Erreur réelle de la source. | Voile « Erreur » + message + bouton « Réessayer » (`refresh()`). |
+| `unavailable` | Dépendance absente (moteur arrêté, Task Manager non démarré…). | Voile « Indisponible » + raison réelle. |
+
+Un widget peut restreindre les états qui masquent son contenu
+(attribut `overlay_states`).
 
 Aucun widget n'affiche de valeur inventée : sans donnée, il passe en
 `empty` ou `unavailable` avec la raison.

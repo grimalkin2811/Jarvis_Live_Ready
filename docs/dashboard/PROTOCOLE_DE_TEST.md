@@ -59,6 +59,7 @@ aucune variable n'est nécessaire.
 | Intégration | `test_dashboard_conversation_widget.py` | Hors ligne (raison réelle, texte conservé), envoi via le contexte partagé, **envoi concurrent explicite**, refus « occupé », échec, message trop long, tours vocaux + transcriptions partielles, tour échoué, échappement HTML. |
 | Intégration | `test_dashboard_tasks.py` | Statuts réels, jamais pause/reprise, annuler/relancer selon le service, Task Manager absent expliqué, widget mis à jour par les hooks réels. |
 | Intégration | `test_dashboard_entry_points.py` | Alias de pages, pont sans consommateur, outils vocaux honnêtes sans interface et avec confirmation réelle, entrée du menu de la zone de notification, Ctrl+D dans l'orbe, isolation des erreurs, option `--dashboard`. |
+| Intégration | `test_dashboard_productivity.py` | Note écrite dans le Dashboard = note de l'outil vocal (même fichier), saisie invalide refusée sans écriture, documents réels seulement (fichier disparu signalé, jamais « ouvert »), tâches personnelles ajoutées/terminées dans la base de l'outil vocal, mise à jour : notification unique, « à jour » affirmé seulement avec une version publiée connue, échec jamais présenté comme un succès. |
 | Performance | `test_dashboard_perf.py` | Aucun import lourd à la création du contrôleur, coût nul Dashboard masqué, cadres en cache, changement de page et première ouverture interactifs. |
 | Visuel | `scripts/dashboard_visual_protocol.py` | Captures reproductibles (voir §4). |
 | Performance | `scripts/dashboard_perf.py` | Mesures chiffrées avec critères (voir §3). |
@@ -140,19 +141,21 @@ pied du Journal d'activité tronqué.
 |---|---|
 | Référence avant modifications (`main` @ `ec944e2`, PySide6 6.11.2) | **1 332 réussis**, 691 sous-tests, 20 avertissements, 0 échec — 460,95 s |
 | Après modifications (1re exécution) | **1 485 réussis**, 700 sous-tests, 20 avertissements, 0 échec — 460,40 s |
-| Après modifications (exécution finale, 2 tests ajoutés depuis) | **1 487 réussis**, 700 sous-tests, 20 avertissements, 0 échec, 0 ignoré — 462,49 s |
+| Après modifications (2e exécution, 2 tests ajoutés) | **1 487 réussis**, 700 sous-tests, 20 avertissements, 0 échec, 0 ignoré — 462,49 s |
+| Après modifications (exécution finale : correctifs mise à jour / tâches perso + `test_dashboard_productivity.py`) | **1 495 réussis**, 700 sous-tests, 20 avertissements, 0 échec, 0 ignoré — 464,23 s |
 
 Commande : `QT_QPA_PLATFORM=offscreen python -m pytest -q -p no:cacheprovider -ra`.
 Le protocole dédié (`run_dashboard_protocol.py`) a été exécuté en entier :
 unitaires 88 réussis, intégration 64 réussis (+ 3 sous-tests), performance
 3 réussis + mesures (§3, exéc. 3), 24 captures, ruff et compileall sans
-erreur.
+erreur. `test_dashboard_productivity.py` (8 tests) a été ajouté ensuite :
+ensemble des tests du Dashboard = 163 réussis (+ 3 sous-tests).
 
-CI GitHub sur la PR brouillon #50 (commit `f915b24`) :
+CI GitHub sur la PR brouillon #50 (commits `f915b24` et `a4f85db`, résultats identiques) :
 
 | Tâche | Résultat |
 |---|---|
-| `Tests (Windows)` — `windows-latest`, Python 3.11, `pytest -q` (suite complète) + diagnostics unittest | **réussi** (12 min 48 s ; décomptes non lisibles depuis l'environnement de développement, journaux inaccessibles) |
+| `Tests (Windows)` — `windows-latest`, Python 3.11, `pytest -q` (suite complète) + diagnostics unittest | **réussi** (12 min 48 s puis 12 min 43 s ; décomptes non lisibles depuis l'environnement de développement, journaux inaccessibles) |
 | `Lint` — `ruff check` (ubuntu) | **réussi** |
 | `Validation reelle (audio, reconnexions, outils)` | tâche « réussie » mais verdict **NON TESTABLE** : « aucune clé API disponible dans cet environnement » (secret `GEMINI_API_KEY` non fourni au workflow) — **aucune validation Gemini réelle** |
 | `Build & Release` | ignoré (ne s'exécute que sur un tag `v*`) — aucun build ni publication |
