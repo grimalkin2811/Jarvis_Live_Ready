@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import concurrent.futures
 import os
 import threading
 import time
@@ -174,6 +175,27 @@ EMPTY_GENERATION_MAX_RETRIES = int(
     os.getenv("JARVIS_LIVE_EMPTY_GENERATION_RETRIES", "2") or 0
 )
 
+#: Longueur maximale d'un message TEXTE (Dashboard, v1.9). Au-delà, l'envoi
+#: est refusé explicitement plutôt que tronqué en silence.
+TEXT_INPUT_MAX_CHARS = 4000
+
+#: Filet de sécurité (s) : si un message texte n'a reçu AUCUNE réponse du
+#: serveur dans ce délai, la porte micro retenue pour lui est rouverte (le
+#: tour reste ouvert : une réponse tardive est toujours traitée normalement).
+TEXT_TURN_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_TEXT_TURN_TIMEOUT", "30") or 30)
+
+
+class TextSubmitError(RuntimeError):
+    """Refus explicite d'un message texte (Dashboard), avec un code stable.
+
+    Codes : ``empty``, ``too_long``, ``not_connected``, ``not_ready``,
+    ``busy``, ``send_failed``, ``loop_unavailable``.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
 
 class GeminiLive:
     def __init__(
@@ -265,6 +287,14 @@ class GeminiLive:
         # que la trace réelle (g2-t8) montre juste avant chaque génération
         # vide suivante.
         self._regeneration_pending = False
+        # v1.9 (Dashboard) : un message TEXTE a été envoyé dans la session et
+        # attend sa réponse. Même logique de porte micro que
+        # ``_regeneration_pending`` (cf. cause racine S6) : aucun audio temps
+        # réel ne doit se mêler à un ``clientContent`` texte clos tant que le
+        # serveur n'a pas répondu, sauf interruption réelle de l'utilisateur.
+        # Faux par défaut : le chemin audio historique est strictement
+        # inchangé tant qu'aucun texte n'est envoyé.
+        self._text_turn_pending = False
         self.tool_active = False
         self.resumption_handle = None
         # Traçabilité de session (instrumentation du contexte conversationnel) :
@@ -550,6 +580,7 @@ class GeminiLive:
         self.conversation.close_turn("fin de tour")
         already_closed = self._turn_closed
         self._turn_closed = True
+        self._text_turn_pending = False
         log.debug(
             "TURN COMPLETE gen=%s conversation=%s messages=%s",
             self.session_generation, self.conversation.conversation_id,
@@ -581,6 +612,7 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_closed = False
+        self._text_turn_pending = False
         self._session_ready = False
         if self.session is None and self.ctx is None:
             return
@@ -797,6 +829,8 @@ class GeminiLive:
         # prioritaire : l'utilisateur doit toujours pouvoir couper court.
         if self._regeneration_pending and not self.interrupt_active():
             return False, "relance de generation en cours"
+        if self._text_turn_pending and not self.interrupt_active():
+            return False, "message texte en cours"
         # Pendant une interruption, le micro doit passer : c'est ainsi que
         # Gemini entend « stop » et arrête réellement son tour.
         if self.speaking and not self.interrupt_active():
@@ -925,6 +959,9 @@ class GeminiLive:
             "Pour savoir ce qui est réellement affiché, get_ui_state. "
             "Pour « passe en mode Desktop » ou « passe en mode Blob », appelle set_interface_mode avec mode='desktop' ou mode='blob' : "
             "le changement est immédiat et persistant, sans redémarrage. "
+            "Pour « ouvre le Dashboard » / « affiche le tableau de bord » (éventuellement une page : mémoire, "
+            "tâches, système…), appelle open_dashboard ; pour le fermer, close_dashboard. Le Dashboard coexiste "
+            "avec l'orbe et le Desktop : l'ouvrir ne change pas de mode. "
             "Pour « active/désactive la routine hydratation », utilise update_routine avec name et enabled=true/false uniquement : "
             "ne la recrée pas, ne demande aucun horaire ni paramètre supplémentaire. En cas de nom ambigu, liste les routines. "
             "Une routine désactivée ne peut pas être lancée ; son activation ne lance pas immédiatement ses étapes, "
@@ -1321,6 +1358,158 @@ class GeminiLive:
             )
         )
 
+    # ------------------------------------------------------------------
+    # Entrée TEXTE (Dashboard, v1.9)
+    # ------------------------------------------------------------------
+
+    def _text_busy_reason(self) -> str:
+        """Raison pour laquelle un message texte ne peut PAS partir maintenant.
+
+        Une seule demande à la fois dans la session : un message texte ne
+        doit jamais se superposer à un tour vocal ou textuel en cours (ordre
+        USER -> OUTILS -> ASSISTANT du contexte, porte micro, relances).
+        """
+        if self.interrupt_active():
+            return "Interruption en cours : réessaie dans un instant."
+        if self.tool_active:
+            return "Jarvis exécute une action : réessaie quand elle sera terminée."
+        if self._regeneration_pending:
+            return "Jarvis relance une réponse : réessaie dans un instant."
+        if self._text_turn_pending:
+            return "Un message est déjà en attente de réponse."
+        if self.speaking:
+            return "Jarvis est en train de répondre : interromps-le ou attends la fin."
+        if not self._turn_closed and (self._turn_user_text or self._turn_model_text):
+            return "Une demande vocale est en cours de traitement."
+        return ""
+
+    def _abort_text_turn(self, reason: str) -> None:
+        """Clôt en échec un tour texte dont l'envoi n'a pas abouti."""
+        self.conversation.fail_open_turn(reason)
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self._text_turn_pending = False
+        already_closed = self._turn_closed
+        self._turn_closed = True
+        if not already_closed:
+            self.turn_epoch += 1
+            self._record_trace("TURN_CLOSE", source="text_input_failed")
+            self._notify(self.on_turn_resolved)
+
+    async def submit_text(self, text: str) -> dict:
+        """Envoie un message TEXTE dans la session Live courante.
+
+        Doit s'exécuter sur la boucle asyncio de la session (voir
+        ``submit_text_threadsafe``). Le message devient un tour utilisateur
+        ordinaire : versé au contexte partagé (une seule source de vérité),
+        visible par l'orbe/Desktop (``on_user_transcript``), couvert par la
+        relance de génération vide, par l'extraction mémoire existante et
+        rejoué après reconnexion. La réponse arrive par le chemin normal
+        (audio + transcription) : rien n'est simulé.
+
+        Lève ``TextSubmitError`` (code stable) si l'envoi est impossible ;
+        n'altère alors ni le contexte ni l'état de tour.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            raise TextSubmitError("empty", "Message vide.")
+        if len(cleaned) > TEXT_INPUT_MAX_CHARS:
+            raise TextSubmitError(
+                "too_long",
+                f"Message trop long ({len(cleaned)} caractères, maximum {TEXT_INPUT_MAX_CHARS}).",
+            )
+        if self.session is None:
+            raise TextSubmitError("not_connected", "Jarvis n'est pas connecté au modèle.")
+        if not self._session_ready:
+            raise TextSubmitError("not_ready", "La session se prépare : réessaie dans un instant.")
+        busy = self._text_busy_reason()
+        if busy:
+            raise TextSubmitError("busy", busy)
+        session = self.session
+        if not self._turn_user_text and not self._turn_model_text:
+            # Aucun tour réellement en cours (y compris après un échec ou un
+            # reset, où ``_turn_closed`` peut rester faux avec des tampons
+            # vides) : le message ouvre un VRAI nouveau tour, compté et
+            # annoncé (``on_turn_open`` suspend la fenêtre de conversation).
+            self._turn_closed = True
+        self._begin_turn_if_needed()
+        self._turn_user_text.append(cleaned)
+        self._text_turn_pending = True
+        self._record_trace("TEXT_INPUT_SENT", chars=len(cleaned))
+        self._notify(self.on_user_transcript, cleaned, True)
+        self._commit_user_text()
+        try:
+            await session.send_client_content(
+                turns=[{"role": "user", "parts": [{"text": cleaned}]}],
+                turn_complete=True,
+            )
+        except Exception as exc:
+            log.warning("gen=%s : envoi du message texte impossible (%s)", self.session_generation, exc)
+            self._abort_text_turn("envoi texte impossible")
+            raise TextSubmitError(
+                "send_failed", "Envoi impossible : la connexion au modèle a été interrompue."
+            ) from exc
+        try:
+            epoch = self.turn_epoch
+            asyncio.get_running_loop().call_later(
+                TEXT_TURN_TIMEOUT_SECONDS, self._text_turn_watchdog, epoch
+            )
+        except RuntimeError:  # pragma: no cover - hors boucle
+            pass
+        return {
+            "accepted": True,
+            "session_generation": self.session_generation,
+            "turn": self.turn_counter,
+            "chars": len(cleaned),
+        }
+
+    def _text_turn_watchdog(self, epoch: int) -> None:
+        """Rouvre la porte micro si le serveur n'a jamais répondu au texte."""
+        if (
+            self._text_turn_pending
+            and self.turn_epoch == epoch
+            and not self._turn_model_content_seen
+        ):
+            self._text_turn_pending = False
+            self._record_trace("TEXT_TURN_TIMEOUT", timeout=TEXT_TURN_TIMEOUT_SECONDS)
+            log.warning(
+                "gen=%s : aucune réponse au message texte après %.0f s -- porte micro rouverte",
+                self.session_generation, TEXT_TURN_TIMEOUT_SECONDS,
+            )
+
+    def submit_text_threadsafe(self, text: str) -> "concurrent.futures.Future":
+        """Point d'entrée thread-safe de ``submit_text`` (thread Qt, tests).
+
+        Ne bloque jamais l'appelant : retourne un ``concurrent.futures.Future``
+        résolu sur la boucle de la session (``TextSubmitError`` en cas de
+        refus). Toutes les vérifications d'état ont lieu SUR la boucle, au
+        moment de l'envoi — jamais sur le thread appelant (même principe
+        que ``send_audio``).
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            future: concurrent.futures.Future = concurrent.futures.Future()
+            future.set_exception(TextSubmitError("loop_unavailable", "Le moteur vocal n'est pas actif."))
+            return future
+        return asyncio.run_coroutine_threadsafe(self.submit_text(text), loop)
+
+    def engine_snapshot(self) -> dict:
+        """État lisible (diagnostic) — lecture seule, jamais de contenu échangé."""
+        return {
+            "model": self.model,
+            "session_generation": self.session_generation,
+            "session_open": self.session is not None,
+            "session_ready": bool(self._session_ready),
+            "speaking": bool(self.speaking),
+            "tool_active": bool(self.tool_active),
+            "regeneration_pending": bool(self._regeneration_pending),
+            "text_turn_pending": bool(self._text_turn_pending),
+            "turn_counter": self.turn_counter,
+            "context_seeded": bool(self.context_seeded),
+            "resumable": bool(self.resumption_handle),
+        }
+
     async def receive_loop(self) -> None:
         try:
             await self._receive_loop()
@@ -1355,6 +1544,7 @@ class GeminiLive:
         # doit pas laisser la porte micro fermée indéfiniment pour la session
         # SUIVANTE (même instance ``GeminiLive`` réutilisée à la reconnexion).
         self._regeneration_pending = False
+        self._text_turn_pending = False
 
     async def _receive_loop(self):
         """Reçoit les messages Gemini pour TOUS les tours de la session.
@@ -1972,6 +2162,7 @@ class GeminiLive:
     async def _shutdown_session(self) -> None:
         self.speaking = False
         self._regeneration_pending = False
+        self._text_turn_pending = False
         self.tool_active = False
         self._clear_interrupt()
         self._interrupt_was_active = False
