@@ -309,11 +309,15 @@ class TodoWidget(DashboardWidget):
                 "  (haute)" if task.get("priorite") == "haute" else ""))
             box.toggled.connect(lambda checked, tid=task.get("id"): self._complete(tid) if checked else None)
             self.list.setItemWidget(item, box)
+        if not tasks:
+            # État vide DANS la liste : la ligne de message reste réservée au
+            # retour de la dernière action (« Tâche terminée. »…).
+            placeholder = QListWidgetItem("Aucune tâche personnelle en attente.")
+            placeholder.setFlags(Qt.NoItemFlags)
+            self.list.addItem(placeholder)
         self._building = False
         self.set_subtitle(f"{len(tasks)} en attente")
         self.set_state(STATE_READY if tasks else STATE_EMPTY)
-        if not tasks:
-            self.message.setText("Aucune tâche personnelle en attente.")
 
     def _add(self) -> None:
         text = self.entry.text().strip()

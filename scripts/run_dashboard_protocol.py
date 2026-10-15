@@ -51,6 +51,7 @@ INTEGRATION_TESTS = [
     "tests/test_dashboard_conversation_widget.py",
     "tests/test_dashboard_tasks.py",
     "tests/test_dashboard_entry_points.py",
+    "tests/test_dashboard_productivity.py",
 ]
 PERF_TESTS = ["tests/test_dashboard_perf.py"]
 STATIC_TARGETS = ["UI/dashboard", "UI/dashboard_bridge.py", "src/runtime_status.py", "scripts/dashboard_perf.py",

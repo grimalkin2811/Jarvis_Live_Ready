@@ -518,9 +518,14 @@ class DashboardController(QObject):
 
         def _done(plan: dict) -> None:
             general = self.store.config.general
+            latest = str(plan.get("latest") or "")
+            if not latest:
+                # Release sans numéro de version exploitable : on ne sait PAS
+                # si Jarvis est à jour — ne jamais l'affirmer.
+                _failed(RuntimeError("version publiée introuvable dans la dernière release"))
+                return
             general.last_update_check = time.time()
             self.store.changed("general")
-            latest = str(plan.get("latest") or "")
             if plan.get("update_available"):
                 if general.last_notified_version != latest:
                     general.last_notified_version = latest
