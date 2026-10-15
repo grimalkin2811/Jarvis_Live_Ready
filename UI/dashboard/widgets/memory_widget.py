@@ -396,7 +396,7 @@ class MemoryWidget(DashboardWidget):
             self.refresh()
             return
         if result.get("unchanged"):
-            self.context.toast("Aucune modification à enregistrer.", "info")
+            self.context.toast(result.get("error") or "Aucune modification à enregistrer.", "info")
             return
         self._show_banner((result.get("error") or "Écriture impossible") + " — rien n'a été modifié.")
 

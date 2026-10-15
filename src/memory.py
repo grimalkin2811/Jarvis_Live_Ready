@@ -1032,6 +1032,16 @@ class MemoryManager:
             return {"success": False, "error": f"Historique illisible : {exc}"}
         if revision is None:
             return {"success": False, "not_found": True, "error": "Version introuvable."}
+        current = self.get_memory_record(memory_id).get("memory")
+        if (
+            current is not None
+            and self._expected_matches(current, expected)
+            and all(current.get(key) == revision[key] for key in EDITABLE_FIELDS)
+        ):
+            # Rien à restaurer : ne jamais annoncer « restaurée » ni réécrire
+            # (l'horodatage changerait sans aucune modification réelle).
+            return {"success": False, "unchanged": True,
+                    "error": "Cette version est identique à la version actuelle."}
         result = self.update_memory_checked(
             memory_id, expected,
             content=revision["content"], category=revision["category"], importance=revision["importance"],

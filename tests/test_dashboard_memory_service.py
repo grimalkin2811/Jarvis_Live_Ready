@@ -246,3 +246,95 @@ def test_no_real_user_database_is_used(manager):
     from src import paths
 
     assert os.path.abspath(manager.database_path) != os.path.abspath(str(paths.memory_db()))
+
+
+# ---------------------------------------------------------------------------
+# Audit pré-fusion (PR #50) : migration, purge, restauration
+# ---------------------------------------------------------------------------
+
+
+def _downgrade_to_v1(path: str) -> None:
+    """Base v1 RÉALISTE : créée par le code actuel puis ramenée au schéma v1."""
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            DROP TRIGGER IF EXISTS memories_revision_au;
+            DROP TRIGGER IF EXISTS memories_revision_ad;
+            DROP TABLE IF EXISTS memory_revisions;
+            PRAGMA user_version = 1;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _schema(path: str) -> tuple[int, set[str], list[str]]:
+    conn = sqlite3.connect(path)
+    try:
+        version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master")}
+        contents = [row[0] for row in conn.execute("SELECT content FROM memories ORDER BY id")]
+    finally:
+        conn.close()
+    return version, names, contents
+
+
+def test_failed_v2_migration_is_rolled_back_then_retried_without_data_loss(tmp_path, monkeypatch):
+    import src.memory as memory_module
+
+    path = str(tmp_path / "v1.db")
+    MemoryManager(path).add_memory("Souvenir à préserver", category="fact", importance=4, source="voice")
+    _downgrade_to_v1(path)
+
+    def failing_migration(conn):
+        # Même forme que la vraie migration (une transaction), échec au milieu.
+        conn.executescript("BEGIN; CREATE TABLE memory_revisions (id INTEGER PRIMARY KEY);")
+        raise sqlite3.OperationalError("database or disk is full")
+
+    real_migration = memory_module._MIGRATIONS[2]
+    monkeypatch.setitem(memory_module._MIGRATIONS, 2, failing_migration)
+    manager = MemoryManager(path)
+    assert manager.available is False and "disk is full" in (manager.last_error or "")
+    version, names, contents = _schema(path)
+    assert version == 1, "la base reste en v1"
+    assert "memory_revisions" not in names, "aucune table à moitié créée (transaction annulée)"
+    assert contents == ["Souvenir à préserver"], "données intactes"
+
+    # La cause disparaît : l'accès suivant retente la migration, sans redémarrage.
+    monkeypatch.setitem(memory_module._MIGRATIONS, 2, real_migration)
+    listing = manager.list_memories()
+    assert manager.available is True, listing
+    version, names, contents = _schema(path)
+    assert version == 2
+    assert {"memory_revisions", "memories_revision_au", "memories_revision_ad"} <= names
+    assert contents == ["Souvenir à préserver"]
+    assert manager.check_integrity()["ok"] is True
+
+
+def test_history_keeps_exactly_the_most_recent_versions(service):
+    memory = _create(service, "Version initiale")
+    current = memory
+    for index in range(MEMORY_REVISIONS_KEPT + 5):
+        current = service.update(memory["id"], version_of(current), f"Version {index}", "preference", 3)["memory"]
+    contents = [r["content"] for r in service.history(memory["id"])["revisions"]]
+    # Version actuelle = « Version 24 » ; l'historique garde les 20 états précédents
+    # les plus récents, du plus récent au plus ancien : Version 23 … Version 4.
+    assert contents == [f"Version {i}" for i in range(MEMORY_REVISIONS_KEPT + 3, 3, -1)]
+    assert "Version initiale" not in contents
+
+
+def test_restoring_a_version_identical_to_the_current_one_writes_nothing(service):
+    memory = _create(service, "Texte A")
+    version_b = service.update(memory["id"], version_of(memory), "Texte B", "preference", 3)["memory"]
+    back_to_a = service.update(memory["id"], version_of(version_b), "Texte A", "preference", 3)["memory"]
+    revisions = service.history(memory["id"])["revisions"]
+    identical = next(r for r in revisions if r["content"] == "Texte A")
+    before = service.get(memory["id"])["memory"]
+    result = service.restore(memory["id"], identical["id"], version_of(back_to_a))
+    assert result["success"] is False and result.get("unchanged") is True, result
+    assert "identique" in result["error"]
+    after = service.get(memory["id"])["memory"]
+    assert after["updated_at"] == before["updated_at"], "rien n'a été écrit"
+    assert len(service.history(memory["id"])["revisions"]) == len(revisions)
