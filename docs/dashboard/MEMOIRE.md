@@ -24,7 +24,7 @@ inversement.
 | Modifier | Même formulaire ; résumé des changements. | **oui**, niveau 2 imposé |
 | Supprimer | Archivage, exactement comme « oublie… » à la voix (`archived = 1` : Jarvis ne s'en sert plus). | **renforcée**, niveau 3 |
 | Historique | Versions antérieures (jusqu'à 20 par souvenir) avec **différences** lisibles mot à mot. | — |
-| Restaurer une version | La version actuelle est remplacée **et rejoint l'historique** (restauration réversible). | **oui**, niveau 2 imposé |
+| Restaurer une version | La version actuelle est remplacée **et rejoint l'historique** (restauration réversible). Une version **identique** à la version actuelle n'est pas « restaurée » : rien n'est écrit et le Dashboard l'indique (« Cette version est identique à la version actuelle. »). | **oui**, niveau 2 imposé |
 | Intégrité | `PRAGMA quick_check` en lecture seule (page Système). | — |
 
 Aucun JSON ni SQL brut n'est exposé : formulaires structurés uniquement,

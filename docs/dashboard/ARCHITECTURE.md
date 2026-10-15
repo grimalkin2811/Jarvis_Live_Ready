@@ -42,7 +42,7 @@ nouvelle conversation et n'interrompt ni le micro ni les tâches.
 | `UI/dashboard/diagnostics.py` | non | Vérifications par composant avec preuves, rapport sans secret. |
 | `UI/dashboard/actions.py` | non | Actions rapides réelles (aucune commande système arbitraire). |
 | `UI/dashboard/log_buffer.py` | non | Tampon circulaire du logger `jarvis` (secrets masqués). |
-| `UI/dashboard/async_jobs.py` | oui | Travaux hors thread graphique, résultat livré par signal. |
+| `UI/dashboard/async_jobs.py` | oui | Travaux hors thread graphique, résultat livré par signal ; `watch_future` relaie un `Future` résolu sur n'importe quel thread (confirmation d'envoi du moteur) sans jamais émettre depuis un widget détruit. |
 | `UI/dashboard/hub.py` | oui | État réactif partagé, branchement des sources. |
 | `UI/dashboard/theme.py`, `painting.py` | oui | Identités JARVIS / EDITH / FRIDAY, peinture, cache. |
 | `UI/dashboard/widget_api.py`, `registry.py` | oui | Contrat et registre explicite des widgets. |

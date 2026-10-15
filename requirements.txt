@@ -18,5 +18,8 @@ comtypes
 # (« Fatal Python error: none_dealloc »), constaté ici dans les tests de
 # l'orbe. Borne à lever quand une 6.12.x corrigée est validée
 # (garde-fou : tests/test_pyside_refcount.py).
+# NB : les 6.11.x déclarent Requires-Python < 3.15 ; avant de passer Jarvis
+# à Python 3.15 (pas encore possible : onnxruntime n'y publie aucune roue),
+# lever cette borne ou la restreindre à python_version < "3.12".
 PySide6<6.12
 psutil

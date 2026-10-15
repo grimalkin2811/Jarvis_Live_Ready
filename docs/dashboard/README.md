@@ -24,6 +24,7 @@ la même conversation et les mêmes services** que la voix.
 | [MEMOIRE.md](MEMOIRE.md) | Édition de la mémoire : service, schéma v2, concurrence, confirmations. |
 | [SECURITE.md](SECURITE.md) | Niveaux d'actions 1/2/3, règles d'honnêteté, secrets. |
 | [PROTOCOLE_DE_TEST.md](PROTOCOLE_DE_TEST.md) | Commandes, critères, protocole visuel et de performance, check-list Windows. |
+| [AUDIT_PRE_FUSION.md](AUDIT_PRE_FUSION.md) | Audit pré-fusion de la PR #50 : problèmes classés, preuves, corrections, validations impossibles, PySide6. |
 | [screenshots/](screenshots/) | Captures du protocole visuel (hors écran, données de démonstration). |
 
 ## Ouvrir le Dashboard

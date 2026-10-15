@@ -133,8 +133,12 @@ placement (position, taille, réglages d'instance) est retiré de la page.
   pas de copie), rafraîchi par ses écouteurs (`add_listener`) — un message
   dit à la voix apparaît, un message écrit est visible du moteur.
 * **Envoi** : `RUNTIME.submit_text` → `GeminiLive.submit_text_threadsafe` ;
-  le thread graphique ne bloque jamais (`concurrent.futures.Future` +
-  signal Qt).
+  le thread graphique ne bloque jamais (`concurrent.futures.Future` résolu sur
+  la boucle du moteur). La confirmation revient par le relais durable du hub
+  (`JobRunner.watch_future`), **jamais** par un signal du widget : celui-ci
+  peut être détruit avant la confirmation (Dashboard fermé en mode interactif
+  avec fenêtre libérée, widget retiré) — la confirmation est alors ignorée
+  sans erreur et le tour continue dans le moteur (audit pré-fusion).
 * **Concurrence explicite** : un seul envoi en vol ; si Jarvis parle, exécute
   un outil, relance une génération ou traite une demande vocale, le moteur
   refuse (`busy`) avec la raison et **le texte saisi est conservé**.

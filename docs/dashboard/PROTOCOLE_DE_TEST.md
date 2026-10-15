@@ -47,16 +47,18 @@ aucune variable n'est nécessaire.
 | Unitaire | `test_dashboard_config.py` | Défauts, aller-retour, clés inconnues, fichier corrompu sauvegardé, illisible jamais écrasé, schéma plus récent, migration v0→v1, préréglages + instantané, pages personnalisées, échec d'écriture. |
 | Unitaire | `test_dashboard_layout.py` | Points de rupture, tassement sans chevauchement, emplacement libre, bornes min/max, projection étroite non destructive, identifiants dupliqués renommés. |
 | Unitaire | `test_dashboard_security.py` | Niveaux 1/2/3, niveau 3 non abaissable, action inconnue = confirmation, chaque action de widget a une politique, journal et rapport sans secret. |
-| Unitaire / mémoire | `test_dashboard_memory_service.py` | Migration v2 (base v1 réaliste), création sans écrasement, saisie invalide, historique + diff, **concurrence** (même seconde, écrivains parallèles), suppression, restauration réversible, **échec d'écriture sans corruption**, **cohérence après redémarrage**, base réelle jamais utilisée. |
+| Unitaire / mémoire | `test_dashboard_memory_service.py` | Migration v2 (base v1 réaliste), création sans écrasement, saisie invalide, historique + diff, **concurrence** (même seconde, écrivains parallèles), suppression, restauration réversible, **échec d'écriture sans corruption**, **cohérence après redémarrage**, base réelle jamais utilisée ; **audit** : migration v2 en échec annulée puis retentée sans perte, purge gardant exactement les 20 versions les plus récentes, restauration d'une version identique refusée sans écriture. |
 | Unitaire | `test_dashboard_notifications.py` | Canaux par catégorie, libellé « Dashboard — », anti-doublon, pas de bulle native si Dashboard au premier plan, échec de l'API native toléré, seuls les statuts finaux réels notifient, filtre du pont historique. |
 | Unitaire | `test_dashboard_resources.py` | Aucun thread sans abonné, suspension/reprise, intervalle borné, erreurs de mesure tolérées, seuils sur valeurs réelles, psutil réel. |
 | Unitaire | `test_runtime_status.py` | Santé (« opérationnel » exige moteur prêt + audio), crochets isolés, masquage des secrets, envoi de texte sans moteur expliqué, **mises à jour concurrentes**. |
 | Unitaire | `test_conversation_listeners.py` | Écouteurs du contexte appelés hors verrou, erreurs isolées. |
 | Unitaire | `test_pyside_refcount.py` | Garde-fou PySide6 : pas de fuite de références `None` (régression de PySide6 6.12.0, cf. §7). |
+| Unitaire | `test_suite_isolation.py` | **Audit pré-fusion** : toute la session pytest pointe vers un dossier temporaire (`tests/conftest.py`) — chemins par défaut, gestionnaire mémoire par défaut, rétablissement après un test qui retire `JARVIS_DATA_DIR`. |
+| Intégration (faux serveur) | `test_gemini_text_voice_interplay.py` | **Audit pré-fusion**, vrai `GeminiLive` + boucle de reconnexion de `ui.py` : voix → texte → voix dans **une** session et **un** contexte ; refus « occupé » pendant un tour vocal ; aucun audio micro mêlé à un texte en attente (interruption toujours prioritaire) ; relance de génération vide d'un texte (micro retenu, pas de doublon) ; interruption serveur ; appel d'outil ; coupure + reconnexion ; nouvelle conversation ; **course du filet de 30 s entre deux textes** ; **annulation de l'envoi** ; envois simultanés depuis deux threads ; tour purement vocal sans effet du chemin texte. Ne valide PAS le vrai service. |
 | Intégration | `test_gemini_text_input.py` | Texte = tour ordinaire de la **même** session, micro retenu pendant la réponse, chien de garde, **2 envois simultanés → 1 accepté, 1 « occupé »**, états occupés, validation, échec d'envoi, appel depuis un autre thread, chemin audio inchangé sans texte. |
 | Intégration | `test_dashboard_widgets.py` | Contrat de **tous** les widgets du registre, cycle de vie complet (0 connexion, 0 minuteur après désactivation), même widget deux fois = une seule source de vérité, panneau personnalisé, échec d'activation contenu, type inconnu. |
-| Intégration | `test_dashboard_window.py` | Ouverture légère, navigation, commande depuis un autre thread, **bascule d'interface sans toucher moteur/conversation/micro**, 3 modes de fermeture, plein écran, états étroit/normal/large, OnePage (diagnostics en dernier, seuls les widgets visibles actifs), mode édition (ajouter, déplacer, masquer, retirer, annuler, enregistrer, relire après redémarrage), données métier préservées, thème à chaud persisté, préférences de fenêtre relues après redémarrage, animations réduites, préférences corrompues non bloquantes. |
-| Intégration | `test_dashboard_conversation_widget.py` | Hors ligne (raison réelle, texte conservé), envoi via le contexte partagé, **envoi concurrent explicite**, refus « occupé », échec, message trop long, tours vocaux + transcriptions partielles, tour échoué, échappement HTML. |
+| Intégration | `test_dashboard_window.py` | Ouverture légère, navigation, commande depuis un autre thread, **bascule d'interface sans toucher moteur/conversation/micro**, 3 modes de fermeture, plein écran, états étroit/normal/large, OnePage (diagnostics en dernier, seuls les widgets visibles actifs), mode édition (ajouter, déplacer, masquer, retirer, annuler, enregistrer, relire après redémarrage), données métier préservées, thème à chaud persisté, préférences de fenêtre relues après redémarrage, animations réduites, préférences corrompues non bloquantes ; **audit** : fenêtre fermée (libérée) pendant un envoi, fenêtre libérée insensible aux changements d'état du moteur, outil vocal `open_dashboard` qui annonce la page réellement affichée (page inexistante signalée, Dashboard déjà ouvert). |
+| Intégration | `test_dashboard_conversation_widget.py` | Hors ligne (raison réelle, texte conservé), envoi via le contexte partagé, **envoi concurrent explicite**, refus « occupé », échec, message trop long, tours vocaux + transcriptions partielles, tour échoué, échappement HTML, **widget détruit avant la confirmation du moteur : aucune erreur, tour affiché à la réouverture** (audit). |
 | Intégration | `test_dashboard_tasks.py` | Statuts réels, jamais pause/reprise, annuler/relancer selon le service, Task Manager absent expliqué, widget mis à jour par les hooks réels. |
 | Intégration | `test_dashboard_entry_points.py` | Alias de pages, pont sans consommateur, outils vocaux honnêtes sans interface et avec confirmation réelle, entrée du menu de la zone de notification, Ctrl+D dans l'orbe, isolation des erreurs, option `--dashboard`. |
 | Intégration | `test_dashboard_productivity.py` | Note écrite dans le Dashboard = note de l'outil vocal (même fichier), saisie invalide refusée sans écriture, documents réels seulement (fichier disparu signalé, jamais « ouvert »), tâches personnelles ajoutées/terminées dans la base de l'outil vocal, mise à jour : notification unique, « à jour » affirmé seulement avec une version publiée connue, échec jamais présenté comme un succès. |
@@ -143,6 +145,8 @@ pied du Journal d'activité tronqué.
 | Après modifications (1re exécution) | **1 485 réussis**, 700 sous-tests, 20 avertissements, 0 échec — 460,40 s |
 | Après modifications (2e exécution, 2 tests ajoutés) | **1 487 réussis**, 700 sous-tests, 20 avertissements, 0 échec, 0 ignoré — 462,49 s |
 | Après modifications (exécution finale : correctifs mise à jour / tâches perso + `test_dashboard_productivity.py`) | **1 495 réussis**, 700 sous-tests, 20 avertissements, 0 échec, 0 ignoré — 464,23 s |
+| Audit pré-fusion : suite rejouée sur `d3f1fbe` | **1 495 réussis**, 700 sous-tests, 20 avertissements, 0 échec — 467,59 s |
+| Audit pré-fusion : après corrections (23 tests ajoutés, `HOME` vierge) | **1 518 réussis**, 700 sous-tests, 20 avertissements, 0 échec, 0 ignoré — 466,18 s ; aucun accès aux données réelles |
 
 Commande : `QT_QPA_PLATFORM=offscreen python -m pytest -q -p no:cacheprovider -ra`.
 Le protocole dédié (`run_dashboard_protocol.py`) a été exécuté en entier :
@@ -150,6 +154,10 @@ unitaires 88 réussis, intégration 64 réussis (+ 3 sous-tests), performance
 3 réussis + mesures (§3, exéc. 3), 24 captures, ruff et compileall sans
 erreur. `test_dashboard_productivity.py` (8 tests) a été ajouté ensuite :
 ensemble des tests du Dashboard = 163 réussis (+ 3 sous-tests).
+Audit pré-fusion (voir [AUDIT_PRE_FUSION.md](AUDIT_PRE_FUSION.md)) : protocole
+rejoué en entier après corrections → unitaires 95, intégration 88 (+ 3
+sous-tests), performance 3 + mesures dans les seuils, 24 captures, ruff et
+compileall sans erreur — **SUCCÈS**.
 
 CI GitHub sur la PR brouillon #50 (commits `f915b24` et `a4f85db`, résultats identiques) :
 
@@ -200,6 +208,19 @@ tests automatisés, hors écran, sans audio ni session Gemini).
 12. Build PyInstaller (`packaging/jarvis.spec`, workflow existant) :
     l'exécutable ouvre le Dashboard (le paquet `UI.dashboard` est déclaré
     dans les imports cachés).
+13. (Audit pré-fusion) Écrire un message, puis fermer aussitôt le Dashboard
+    (mode interactif avec « libérer la fenêtre ») : la réponse est dite à voix
+    haute, rien d'anormal dans les journaux ; à la réouverture, le message et
+    la réponse sont affichés.
+14. (Audit) Enchaîner voix → message écrit → voix : la réponse écrite tient
+    compte de ce qui a été dit, puis la voix continue sans reconnexion
+    (« Session n° » inchangé) ; pendant que Jarvis répond au message écrit,
+    parler ne crée pas de second tour (sauf « stop »/interruption).
+15. (Audit) « Ouvre le Dashboard sur la page météo » (page inexistante) :
+    Jarvis dit que la page est introuvable et quelle page est affichée.
+16. (Audit) Une conversation ordinaire qui mentionne un tableau de bord
+    (« le tableau de bord de ma voiture affiche un voyant ») n'ouvre pas le
+    Dashboard — dépend du modèle, **non testable sans clé**.
 
 ## 7. Point d'attention : PySide6 6.12.0
 
@@ -207,6 +228,26 @@ Pendant l'audit, la suite de référence s'arrêtait brutalement
 (`none_dealloc`, code 134) avec PySide6 6.12.0 (publié le 2026-10-08) sur
 CPython 3.11 : fuite d'une référence `None` par appel de méthode `void`.
 `requirements.txt` épingle désormais `PySide6<6.12` (6.11.2 vérifié) et
-`tests/test_pyside_refcount.py` détecte la régression. La v1.8.2 publiée
-(dépendance non épinglée) a pu embarquer 6.12.0 : risque à vérifier, non
-confirmé.
+`tests/test_pyside_refcount.py` détecte la régression.
+
+Reproduction de l'audit pré-fusion (venv isolé, Linux x86-64, CPython 3.11.2,
+roues `manylinux` de PySide6-Essentials/shiboken6 6.12.0) :
+`test_pyside_refcount.py` échoue avec une dérive de **−2000** (exactement une
+référence perdue par appel, 500 × 4) puis l'interpréteur s'arrête
+(`Fatal Python error: none_dealloc`, code 134) ; une boucle `save()/restore()`
+de QPainter fait tomber le processus après ~5 100 appels (moins d'une
+seconde) alors que 6.11.2 encaisse 92 millions d'appels en 20 s sans dérive.
+
+Limites : toutes les reproductions (ici et publiques) sont sous **Linux** ;
+l'effet des roues **Windows** de 6.12.0 n'est pas prouvé (la CI Windows de
+`main`, non bornée, est restée verte après le 8 octobre, ce qui n'est pas
+concluant : le nombre d'appels avant épuisement dépend du compteur initial
+de `None`). La v1.8.2 publiée (construite le 2026-10-11, dépendance non
+épinglée) a très probablement embarqué 6.12.0 : vérification à faire sur
+Windows (version de `_internal\PySide6\Qt6Core.dll`), les fichiers de
+release n'étant pas téléchargeables depuis l'environnement de développement.
+La borne s'applique partout où elle doit l'être (CI Windows, `build_windows.ps1`
+pour l'exécutable et le launcher, `setup.bat`, `verify-release.yml`) ; le
+workflow de validation Gemini n'installe pas PySide6. NB : les 6.11.x
+exigent Python < 3.15 — sans effet aujourd'hui (onnxruntime n'a aucune roue
+3.15), à reprendre avant toute montée de version de Python.
