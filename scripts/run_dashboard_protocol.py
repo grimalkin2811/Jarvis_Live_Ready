@@ -43,9 +43,11 @@ UNIT_TESTS = [
     "tests/test_runtime_status.py",
     "tests/test_conversation_listeners.py",
     "tests/test_pyside_refcount.py",
+    "tests/test_suite_isolation.py",
 ]
 INTEGRATION_TESTS = [
     "tests/test_gemini_text_input.py",
+    "tests/test_gemini_text_voice_interplay.py",
     "tests/test_dashboard_widgets.py",
     "tests/test_dashboard_window.py",
     "tests/test_dashboard_conversation_widget.py",

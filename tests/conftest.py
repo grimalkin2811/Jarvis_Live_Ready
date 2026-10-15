@@ -36,3 +36,51 @@ os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
 # seule fois à l'import du module) : pytest charge ce ``conftest.py`` avant
 # de collecter/importer le moindre module de test.
 os.environ.setdefault("JARVIS_LIVE_SEED_COMMIT_TIMEOUT", "1.5")
+
+# ---------------------------------------------------------------------------
+# Données utilisateur RÉELLES : jamais touchées par la suite (audit PR #50)
+# ---------------------------------------------------------------------------
+# Constat (plugin d'audit, suite complète) : plusieurs tests créent l'orbe ou
+# le menu, qui lisent/écrivent les chemins PAR DÉFAUT de Jarvis — dossier
+# ``ui/`` (apparence, menu, système), ``memory.db``, ``schedule.db``,
+# ``routines.json`` — soit ``%LOCALAPPDATA%\Jarvis`` sous Windows. Lancer
+# ``pytest`` sur le PC de l'utilisateur écrasait ses réglages d'interface et,
+# depuis le schéma mémoire v2, MIGRAIT sa vraie base mémoire. Toute la session
+# pytest pointe donc vers un dossier temporaire, AVANT tout import de ``src``
+# (les chemins par défaut de ``src.memory``/``src.scheduler`` sont figés à
+# l'import). Un chemin réel fourni par l'environnement du développeur
+# (``JARVIS_*_DATABASE_PATH``, ``JARVIS_USER_CONTENT_DIR``) est ignoré
+# pendant les tests ; ceux qui ont besoin d'un dossier ``user_content`` le
+# posent eux-mêmes (``isolated_jarvis``, ``patch.dict``).
+import atexit  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+
+import pytest  # noqa: E402
+
+_TEST_DATA_ROOT = tempfile.mkdtemp(prefix="jarvis-tests-data-")
+_ISOLATED_DATA_ENV = {"JARVIS_DATA_DIR": _TEST_DATA_ROOT}
+os.environ.update(_ISOLATED_DATA_ENV)
+for _variable in (
+    "JARVIS_MEMORY_DATABASE_PATH",
+    "JARVIS_SCHEDULE_DATABASE_PATH",
+    "JARVIS_TODO_DATABASE_PATH",
+    "JARVIS_USER_CONTENT_DIR",
+):
+    os.environ.pop(_variable, None)
+atexit.register(shutil.rmtree, _TEST_DATA_ROOT, True)
+
+
+@pytest.fixture(autouse=True)
+def _jarvis_data_stays_isolated():
+    """Rétablit l'isolation si un test précédent a RETIRÉ la variable.
+
+    Certains tests historiques font ``os.environ.pop("JARVIS_DATA_DIR")`` en
+    nettoyage au lieu de restaurer la valeur précédente : sans ce filet, tous
+    les tests suivants retomberaient sur le dossier réel. Une valeur posée par
+    le test lui-même (son propre dossier temporaire) est respectée.
+    """
+    for key, value in _ISOLATED_DATA_ENV.items():
+        if not os.environ.get(key, "").strip():
+            os.environ[key] = value
+    yield
