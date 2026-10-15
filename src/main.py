@@ -129,6 +129,10 @@ def _run_smoke_test() -> int:
         # signifierait un Desktop Mode muet.
         ("UI.desktop.state", "desktop.state"),
         ("UI.desktop.config", "desktop.config"),
+        # Dashboard (1.9) — modules sans Qt : préférences, grille, état runtime.
+        ("src.runtime_status", "runtime_status"),
+        ("UI.dashboard.config", "dashboard.config"),
+        ("UI.dashboard.layout_model", "dashboard.layout_model"),
     ]
 
     for module_name, short in imports_to_test:
@@ -393,6 +397,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Affiche la version et quitte.",
     )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Ouvre aussi le Dashboard (avec --ui/--desktop, ou seul : interface "
+             "enregistrée + Dashboard).",
+    )
     return parser
 
 
@@ -409,6 +419,14 @@ def main(argv=None) -> int:
         return _run_smoke_test()
 
     # Journalisation : un exécutable distribué ne dépend pas d'une console.
+    open_dashboard = bool(getattr(args, "dashboard", False))
+    if open_dashboard and not (args.ui or args.desktop or getattr(args, "protocol", None)):
+        # « --dashboard » seul : l'interface enregistrée (orbe ou Desktop)
+        # démarre normalement, le Dashboard s'ouvre en plus.
+        if settings.get_interface_mode() == settings.DESKTOP_MODE:
+            args.desktop = True
+        else:
+            args.ui = True
     is_gui = args.ui or args.desktop
     try:
         logging_setup.setup_logging(console=not is_gui)
@@ -452,7 +470,7 @@ def main(argv=None) -> int:
             if cfg is None:
                 print("[Jarvis] Configuration annulée.")
                 return 1
-        return run_ui(mode)
+        return run_ui(mode, open_dashboard=open_dashboard)
 
     # Import local : asyncio n'est utile que pour le mode console, pas
     # pour --ui/--desktop (gain sur le chemin de démarrage de l'UI).
