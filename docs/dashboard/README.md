@@ -106,10 +106,12 @@ restent utilisables.
 
 ## Limites connues (honnêteté)
 
-* Validé **uniquement** sous Linux, en rendu hors écran (`QT_QPA_PLATFORM=offscreen`),
-  avec des bibliothèques graphiques factices : aucune validation Windows réelle
-  (bulles natives, plein écran multi-écrans, DPI, polices Segoe UI) dans ce
-  travail.
+* Développé et validé localement sous Linux, en rendu hors écran
+  (`QT_QPA_PLATFORM=offscreen`), avec des bibliothèques graphiques factices.
+  La suite complète (tests du Dashboard compris) passe aussi sur le runner
+  Windows de la CI GitHub (`windows-latest`, hors écran, PR #50). **Aucune
+  validation manuelle sur un PC Windows réel** (bulles natives, plein écran
+  multi-écrans, DPI, polices Segoe UI, audio) dans ce travail.
 * La conversation écrite a été testée contre le faux serveur Live du dépôt
   (`tests/live_harness.py`), **pas** contre la vraie API Gemini Live ni avec
   un vrai micro / haut-parleur.

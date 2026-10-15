@@ -148,6 +148,15 @@ unitaires 88 réussis, intégration 64 réussis (+ 3 sous-tests), performance
 3 réussis + mesures (§3, exéc. 3), 24 captures, ruff et compileall sans
 erreur.
 
+CI GitHub sur la PR brouillon #50 (commit `f915b24`) :
+
+| Tâche | Résultat |
+|---|---|
+| `Tests (Windows)` — `windows-latest`, Python 3.11, `pytest -q` (suite complète) + diagnostics unittest | **réussi** (12 min 48 s ; décomptes non lisibles depuis l'environnement de développement, journaux inaccessibles) |
+| `Lint` — `ruff check` (ubuntu) | **réussi** |
+| `Validation reelle (audio, reconnexions, outils)` | tâche « réussie » mais verdict **NON TESTABLE** : « aucune clé API disponible dans cet environnement » (secret `GEMINI_API_KEY` non fourni au workflow) — **aucune validation Gemini réelle** |
+| `Build & Release` | ignoré (ne s'exécute que sur un tag `v*`) — aucun build ni publication |
+
 Les 20 avertissements sont des `DeprecationWarning` préexistants
 (`QMouseEvent` dans `test_desktop_appearance_dialog.py` et
 `test_protocol_ui.py`), identiques avant/après.
@@ -156,7 +165,8 @@ Les 20 avertissements sont des `DeprecationWarning` préexistants
 
 À dérouler sur un PC Windows 10/11 réel, avec micro, haut-parleurs et une
 clé Gemini valide. Rien de ce qui suit n'a pu être vérifié dans
-l'environnement Linux de développement.
+l'environnement Linux de développement (la CI Windows n'exécute que les
+tests automatisés, hors écran, sans audio ni session Gemini).
 
 1. `python run_jarvis.py --dashboard` : l'orbe/Desktop **et** le Dashboard
    s'ouvrent ; la voix fonctionne.
