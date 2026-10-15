@@ -2134,11 +2134,33 @@ def _wait_dashboard_visible(expected: bool, timeout: float = 1.5) -> bool:
     return bool(dashboard_bridge.DASHBOARD.state().get("visible")) == expected
 
 
+def _wait_dashboard_request(request_id: int, timeout: float = 1.5) -> dict | None:
+    """Attend que l'interface ait TRAITÉ cette demande d'ouverture (thread Qt).
+
+    Une interface qui suit les demandes (``handled_request``) confirme SA
+    demande, avec la page réellement affichée ; à défaut (consommateur sans
+    suivi), seule la visibilité rapportée fait foi, comme auparavant.
+    """
+    import time as _time
+
+    from UI import dashboard_bridge
+
+    deadline = _time.monotonic() + timeout
+    while True:
+        state = dashboard_bridge.DASHBOARD.state()
+        if state.get("visible") and state.get("handled_request", request_id) == request_id:
+            return state
+        if _time.monotonic() >= deadline:
+            return None
+        _time.sleep(0.05)
+
+
 def open_dashboard(page=None):
     """Ouvre le Dashboard (troisième interface), éventuellement sur une page.
 
     Le Dashboard coexiste avec l'orbe et le Desktop : l'ouvrir ne change pas
     de mode et n'interrompt ni la voix, ni la conversation, ni les tâches.
+    La page annoncée est celle que l'interface a RÉELLEMENT affichée.
     """
     try:
         from UI import dashboard_bridge
@@ -2147,13 +2169,21 @@ def open_dashboard(page=None):
     requested = str(page).strip() if page is not None else ""
     resolved = dashboard_bridge.resolve_page(requested) if requested else None
     target = resolved or (requested or None)
-    if not dashboard_bridge.DASHBOARD.request_open(target):
+    request_id = dashboard_bridge.DASHBOARD.request_open_tracked(target)
+    if not request_id:
         return _err("Le Dashboard n'est pas disponible : l'interface graphique de Jarvis n'est pas lancée.")
-    if _wait_dashboard_visible(True):
-        return _ok(action="open_dashboard", page=target or "dernière page",
-                   message="Dashboard ouvert. La voix, la conversation et les tâches continuent.")
-    return _ok(action="open_dashboard", page=target or "dernière page", confirmed=False,
-               message="Ouverture du Dashboard demandée (affichage non encore confirmé par l'interface).")
+    state = _wait_dashboard_request(request_id)
+    if state is None:
+        return _ok(action="open_dashboard", page=target or "dernière page", confirmed=False,
+                   message="Ouverture du Dashboard demandée (affichage non encore confirmé par l'interface).")
+    shown = state.get("page") if state.get("handled_request") == request_id else None
+    if target and state.get("handled_request") == request_id and state.get("page_found") is False:
+        return _ok(action="open_dashboard", page=shown or "dernière page", requested_page=requested,
+                   page_found=False,
+                   message=f"Dashboard ouvert, mais la page « {requested} » est introuvable : "
+                           f"page affichée « {shown or 'dernière page'} ».")
+    return _ok(action="open_dashboard", page=shown or target or "dernière page",
+               message="Dashboard ouvert. La voix, la conversation et les tâches continuent.")
 
 
 def close_dashboard():

@@ -54,7 +54,8 @@ def test_open_dashboard_tool_waits_for_real_confirmation():
     try:
         opened = tools.open_dashboard("tâches")
         assert opened["success"] and opened.get("confirmed", True) is True
-        assert commands[0] == ("open", {"page": "taches"})
+        assert commands[0][0] == "open" and commands[0][1]["page"] == "taches"
+        assert commands[0][1]["request_id"] >= 1, "demande identifiée (suivi par l'interface)"
         closed = tools.close_dashboard()
         assert closed["success"] and closed.get("confirmed", True) is True
     finally:

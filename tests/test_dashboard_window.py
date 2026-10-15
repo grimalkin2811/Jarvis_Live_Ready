@@ -385,3 +385,148 @@ def test_quick_action_interface_switch_goes_through_controller(app, make_control
     assert result.success and interface.mode == "desktop"
     missing_folder = actions["folder.results"].availability()
     assert missing_folder[0] is False and "pas encore" in missing_folder[1]
+
+
+def _conversation_widget(window):
+    from UI.dashboard.widgets.conversation_widget import ConversationWidget
+
+    for canvas in window.all_canvases():
+        for frame in canvas.frames.values():
+            if isinstance(frame.widget, ConversationWidget):
+                return frame.widget
+    return None
+
+
+def test_closing_the_window_mid_send_keeps_the_turn_and_shows_it_on_reopen(app, make_controller, caplog):
+    """Audit pré-fusion : fermeture (mode interactif, fenêtre LIBÉRÉE) pendant un envoi."""
+    import logging
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    from src.conversation import get_default_conversation_context
+    from src.runtime_status import RUNTIME, EngineState
+    from tests.dashboard_support import FakeTextEngine
+
+    controller = make_controller()
+    config = controller.store.config
+    config.close.mode = "interactive"
+    config.close.interactive.update(release_window=True)
+    context = get_default_conversation_context()
+    context.start_new_conversation("test fermeture pendant envoi")
+    engine = FakeTextEngine(context, mode="hold")
+    RUNTIME.reset()
+    RUNTIME.set_engine_state(EngineState.READY)
+    RUNTIME.register_text_handler(engine)
+    try:
+        controller.open("accueil")
+        conversation = _conversation_widget(controller.window)
+        assert conversation is not None, "la page Accueil affiche la conversation"
+        assert wait_until(app, conversation.send_button.isEnabled, 2)
+        conversation.input.setPlainText("Écrit puis fenêtre fermée")
+        conversation.send()
+        assert conversation._pending
+        controller.window.closeEvent(QCloseEvent())
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        pump(app, 0.05)
+        assert controller.window is None, "fenêtre et widgets réellement détruits"
+        assert make_controller.quits == [], "Jarvis continue"
+
+        caplog.set_level(logging.ERROR)
+
+        def engine_loop_thread():
+            context.add_user_message("Écrit puis fenêtre fermée")
+            engine.release(ok=True)
+            context.add_assistant_message("Réponse reçue fenêtre fermée.")
+
+        worker = threading.Thread(target=engine_loop_thread)
+        worker.start()
+        worker.join()
+        pump(app, 0.2)
+        errors = [f"{r.name}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.ERROR]
+        assert errors == [], errors
+
+        controller.open("accueil")
+        conversation = _conversation_widget(controller.window)
+        assert wait_until(app, lambda: "Réponse reçue fenêtre fermée." in conversation.view.toPlainText(), 3)
+        assert not conversation._pending and conversation.send_button.isEnabled()
+    finally:
+        RUNTIME.reset()
+
+
+def test_released_window_no_longer_reacts_to_engine_changes(app, make_controller, monkeypatch):
+    """Audit pré-fusion : aucune connexion du hub (durable) vers une fenêtre libérée.
+
+    Avant correctif, une lambda connectée à ``hub.engine_changed`` survivait à
+    la fenêtre : chaque changement d'état du moteur (reconnexion…) levait
+    « Internal C++ object (StatusPill) already deleted » et retenait l'objet.
+    """
+    import sys
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    from src.runtime_status import RUNTIME, EngineState
+
+    raised = []
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: raised.append(exc[1]))
+    controller = make_controller()
+    controller.store.config.close.mode = "interactive"
+    controller.store.config.close.interactive.update(release_window=True)
+    RUNTIME.reset()
+    try:
+        for _cycle in range(2):
+            controller.open()
+            controller.window.closeEvent(QCloseEvent())
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            pump(app, 0.05)
+            assert controller.window is None
+        RUNTIME.set_engine_state(EngineState.RECONNECTING, "test")
+        RUNTIME.set_engine_state(EngineState.READY)
+        pump(app, 0.1)
+        assert raised == [], [repr(e) for e in raised]
+    finally:
+        RUNTIME.reset()
+        pump(app, 0.05)
+
+
+def test_voice_open_dashboard_reports_the_page_really_shown(app, make_controller):
+    """Audit pré-fusion : l'outil vocal n'annonce jamais une page qui n'est pas affichée.
+
+    Avant correctif : ``open_dashboard("page-inexistante")`` répondait
+    ``page="page-inexistante"`` (« Dashboard ouvert ») alors que la fenêtre
+    restait sur la page précédente ; et, Dashboard déjà visible, la
+    confirmation pouvait précéder le traitement réel de la demande.
+    """
+    from src import tools
+    from UI.dashboard_bridge import DASHBOARD
+
+    controller = make_controller(attach_bridge=True)
+    results = {}
+
+    def voice_tool(key, *args):
+        worker = threading.Thread(target=lambda: results.__setitem__(key, tools.open_dashboard(*args)))
+        worker.start()
+        assert wait_until(app, lambda: not worker.is_alive(), 5)
+        return results[key]
+
+    try:
+        first = voice_tool("memoire", "mémoire")
+        assert first["success"] and first.get("confirmed", True) is True
+        assert first["page"] == "memoire" and controller.window.current_page() == "memoire"
+
+        unknown = voice_tool("inconnue", "page-qui-n-existe-pas")
+        assert unknown["success"] and unknown["page_found"] is False
+        assert unknown["page"] == "memoire" == controller.window.current_page()
+        assert "introuvable" in unknown["message"]
+
+        # Dashboard DÉJÀ visible : la réponse attend le traitement de CETTE demande.
+        switched = voice_tool("taches", "tâches")
+        assert switched["page"] == "taches" == controller.window.current_page()
+        assert "page_found" not in switched
+
+        closer = threading.Thread(target=lambda: results.__setitem__("close", tools.close_dashboard()))
+        closer.start()
+        assert wait_until(app, lambda: not closer.is_alive(), 5)
+        assert results["close"]["success"] and not controller.window.isVisible()
+        assert make_controller.quits == [], "fermer par la voix ne quitte jamais Jarvis"
+    finally:
+        DASHBOARD.set_handler(None)

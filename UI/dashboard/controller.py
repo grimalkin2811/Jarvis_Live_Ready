@@ -202,7 +202,7 @@ class DashboardController(QObject):
     @Slot(str, object)
     def _on_bridge_command(self, command: str, payload: dict) -> None:
         if command == "open":
-            self.open((payload or {}).get("page"))
+            self.open((payload or {}).get("page"), request_id=(payload or {}).get("request_id"))
         elif command == "close":
             self.hide_window()
         elif command == "toggle":
@@ -223,9 +223,10 @@ class DashboardController(QObject):
     def is_open(self) -> bool:
         return self.window is not None and self.window.isVisible()
 
-    def open(self, page: str | None = None) -> bool:
+    def open(self, page: str | None = None, *, request_id: int | None = None) -> bool:
         window = self.ensure_window()
         self._restore_closed_reductions()
+        page_found = None
         if page:
             from UI.dashboard_bridge import resolve_page
 
@@ -235,14 +236,14 @@ class DashboardController(QObject):
                     if candidate.title.lower() == str(page).strip().lower():
                         target = candidate.id
                         break
-            window.open_page(target, animate=False)
+            page_found = bool(window.open_page(target, animate=False))
         if not window.isVisible():
             window.show_restored()
         else:
             window.raise_()
             window.activateWindow()
         self.open_count += 1
-        self._report_visibility(True)
+        self._report_visibility(True, request_id=request_id, page_found=page_found)
         return True
 
     def hide_window(self) -> None:
@@ -257,11 +258,17 @@ class DashboardController(QObject):
         else:
             self.open()
 
-    def _report_visibility(self, visible: bool) -> None:
+    def _report_visibility(self, visible: bool, *, request_id: int | None = None,
+                           page_found: bool | None = None) -> None:
         try:
             from UI.dashboard_bridge import DASHBOARD
 
-            DASHBOARD.report_state(visible=visible, page=self.window.current_page() if self.window else None)
+            state = {"visible": visible, "page": self.window.current_page() if self.window else None}
+            if request_id is not None:
+                # Même mise à jour que la visibilité : l'outil vocal ne peut
+                # jamais lire « visible » sans le résultat de SA demande.
+                state.update(handled_request=request_id, page_found=page_found)
+            DASHBOARD.report_state(**state)
         except Exception:
             pass
         self.visibility_changed.emit(visible)

@@ -11,6 +11,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+import src.gemini_live  # noqa: E402,F401 - préchargé : le moteur factice l'importe au 1er envoi (≈0,7 s), ce
+# coût d'import de test ne doit pas être compté dans la mesure « send() ne bloque pas » (fichier lancé seul).
 from src.runtime_status import RUNTIME, EngineState  # noqa: E402
 from tests.dashboard_support import FakeTextEngine, isolated_jarvis, wait_until  # noqa: E402
 from UI.dashboard.config import ConfigStore  # noqa: E402
@@ -143,3 +145,63 @@ def test_failed_turn_is_flagged_and_html_is_escaped(setup):
     assert wait_until(setup["app"], lambda: "sans réponse" in widget.view.toPlainText(), 2)
     assert "<script>" in widget.view.toPlainText()  # affiché comme texte, jamais interprété
     assert "<script>" not in widget.view.toHtml()
+
+
+def test_confirmation_after_widget_destruction_is_dropped_without_error(setup, caplog):
+    """Audit pré-fusion : Dashboard fermé (widget détruit) pendant l'envoi.
+
+    La confirmation du moteur arrive sur le thread de la boucle vocale APRÈS la
+    destruction du widget : aucune erreur ne doit être levée dans ce thread (ni
+    journalisée), et le tour continue — la source de vérité reste le contexte
+    partagé, qu'un nouveau widget affiche à la réouverture.
+    """
+    import logging
+    import threading
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    from tests.dashboard_support import pump
+
+    app, hub, context = setup["app"], setup["hub"], setup["context"]
+    engine = FakeTextEngine(context, mode="hold")
+    _ready(engine)
+
+    def make_widget(instance_id):
+        widget = ConversationWidget(WidgetContext(hub=hub, theme_manager=ThemeManager(hub.store),
+                                                  instance_id=instance_id, toast=lambda *a: None,
+                                                  confirm=lambda *a: True))
+        widget.resize(600, 500)
+        widget.show()
+        widget.activate()
+        return widget
+
+    closing = make_widget("fermé-pendant-envoi")
+    assert wait_until(app, closing.send_button.isEnabled, 2)
+    closing.input.setPlainText("Question posée juste avant de fermer")
+    closing.send()
+    assert closing._pending and engine.calls == ["Question posée juste avant de fermer"]
+    closing.dispose()
+    closing.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    caplog.set_level(logging.ERROR)
+
+    def engine_loop_thread():
+        context.add_user_message("Question posée juste avant de fermer")
+        engine.release(ok=True)  # confirmation livrée sur un AUTRE thread que Qt
+        context.add_assistant_message("Réponse arrivée après la fermeture.")
+
+    worker = threading.Thread(target=engine_loop_thread)
+    worker.start()
+    worker.join()
+    pump(app, 0.2)
+    errors = [f"{r.name}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.ERROR]
+    assert errors == [], errors
+
+    reopened = make_widget("réouvert")
+    try:
+        assert wait_until(app, lambda: "Réponse arrivée après la fermeture." in reopened.view.toPlainText(), 3)
+        assert "Question posée juste avant de fermer" in reopened.view.toPlainText()
+        assert not reopened._pending and reopened.send_button.isEnabled()
+    finally:
+        reopened.dispose()

@@ -15,6 +15,7 @@ expose le dernier état d'affichage RAPPORTÉ par l'interface (pour que l'outil
 
 from __future__ import annotations
 
+import itertools
 import threading
 from collections.abc import Callable
 from typing import Any
@@ -67,11 +68,16 @@ class DashboardBridge:
         self._lock = threading.RLock()
         self._handler: Handler | None = None
         self._state: dict[str, Any] = {"attached": False, "visible": False, "page": None}
+        self._request_ids = itertools.count(1)
 
     def set_handler(self, handler: Handler | None) -> None:
         with self._lock:
             self._handler = handler
             self._state["attached"] = handler is not None
+            # Suivi des demandes propre à CHAQUE consommateur (voir
+            # ``request_open_tracked``) : jamais hérité d'un consommateur précédent.
+            self._state.pop("handled_request", None)
+            self._state.pop("page_found", None)
             if handler is None:
                 self._state["visible"] = False
 
@@ -93,6 +99,19 @@ class DashboardBridge:
     def request_open(self, page: str | None = None) -> bool:
         """Demande l'ouverture (et éventuellement une page). False si non attaché."""
         return self._send("open", {"page": page})
+
+    def request_open_tracked(self, page: str | None = None) -> int:
+        """Comme ``request_open``, avec un identifiant de demande (0 si non attaché).
+
+        Une interface qui suit les demandes rapporte, d'un seul tenant,
+        ``handled_request`` (cet identifiant), ``visible``, ``page`` (page
+        RÉELLEMENT affichée) et ``page_found`` : l'appelant (outil vocal) sait
+        alors exactement ce qui a été fait pour SA demande — jamais un état
+        périmé laissé par une demande précédente.
+        """
+        with self._lock:
+            request_id = next(self._request_ids)
+        return request_id if self._send("open", {"page": page, "request_id": request_id}) else 0
 
     def request_close(self) -> bool:
         return self._send("close", {})

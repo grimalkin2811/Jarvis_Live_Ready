@@ -21,6 +21,7 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, Qt, Signal, Sl
 
 class JobRunner(QObject):
     _finished = Signal(int, bool, object)
+    _future_done = Signal(int, object)
 
     def __init__(self, max_workers: int = 3, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -29,11 +30,13 @@ class JobRunner(QObject):
         )
         self._ids = itertools.count(1)
         self._callbacks: dict[int, tuple[Callable[[Any], None] | None, Callable[[BaseException], None] | None, Any]] = {}
+        self._watched: dict[int, tuple[Callable[[Any], None], Any]] = {}
         self._lock = threading.Lock()
         self._closed = False
         self.completed = 0
         self.failed = 0
         self._finished.connect(self._deliver, Qt.QueuedConnection)
+        self._future_done.connect(self._deliver_future, Qt.QueuedConnection)
 
     def submit(
         self,
@@ -71,6 +74,59 @@ class JobRunner(QObject):
                 self._callbacks.pop(job_id, None)
             return 0
         return job_id
+
+    def watch_future(
+        self,
+        future: concurrent.futures.Future,
+        *,
+        on_done: Callable[[concurrent.futures.Future], None],
+        owner: QObject | None = None,
+    ) -> int:
+        """Livre dans le thread Qt un ``Future`` résolu sur N'IMPORTE QUEL thread.
+
+        Cas d'usage : la confirmation d'envoi d'un message texte, résolue sur
+        la boucle asyncio du moteur vocal. Le signal est émis par ce
+        ``JobRunner`` (qui vit avec le hub, donc tant que Jarvis tourne) et
+        JAMAIS par le widget demandeur, qui peut avoir été détruit entre-temps
+        (Dashboard fermé, fenêtre libérée, widget retiré) : ``on_done`` est
+        alors simplement ignoré, sans erreur dans le thread du moteur.
+        Les futurs surveillés ne comptent pas dans ``pending()``.
+        """
+        watch_id = next(self._ids)
+        owner_ref = weakref.ref(owner) if owner is not None else None
+        with self._lock:
+            if self._closed:
+                return 0
+            self._watched[watch_id] = (on_done, owner_ref)
+
+        def _relay(done: concurrent.futures.Future) -> None:
+            try:
+                self._future_done.emit(watch_id, done)
+            except RuntimeError:  # pragma: no cover - runner détruit à l'arrêt de Jarvis
+                pass
+
+        future.add_done_callback(_relay)
+        return watch_id
+
+    @Slot(int, object)
+    def _deliver_future(self, watch_id: int, future: Any) -> None:
+        with self._lock:
+            entry = self._watched.pop(watch_id, None)
+        if entry is None:
+            return
+        on_done, owner_ref = entry
+        if owner_ref is not None:
+            owner = owner_ref()
+            if owner is None:
+                return
+            try:
+                from shiboken6 import isValid
+
+                if not isValid(owner):
+                    return
+            except Exception:
+                pass
+        on_done(future)
 
     def pending(self) -> int:
         with self._lock:
@@ -119,4 +175,5 @@ class JobRunner(QObject):
         with self._lock:
             self._closed = True
             self._callbacks.clear()
+            self._watched.clear()
         self._executor.shutdown(wait=False, cancel_futures=True)

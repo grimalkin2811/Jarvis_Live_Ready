@@ -3,7 +3,10 @@
 * Historique : lu dans le ``ConversationContext`` partagé (source unique —
   aucune copie locale), rafraîchi par ses écouteurs de changement.
 * Envoi : ``RUNTIME.submit_text`` → ``GeminiLive.submit_text`` sur la boucle
-  du moteur. Le thread graphique ne bloque jamais (``Future`` + signal Qt).
+  du moteur. Le thread graphique ne bloque jamais : la confirmation (``Future``
+  résolu sur la boucle du moteur) revient par le relais durable du hub
+  (``JobRunner.watch_future``), jamais par un signal de ce widget — qui peut
+  être détruit avant la confirmation (Dashboard fermé, fenêtre libérée).
 * Concurrence explicite : un seul envoi en vol ; un refus « occupé » du
   moteur conserve le texte saisi et explique pourquoi.
 * Hors ligne : envoi désactivé avec la raison réelle (état du moteur) ;
@@ -41,7 +44,6 @@ class _Input(QPlainTextEdit):
 
 class ConversationWidget(DashboardWidget):
     overlay_states = ()
-    _send_result = Signal(object)
 
     def __init__(self, context, settings=None) -> None:
         super().__init__(context, settings)
@@ -84,7 +86,6 @@ class ConversationWidget(DashboardWidget):
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(60)
         self._render_timer.timeout.connect(self.render)
-        self._send_result.connect(self._on_send_result, Qt.QueuedConnection)
         self._update_availability()
 
     # -- cycle de vie --------------------------------------------------------------------
@@ -179,7 +180,10 @@ class ConversationWidget(DashboardWidget):
         self.send_button.setEnabled(False)
         self.banner.hide()
         self._update_status()
-        future.add_done_callback(self._send_result.emit)
+        # Relais du hub (vit tant que Jarvis tourne) : si ce widget est détruit
+        # avant la confirmation, rien n'est émis vers lui depuis le thread du
+        # moteur et ``_on_send_result`` est simplement ignoré.
+        self.context.hub.jobs.watch_future(future, on_done=self._on_send_result, owner=self)
 
     @Slot(object)
     def _on_send_result(self, future) -> None:

@@ -263,7 +263,10 @@ class DashboardWindow(QMainWindow):
 
         self._install_shortcuts()
         self.theme_manager.changed.connect(self._on_theme)
-        self.hub.engine_changed.connect(lambda _s: self._update_status())
+        # Méthode liée (et non lambda) : le hub survit à la fenêtre (mode de
+        # fermeture interactif, fenêtre libérée) ; PySide6 ne déconnecte
+        # automatiquement que les slots dont le récepteur est un QObject.
+        self.hub.engine_changed.connect(self._on_engine_changed)
         self.hub.presence_changed.connect(self._on_presence)
         self.hub.level_changed.connect(self._on_level)
         self.hub.notifications_changed.connect(self._update_bell)
@@ -406,6 +409,9 @@ class DashboardWindow(QMainWindow):
         self._apply_stylesheet()
         for canvas in self.all_canvases():
             canvas.apply_theme()
+        self._update_status()
+
+    def _on_engine_changed(self, _snapshot) -> None:
         self._update_status()
 
     def _update_status(self) -> None:
