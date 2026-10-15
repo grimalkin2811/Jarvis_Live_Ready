@@ -401,6 +401,8 @@ class FakeLiveSession:
         self.initial_phase = True  # aucun realtime_input depuis le setup
         self.protocol_warnings: list[str] = []
         self.last_handle: str | None = None
+        #: Vrai si la session a été reprise par handle (aucun rejeu de contexte).
+        self.resumed = False
         # Utterances programmées par le test : liste [(texte, chunks_restants)]
         self._utterances: list[tuple[str, int]] = []
         self._active: tuple[str, int] | None = None
@@ -509,6 +511,7 @@ class FakeLiveSession:
         # turnComplete=true : le contenu devient historique committé.
         committed_now = self.pending
         self.pending = []
+        was_initial_phase = self.initial_phase
         self.initial_phase = False
         self.committed.extend(committed_now)
 
@@ -522,7 +525,11 @@ class FakeLiveSession:
             # une inférence (le « récapitulatif » observé par pipecat).
             trigger = bool(committed_now) and committed_now[-1].get("role") != "model"
         if trigger:
-            await self._generate(recap=True)
+            # Message TEXTE envoyé hors rejeu de contexte (entrée écrite du
+            # Dashboard) : sur option, l'oracle y répond comme à un tour vocal.
+            # Désactivé par défaut : comportement historique (récapitulatif).
+            answer_text_turn = self.server.text_turns_use_oracle and (not was_initial_phase or self.resumed)
+            await self._generate(recap=not answer_text_turn)
 
     async def send_realtime_input(
         self,
@@ -744,6 +751,9 @@ class _FakeLive:
         self.server.generation += 1
         session = FakeLiveSession(self.server, uuid.uuid4().hex[:8], self.server.generation)
         session.committed = [dict(c) for c in restored]
+        # Session reprise par handle : le serveur a restauré l'historique,
+        # Jarvis ne rejoue donc AUCUN contexte (pas de seed à venir).
+        session.resumed = bool(handle)
         self.server.sessions.append(session)
         return _FakeCtx(session)
 
@@ -812,6 +822,11 @@ class FakeLiveServer:
         #: génération consommée ; 0 par défaut (aucun effet sur les tests
         #: existants).
         self.empty_generations_remaining = 0
+        #: Sémantique 2.x : un ``clientContent`` texte clos (hors rejeu de
+        #: contexte) reçoit une VRAIE réponse de l'oracle au lieu du
+        #: récapitulatif — modélise l'entrée écrite du Dashboard. Faux par
+        #: défaut (aucun effet sur les tests existants).
+        self.text_turns_use_oracle = False
         self._live: list[FakeLiveSession] = []
 
     def _register(self, session: FakeLiveSession) -> None:

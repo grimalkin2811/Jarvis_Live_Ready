@@ -1439,11 +1439,24 @@ class GeminiLive:
         self._record_trace("TEXT_INPUT_SENT", chars=len(cleaned))
         self._notify(self.on_user_transcript, cleaned, True)
         self._commit_user_text()
+        # Époque du tour CAPTURÉE AVANT l'envoi (audit pré-fusion) : pendant
+        # l'``await`` ci-dessous, la boucle de réception peut déjà clore ce
+        # tour (``turn_epoch`` avance). Capturée après, l'époque serait celle
+        # du tour SUIVANT et ce filet rouvrirait trop tôt la porte micro d'un
+        # second message texte envoyé entre-temps.
+        epoch = self.turn_epoch
         try:
             await session.send_client_content(
                 turns=[{"role": "user", "parts": [{"text": cleaned}]}],
                 turn_complete=True,
             )
+        except asyncio.CancelledError:
+            # Envoi annulé (``Future`` annulé par l'appelant) : on ignore si le
+            # serveur a reçu le texte. Le tour est clos en échec AVANT de
+            # propager l'annulation : la porte micro ne reste jamais fermée
+            # sans filet (le watchdog n'est pas encore armé à ce stade).
+            self._abort_text_turn("envoi texte annulé")
+            raise
         except Exception as exc:
             log.warning("gen=%s : envoi du message texte impossible (%s)", self.session_generation, exc)
             self._abort_text_turn("envoi texte impossible")
@@ -1451,7 +1464,6 @@ class GeminiLive:
                 "send_failed", "Envoi impossible : la connexion au modèle a été interrompue."
             ) from exc
         try:
-            epoch = self.turn_epoch
             asyncio.get_running_loop().call_later(
                 TEXT_TURN_TIMEOUT_SECONDS, self._text_turn_watchdog, epoch
             )
