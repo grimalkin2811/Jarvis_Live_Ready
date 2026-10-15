@@ -1855,7 +1855,7 @@ def points_connus(x: Execution) -> None:
         x.probleme("important", "Intention du modèle face à une simple mention du « tableau de bord » non validée : "
                    "aucune garde locale, seule la description de l'outil guide Gemini",
                    "Couvert par E10 (Gemini réel) ; tant que E10 n'est pas RÉUSSI, le risque d'ouverture intempestive "
-                   "reste non mesuré.", emplacement(x, "src/tools.py", '"open_dashboard",'), "E10")
+                   "reste non mesuré.", emplacement(x, "src/tools.py", '"Ouvre le Dashboard (tableau de bord'), "E10")
     x.probleme("mineur", "Deux notifications pour une même panne audio (« Problème audio » et « Backend vocal "
                "indisponible »)", "Choix d'ergonomie relevé par l'audit, sans impact de stabilité.",
                emplacement(x, "UI/dashboard/hub.py", '"Backend vocal indisponible"'), "")
