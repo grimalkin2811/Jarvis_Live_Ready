@@ -58,6 +58,10 @@ jobs:
       - name: Profil de première ouverture (5 processus neufs, Qt natif)
         run: python scripts/dashboard_first_open_profile.py --natif --repetitions 5 --reouvertures 5 --json profil.json
 
+      - name: Sonde des polices de symboles (couverture, coût du repli)
+        continue-on-error: true
+        run: python scripts/dashboard_first_open_profile.py --natif --sonde-polices --json sonde_polices.json
+
       - name: Mesures du protocole sous Qt natif (dashboard_perf.py)
         continue-on-error: true
         env:
@@ -85,6 +89,9 @@ jobs:
               lines += [f"* {msg}", ""]
               for index, essai in enumerate(data.get("essais", []), 1):
                   print(f"::notice title=D01 processus {index}::{json.dumps(essai, ensure_ascii=False)[:900]}")
+          sonde = Path("sonde_polices.json")
+          if sonde.exists():
+              print(f"::notice title=Sonde polices::{sonde.read_text(encoding='utf-8')[:1800]}")
           perf = Path("perf_natif/perf.json")
           if perf.exists():
               data = json.loads(perf.read_text(encoding="utf-8"))

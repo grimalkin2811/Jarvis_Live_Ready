@@ -218,6 +218,50 @@ def cout_polices_a_froid(natif: bool) -> dict:
             "fichiers_charges_par_les_symboles": sorted(fichiers_mappes() - avant)[:30]}
 
 
+POLICES_SONDEES = ("Segoe UI", "Segoe UI Variable Text", "Segoe UI Symbol", "Segoe UI Emoji", "Consolas",
+                   "Cascadia Mono", "DejaVu Sans")
+
+
+def sonde_polices(natif: bool, mode: str) -> dict:
+    """Couverture des symboles par police (sans repli) ou coût d'un rendu, dans un processus neuf.
+
+    ``couverture`` : ``QRawFont.supportsCharacter`` — la police seule, aucune
+    recherche de repli ; ``rendu:<familles>`` : fichiers de police chargés et
+    durée du rendu des symboles avec cette chaîne de familles.
+    """
+    if natif and sys.platform == "win32":
+        os.environ["QT_QPA_PLATFORM"] = "windows"
+    else:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtGui import QFont, QFontDatabase, QRawFont
+    from PySide6.QtWidgets import QApplication, QLabel
+
+    app = QApplication.instance() or QApplication([])
+    installees = set(QFontDatabase.families())
+    if mode == "couverture":
+        resultat = {}
+        for famille in POLICES_SONDEES:
+            if famille not in installees:
+                resultat[famille] = "absente"
+                continue
+            brute = QRawFont.fromFont(QFont(famille))
+            manquants = "".join(ch for ch in SYMBOLES if not brute.supportsCharacter(ord(ch)))
+            resultat[famille] = f"manquants : {manquants}" if manquants else "tous"
+        return {"couverture": resultat}
+    familles = mode.split(":", 1)[1].split("|")
+    avant = fichiers_mappes()
+    font = QFont()
+    font.setFamilies(familles)
+    t = time.perf_counter()
+    label = QLabel(SYMBOLES)
+    label.setFont(font)
+    label.show()
+    app.processEvents()
+    return {"familles": familles, "rendu_ms": _ms(t, time.perf_counter()),
+            "polices_chargees": len(fichiers_mappes() - avant),
+            "exemples": sorted(fichiers_mappes() - avant)[:8]}
+
+
 def _enfant(args: list[str]) -> dict:
     proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), *args], capture_output=True,
                           text=True, encoding="utf-8", errors="replace", timeout=300, cwd=ROOT)
@@ -233,7 +277,9 @@ def main(argv=None) -> int:
     parser.add_argument("--repetitions", type=int, default=3, help="processus neufs (premières ouvertures)")
     parser.add_argument("--reouvertures", type=int, default=3)
     parser.add_argument("--json", default="", help="fichier de sortie")
-    parser.add_argument("--enfant", choices=("ouverture", "polices"), help=argparse.SUPPRESS)
+    parser.add_argument("--enfant", help=argparse.SUPPRESS)
+    parser.add_argument("--sonde-polices", action="store_true",
+                        help="couverture des symboles par police et coût du rendu selon la chaîne de familles")
     args = parser.parse_args(argv)
     if args.enfant == "ouverture":
         print(json.dumps(mesure_unique(args.natif, args.reouvertures), ensure_ascii=False))
@@ -241,7 +287,18 @@ def main(argv=None) -> int:
     if args.enfant == "polices":
         print(json.dumps(cout_polices_a_froid(args.natif), ensure_ascii=False))
         return 0
+    if args.enfant and args.enfant.startswith(("couverture", "rendu:")):
+        print(json.dumps(sonde_polices(args.natif, args.enfant), ensure_ascii=False))
+        return 0
     natif = ["--natif"] if args.natif else []
+    if args.sonde_polices:
+        sonde = {"couverture": _enfant(["--enfant", "couverture", *natif])}
+        for chaine in ("Segoe UI", "Segoe UI|Segoe UI Symbol", "Segoe UI Symbol"):
+            sonde[chaine] = _enfant(["--enfant", f"rendu:{chaine}", *natif])
+        print(json.dumps(sonde, ensure_ascii=False))
+        if args.json:
+            Path(args.json).write_text(json.dumps(sonde, ensure_ascii=False, indent=2), encoding="utf-8")
+        return 0
     essais = [_enfant(["--enfant", "ouverture", "--reouvertures", str(args.reouvertures), *natif])
               for _ in range(max(1, args.repetitions))]
     polices = [_enfant(["--enfant", "polices", *natif]) for _ in range(max(1, min(3, args.repetitions)))]
