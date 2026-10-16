@@ -327,6 +327,22 @@ class InterfaceModeController(QObject):
             self._overlay.close()
 
 
+def _manual_stop(audio, gemini) -> None:
+    """Interruption MANUELLE de la réponse en cours (menu radial, touche S,
+    bouton Stop du Dashboard).
+
+    La sortie est vidée tout de suite (``audio.stop_speaking`` -> barge-in
+    « manuelle »), puis la session est prévenue que l'arrêt est volontaire :
+    l'audio restant de ce tour ne doit pas reprendre à l'expiration de la
+    fenêtre d'interruption, prévue pour les fausses détections vocales
+    (correctif PR #50, cf. ``GeminiLive.request_interrupt``).
+    """
+    if audio is not None:
+        audio.stop_speaking()
+    if gemini is not None:
+        gemini.request_interrupt(manual=True)
+
+
 def _on_speaking(audio, presence_hook) -> None:
     """Jarvis commence à parler : on le marque comme 'speaking' dans AudioIO
     (pour suspendre le timeout) et on informe l'UI le cas échéant."""
@@ -406,9 +422,8 @@ def _run_voice_loop(
             gemini.request_interrupt()
 
     def stop_speaking() -> None:
-        """Interruption manuelle (bouton du menu radial / touche S)."""
-        if audio is not None:
-            audio.stop_speaking()
+        """Interruption manuelle (bouton du menu radial / touche S / Dashboard)."""
+        _manual_stop(audio, gemini)
 
     def desktop(event: str, **payload) -> None:
         """Publie un évènement Desktop (no-op si le mode n'est pas actif)."""

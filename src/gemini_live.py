@@ -422,32 +422,54 @@ class GeminiLive:
         # coupe son tour côté serveur.
         self.interrupt_requested = False
         self._interrupt_until = 0.0
+        #: Époque du tour arrêté MANUELLEMENT (cf. ``request_interrupt``).
+        self._manual_stop_epoch = None
         self._interrupt_was_active = False
 
     # ------------------------------------------------------------------
     # Interruption de la réponse en cours
     # ------------------------------------------------------------------
 
-    def request_interrupt(self) -> None:
+    def request_interrupt(self, manual: bool = False) -> None:
         """Demande l'arrêt de la réponse en cours (appelable depuis un
-        autre thread : n'écrit que des attributs simples)."""
+        autre thread : n'écrit que des attributs simples).
+
+        ``manual=True`` (bouton Stop du Dashboard, menu radial, touche S) :
+        correctif PR #50. Un clic est silencieux — le serveur n'entend rien
+        et poursuit sa génération — et aucune fausse détection n'est
+        possible. AVANT : passé la fenêtre de 4 s (prévue pour un barge-in
+        vocal mal détecté), la réponse stoppée REPRENAIT au milieu d'une
+        phrase et le micro se refermait (« jarvis parle »). Désormais l'audio
+        restant de CE tour est jeté jusqu'à sa fin côté serveur (fin de tour
+        ou interruption), le micro restant ouvert pour que l'utilisateur
+        puisse parler. Ancré sur ``turn_epoch`` : jamais au-delà du tour
+        stoppé ; sans effet si le serveur avait déjà tout envoyé.
+        """
         self._interrupt_until = time.monotonic() + INTERRUPT_WINDOW_SECONDS
         self.interrupt_requested = True
+        if manual and self.speaking:
+            self._manual_stop_epoch = self.turn_epoch
 
     def interrupt_active(self) -> bool:
         """Vrai tant que l'interruption locale est en cours (fenêtre)."""
         if not self.interrupt_requested:
             return False
+        manual_epoch = self._manual_stop_epoch
+        if manual_epoch is not None and manual_epoch == self.turn_epoch and self.speaking:
+            # Arrêt manuel : le tour stoppé n'est pas terminé côté serveur.
+            return True
         if time.monotonic() >= self._interrupt_until:
             # Gemini n'a pas confirmé : on reprend le cours normal plutôt
             # que de rester bloqué.
             self.interrupt_requested = False
+            self._manual_stop_epoch = None
             return False
         return True
 
     def _clear_interrupt(self) -> None:
         self.interrupt_requested = False
         self._interrupt_until = 0.0
+        self._manual_stop_epoch = None
 
     # ------------------------------------------------------------------
     # Évènements d'interface (v1.7.0)

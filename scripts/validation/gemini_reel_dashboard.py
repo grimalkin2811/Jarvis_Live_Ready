@@ -240,6 +240,7 @@ def pause(app, secondes: float) -> None:
 def construire_labo(api_key: str, model: str, client=None):
     from src.conversation import set_default_conversation_context
     from src.runtime_status import RUNTIME, EngineState
+    from src.ui import _manual_stop
     from tests.real_gemini_harness import RealVoiceLab
     from UI import menu_state
 
@@ -264,8 +265,8 @@ def construire_labo(api_key: str, model: str, client=None):
             gemini.on_interrupted = on_interrupted
             # Production : AudioIO(..., on_barge_in=on_barge_in) -> gemini.request_interrupt().
             self.audio.on_barge_in = gemini.request_interrupt
-            # Bouton Stop du Dashboard / menu radial -> audio.stop_speaking() (src/ui.py).
-            menu_state.LIVE.set_stop_speaking_handler(self.audio.stop_speaking)
+            # Bouton Stop du Dashboard / menu radial : gestionnaire de production (src/ui.py).
+            menu_state.LIVE.set_stop_speaking_handler(lambda: _manual_stop(self.audio, gemini))
             # Contexte PARTAGÉ (production : get_default_conversation_context()).
             set_default_conversation_context(self.conversation)
             RUNTIME.register_text_handler(gemini.submit_text_threadsafe)
