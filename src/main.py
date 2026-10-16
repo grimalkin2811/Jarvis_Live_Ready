@@ -54,6 +54,26 @@ def _load_menu_bridge() -> None:
         pass
 
 
+def _run_qt_versions() -> int:
+    """Versions PySide6 / shiboken6 / Qt CHARGÉES par cet exécutable (PR #50).
+
+    Contrôle strict « attendu contre chargé » d'un build : la CI compare cette
+    sortie à la version de ``Qt6Core.dll`` embarquée et à ``qt_versions.json``
+    produit avant PyInstaller. Aucun effet de bord : ni configuration, ni
+    données, ni fenêtre (``qVersion()`` ne demande pas d'application Qt).
+    Code 0 si les versions sont cohérentes et dans la plage testée, 1 sinon.
+    """
+    import json
+
+    from src import qt_versions
+
+    result = qt_versions.check()
+    result["python"] = sys.version.split()[0]
+    result["frozen"] = bool(getattr(sys, "frozen", False))
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
 def _run_smoke_test() -> int:
     """Test rapide pour CI : vérifie que l'exécutable démarre et que les
     dépendances critiques sont présentes.
@@ -397,6 +417,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Affiche la version et quitte.",
     )
+    group.add_argument(
+        "--qt-versions",
+        action="store_true",
+        help="Affiche (JSON) les versions PySide6/shiboken6/Qt réellement chargées par "
+             "cet exécutable et leur conformité à la plage testée, puis quitte.",
+    )
     parser.add_argument(
         "--dashboard",
         action="store_true",
@@ -417,6 +443,10 @@ def main(argv=None) -> int:
     # Smoke test pour CI
     if getattr(args, "smoke_test", False):
         return _run_smoke_test()
+
+    # Versions Qt réellement chargées (contrôle de build, PR #50)
+    if getattr(args, "qt_versions", False):
+        return _run_qt_versions()
 
     # Journalisation : un exécutable distribué ne dépend pas d'une console.
     open_dashboard = bool(getattr(args, "dashboard", False))

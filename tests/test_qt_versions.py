@@ -81,3 +81,17 @@ def test_dashboard_diagnostics_report_the_validation_line():
 
     info = diagnostics.versions()
     assert info["pyside6_validation"].startswith("conforme")
+
+
+def test_executable_reports_the_qt_versions_it_actually_loads():
+    """``--qt-versions`` : ce que l'exécutable CHARGE (la CI de build le compare à
+    ``Qt6Core.dll`` embarquée et à ``qt_versions.json``), sans aucun effet de bord."""
+    proc = subprocess.run([sys.executable, "-m", "src.main", "--qt-versions"], cwd=ROOT,
+                          capture_output=True, text=True, timeout=120)
+    line = next(l for l in reversed(proc.stdout.splitlines()) if l.startswith("{"))
+    data = json.loads(line)
+    assert proc.returncode == (0 if data["ok"] else 1)
+    assert data["spec"] == qt_versions.VALIDATED_PYSIDE6_SPEC
+    for key in ("pyside6", "shiboken6", "qt_runtime", "python", "frozen"):
+        assert key in data
+    assert data["frozen"] is False

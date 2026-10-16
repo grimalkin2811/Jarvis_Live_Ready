@@ -1,0 +1,147 @@
+name: Vérifications Windows natives (PR)
+
+# Contrôles qui exigent un VRAI Windows (PR #50, validation du 2026-10-16) :
+#
+# * D01 — première ouverture du Dashboard sous Qt NATIF (plateforme
+#   « windows », processus neufs), découpée en phases, puis réouvertures ;
+#   mesures du protocole (dashboard_perf.py) sous Qt natif ;
+# * B05 — build PyInstaller de validation (scripts/build_windows.ps1) :
+#   versions Qt ATTENDUES (contrainte de requirements.txt, qt_versions.json),
+#   EMBARQUÉES (Qt6Core.dll) et CHARGÉES (Jarvis.exe --qt-versions) comparées
+#   strictement, puis test de fumée de l'exécutable.
+#
+# Le workflow de release (build.yml) n'est pas modifié. Ici : aucune release,
+# aucun tag, aucun artefact publié, aucune donnée personnelle. Les runners
+# GitHub ne sont pas le PC de validation (Pentium G5400) : les chiffres de D01
+# sont un repère Windows natif, pas une validation du PC cible.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "UI/dashboard/**"
+      - "requirements.txt"
+      - "packaging/**"
+      - "scripts/build_windows.ps1"
+      - "scripts/check_qt_runtime.py"
+      - "scripts/dashboard_first_open_profile.py"
+      - "scripts/dashboard_perf.py"
+      - "src/qt_versions.py"
+      - "src/main.py"
+      - ".github/workflows/pr-windows-native.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  PYTHONUTF8: "1"
+
+jobs:
+  dashboard:
+    name: Dashboard — première ouverture (Qt natif)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Profil de première ouverture (5 processus neufs, Qt natif)
+        run: python scripts/dashboard_first_open_profile.py --natif --repetitions 5 --reouvertures 5 --json profil.json
+
+      - name: Mesures du protocole sous Qt natif (dashboard_perf.py)
+        continue-on-error: true
+        env:
+          QT_QPA_PLATFORM: windows
+        run: python scripts/dashboard_perf.py --out perf_natif
+
+      - name: Synthèse (annotations)
+        if: always()
+        shell: python
+        run: |
+          import json, os
+          from pathlib import Path
+
+          lines = ["## Dashboard sous Qt natif (runner GitHub, pas le PC cible)", ""]
+          profil = Path("profil.json")
+          if profil.exists():
+              data = json.loads(profil.read_text(encoding="utf-8"))
+              synth = data.get("synthese", {})
+              phases = synth.get("phases_medianes_ms", {})
+              polices = data.get("polices_a_froid", [{}])[0]
+              msg = (f"premiere ouverture mediane {synth.get('premiere_ouverture_mediane_ms')} ms "
+                     f"(max {synth.get('premiere_ouverture_max_ms')}, seuil 1500) ; reouverture mediane "
+                     f"{synth.get('reouverture_mediane_ms')} ms ; phases {phases} ; polices a froid {polices}")
+              print(f"::notice title=D01 Windows natif::{msg}")
+              lines += [f"* {msg}", ""]
+              for index, essai in enumerate(data.get("essais", []), 1):
+                  print(f"::notice title=D01 processus {index}::{json.dumps(essai, ensure_ascii=False)[:900]}")
+          perf = Path("perf_natif/perf.json")
+          if perf.exists():
+              data = json.loads(perf.read_text(encoding="utf-8"))
+              checks = {k: (v.get("value"), v.get("limit"), v.get("ok")) for k, v in data.get("checks", {}).items()}
+              ko = {k: v for k, v in checks.items() if not v[2]}
+              msg = (f"plateforme {data.get('qpa')} ; criteres en echec {ko or 'aucun'} ; "
+                     f"onepage premier affichage {data.get('onepage_build_ms')} ms")
+              print(f"::notice title=dashboard_perf Windows natif::{msg}")
+              print(f"::notice title=dashboard_perf criteres::{json.dumps(checks, ensure_ascii=False)[:900]}")
+              lines += [f"* dashboard_perf : {msg}"]
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lines) + "\n")
+
+  build:
+    name: Build de validation — versions Qt et test de fumée
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Construire (scripts/build_windows.ps1, rien n'est publié)
+        shell: pwsh
+        run: |
+          .\scripts\build_windows.ps1 -DistDir dist
+          if ($LASTEXITCODE -ne 0) { throw "Build Windows échoué" }
+
+      - name: Versions Qt attendues, embarquées et chargées
+        shell: pwsh
+        run: |
+          $expected = Get-Content "dist/qt_versions.json" -Raw | ConvertFrom-Json
+          $dll = Get-ChildItem -Path "dist/app/_internal" -Recurse -Filter "Qt6Core.dll" | Select-Object -First 1
+          if (-not $dll) { throw "Qt6Core.dll absent du build" }
+          $embedded = $dll.VersionInfo.FileVersion
+          $raw = & "dist/app/Jarvis.exe" --qt-versions
+          $code = $LASTEXITCODE
+          $loaded = ($raw | Where-Object { $_.Trim().StartsWith("{") } | Select-Object -Last 1) | ConvertFrom-Json
+          $msg = "attendu PySide6 $($expected.pyside6) (contrainte $($expected.spec)) ; Qt6Core.dll embarque $embedded ; charge par Jarvis.exe : PySide6 $($loaded.pyside6), shiboken6 $($loaded.shiboken6), Qt $($loaded.qt_runtime), conforme=$($loaded.ok)"
+          Write-Host "::notice title=B05 versions Qt du build::$msg"
+          if ($code -ne 0 -or -not $loaded.ok) { throw "Versions chargées non conformes : $msg" }
+          if (-not $embedded.StartsWith($expected.qt_runtime)) { throw "Qt6Core.dll ($embedded) différent de la version testée ($($expected.qt_runtime))" }
+          if ($loaded.qt_runtime -ne $expected.qt_runtime -or $loaded.pyside6 -ne $expected.pyside6) { throw "Versions chargées différentes des versions vérifiées avant PyInstaller : $msg" }
+          Write-Host "Versions Qt cohérentes : $msg" -ForegroundColor Green
+
+      - name: Test de fumée de l'exécutable
+        shell: pwsh
+        run: |
+          $exe = "dist/app/Jarvis.exe"
+          $process = Start-Process -FilePath $exe -ArgumentList "--smoke-test" -PassThru -NoNewWindow
+          if (-not $process.WaitForExit(30000)) {
+            try { $process.Kill() } catch { }
+            throw "Jarvis.exe --smoke-test n'a pas terminé en 30 s"
+          }
+          Write-Host "::notice title=Test de fumee::Jarvis.exe --smoke-test code $($process.ExitCode)"
+          if ($process.ExitCode -ne 0) { throw "Test de fumée en échec (code $($process.ExitCode))" }
