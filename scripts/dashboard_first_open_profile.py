@@ -474,7 +474,16 @@ def attribution_contenu(natif: bool) -> dict:
                 def compter() -> int:
                     return sum(1 for n in fichiers_mappes() if n.lower().endswith(POLICES_EXT))
 
-                dissection.extend(dissection_premier_cadre(self, placement, compter))
+                # Dissection de CHAQUE cadre de la page (doubles jetables, dans
+                # l'ordre de construction) : le cadre qui déclenche le repli des
+                # polices du système est ainsi nommé, quel qu'il soit.
+                for candidat in self.page.widgets:
+                    if candidat.hidden:
+                        continue
+                    trouves = dissection_premier_cadre(self, candidat, compter)
+                    if trouves:
+                        dissection.extend(trouves)
+                        break
                 avant = fichiers_mappes()
                 profil, longs = profileur_appels_natifs(compter=compter)
                 sys.setprofile(profil)
