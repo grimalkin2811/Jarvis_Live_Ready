@@ -213,6 +213,17 @@ def page_contenant(controller, type_id: str) -> str | None:
     return None
 
 
+def fichiers_polices() -> set[str]:
+    """Fichiers de police projetés en mémoire par ce processus (diagnostic D01)."""
+    try:
+        import psutil
+
+        return {Path(str(m.path)).name for m in psutil.Process().memory_maps(grouped=True)
+                if str(getattr(m, "path", "")).lower().endswith((".ttf", ".ttc", ".otf", ".fon"))}
+    except Exception:
+        return set()
+
+
 def rss_mo() -> float | None:
     try:
         import psutil
@@ -232,10 +243,17 @@ def d01(ctx: Contexte):
     from PySide6.QtGui import QGuiApplication
 
     controller = ctx.controller
+    polices_avant = fichiers_polices()
     start = time.perf_counter()
+    # Même évènement qu'avant (de la demande d'ouverture à la fenêtre affichée),
+    # découpé en deux parts pour le diagnostic : construction, puis affichage.
+    controller.ensure_window()
+    construit = time.perf_counter()
     controller.open()
     shown = attendre(ctx, lambda: controller.is_open(), 5.0)
     elapsed_ms = (time.perf_counter() - start) * 1000
+    construction_ms = (construit - start) * 1000
+    polices = sorted(fichiers_polices() - polices_avant)
     window = controller.window
     exposed = bool(window is not None and window.windowHandle() is not None and window.windowHandle().isExposed())
     # Contenu complet (indicatif, sans seuil) : depuis le correctif D01, la page
@@ -245,10 +263,16 @@ def d01(ctx: Contexte):
     pomper(ctx, 0.4)
     image = ctx.capture(window, "D01_ouverture") if window is not None else ""
     mesures = {"plateforme_qt": QGuiApplication.platformName(), "ouverture_ms": round(elapsed_ms, 1),
-               "contenu_ms": round(contenu_ms, 1), "exposee": exposed, "seuil_ms": SEUIL_OUVERTURE_MS}
+               "construction_ms": round(construction_ms, 1), "affichage_ms": round(elapsed_ms - construction_ms, 1),
+               "contenu_ms": round(contenu_ms, 1), "exposee": exposed, "seuil_ms": SEUIL_OUVERTURE_MS,
+               # Correctif D01 : une police de repli chargée ici signale un symbole sans
+               # famille désignée (balayage des polices du système, coûteux à froid).
+               "polices_chargees_a_l_ouverture": polices[:40]}
     ok = shown and exposed and elapsed_ms <= SEUIL_OUVERTURE_MS
-    texte = (f"fenêtre affichée en {elapsed_ms:.0f} ms (seuil {SEUIL_OUVERTURE_MS:.0f}), contenu complet en "
-             f"{contenu_ms:.0f} ms (indicatif), plateforme {mesures['plateforme_qt']}, exposée={exposed}")
+    texte = (f"fenêtre affichée en {elapsed_ms:.0f} ms (seuil {SEUIL_OUVERTURE_MS:.0f} ; construction "
+             f"{construction_ms:.0f} ms, affichage {elapsed_ms - construction_ms:.0f} ms), contenu complet en "
+             f"{contenu_ms:.0f} ms (indicatif), {len(polices)} police(s) chargée(s) pendant l'ouverture, "
+             f"plateforme {mesures['plateforme_qt']}, exposée={exposed}")
     return (REUSSI if ok else ECHEC), texte, image, mesures
 
 
