@@ -141,7 +141,8 @@ def mesure_unique(natif: bool, reouvertures: int) -> dict:
             setattr(classe, nom, fonction)
         resultat["etapes_constructeur_ms"] = etapes
         resultat["modules_importes_pendant_la_construction"] = sorted(set(sys.modules) - modules_avant)[:40]
-        resultat["fichiers_charges_pendant_la_construction"] = sorted(fichiers_mappes() - cartes_avant)[:60]
+        cartes_apres_construction = fichiers_mappes()
+        resultat["fichiers_charges_pendant_la_construction"] = sorted(cartes_apres_construction - cartes_avant)[:60]
         stamps: dict[str, float] = {}
         original = window._complete_initial_build
 
@@ -168,6 +169,9 @@ def mesure_unique(natif: bool, reouvertures: int) -> dict:
             premiere_peinture=_ms(t_show, t_paint),
             contenu=_ms(t_paint, t_content),
         )
+        polices_contenu = sorted(n for n in fichiers_mappes() - cartes_apres_construction
+                                 if n.lower().endswith((".ttf", ".ttc", ".otf", ".fon")))
+        resultat["polices_chargees_pendant_le_contenu"] = polices_contenu[:40]
         resultat["premiere_ouverture_ms"] = _ms(t0, t_paint)
         resultat["contenu_complet_ms"] = _ms(t0, t_content)
         resultat["depuis_lancement_processus_ms"] = _ms(_T_PROCESS, t_paint)
