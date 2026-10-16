@@ -215,3 +215,26 @@ def test_perf_script_ends_with_the_failed_criteria():
     results = {"checks": {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0, "ok": False},
                           "window_first_open_ms": {"value": 61.0, "limit": 1500.0, "ok": True}}}
     assert dashboard_perf.echecs(results) == ["event_loop_max_lag_ms=182.4 (seuil 150.0)"]
+
+
+def test_every_theme_names_its_symbol_fonts_explicitly():
+    """Correctif D01 (Windows natif : 3,5 s à froid dans ``rebuild_pages``, des dizaines
+    de polices chargées). Les symboles de la navigation et des cadres sont absents de
+    la police d'interface : chaque chaîne de polices du thème désigne explicitement les
+    polices de symboles, pour que Qt n'ait jamais à parcourir les polices du système."""
+    from UI.dashboard import theme as theme_module
+    from UI.dashboard.config import AppearancePrefs
+
+    for theme_id in theme_module.THEMES:
+        prefs = AppearancePrefs()
+        prefs.theme = theme_id
+        resolved = theme_module.resolve(prefs, reduced_motion=False)
+        for kind, families in (("ui", resolved.spec.font_ui), ("title", resolved.spec.font_title),
+                               ("mono", resolved.spec.font_mono)):
+            chain = resolved.font_family(kind)
+            # Les polices du thème restent en tête ; les symboles viennent après.
+            assert chain.startswith(f'"{families[0]}"'), (theme_id, kind, chain)
+            for family in theme_module.SYMBOL_FONT_FALLBACKS:
+                assert f'"{family}"' in chain, (theme_id, kind, chain)
+        css = theme_module.stylesheet(resolved)
+        assert '"Segoe UI Symbol"' in css.split("QWidget {", 1)[1].split("}", 1)[0]

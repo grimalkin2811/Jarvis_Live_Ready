@@ -108,6 +108,18 @@ DENSITY_METRICS = {
 #: « normal » : seul l'emblème (34 px) est animé. « poussé » : emblème plus
 #: fluide + fond animé à cadence réduite (le coût de repeinture du fond est
 #: borné par le cache des cadres de widgets, cf. frame.py).
+#: Polices de SYMBOLES nommées explicitement après celles du thème (correctif
+#: D01, validation Windows PR #50 : première ouverture 1 867 ms sur le PC de
+#: validation). La navigation, l'en-tête et les cadres affichent des symboles
+#: (⌂ ◈ ◎ ☑ ⚙ ✎ ▤ ▦ ● ◫ ⤢ ✉ ○ ⋯ ✕ ◌) absents de la police d'interface :
+#: faute de famille désignée, Qt parcourait sa liste de polices de REPLI du
+#: système en CHARGEANT chaque fichier jusqu'à trouver le glyphe — des
+#: dizaines de polices projetées en mémoire pendant la construction de la
+#: navigation, mesurées sur un Windows natif (3,5 s à froid, 0,55 s tiède,
+#: 34 ms chaud). Une famille absente du système est ignorée sans accès disque.
+SYMBOL_FONT_FALLBACKS = ("Segoe UI Symbol", "Segoe UI Emoji", "Apple Symbols", "Noto Sans Symbols 2",
+                         "DejaVu Sans")
+
 EMBLEM_FPS = {"leger": 0, "normal": 15, "pousse": 30}
 BACKGROUND_FPS = {"leger": 0, "normal": 0, "pousse": 8}
 TRANSITION_MS = {"leger": 0, "normal": 200, "pousse": 300}
@@ -187,7 +199,8 @@ class ResolvedTheme:
 
     def font_family(self, kind: str = "ui") -> str:
         families = {"ui": self.spec.font_ui, "title": self.spec.font_title, "mono": self.spec.font_mono}[kind]
-        return ", ".join(f'"{name}"' for name in families)
+        ordered = list(dict.fromkeys((*families, *SYMBOL_FONT_FALLBACKS)))
+        return ", ".join(f'"{name}"' for name in ordered)
 
     def title(self, text: str) -> str:
         return text.upper() if self.spec.title_upper else text
