@@ -344,6 +344,44 @@ def profileur_appels_natifs(seuil_ms: float = 5.0, compter=None):
     return profil, longs
 
 
+def cout_du_glyphe(natif: bool, caractere: str, mode: str) -> dict:
+    """Fichiers de police projetés par le rendu d'UN glyphe, seul, dans un processus neuf.
+
+    ``mode`` : ``texte`` (QLabel avec la règle de style ``glyph`` de production, comme
+    l'icône d'un cadre) ou ``icone`` (glyphe peint en image, ``glyphs.glyph_icon``).
+    Mesure la construction ET la première mise en page (``sizeHint``) : c'est là
+    que Qt construit sa liste de repli (mesure native : 136 fichiers pour l'icône
+    « ⚡ » de la tuile Actions rapides).
+    """
+    if natif and sys.platform == "win32":
+        os.environ["QT_QPA_PLATFORM"] = "windows"
+    else:
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    sys.path.insert(0, str(ROOT))
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication, QLabel, QWidget
+
+    app = QApplication.instance() or QApplication([])
+    from UI.dashboard.glyphs import glyph_icon
+    from UI.dashboard.theme import symbol_family
+
+    avant = fichiers_mappes()
+    if mode == "icone":
+        pixmap = glyph_icon(caractere, QColor("#d0d8e0"), 16).pixmap(16, 16)
+        taille = [pixmap.width(), pixmap.height()]
+    else:
+        hote = QWidget()
+        hote.setStyleSheet(f'*[glyph="true"] {{ font-family: "{symbol_family()}"; }}')
+        label = QLabel(caractere, hote)
+        label.setProperty("glyph", True)
+        label.ensurePolished()
+        taille = [label.sizeHint().width(), label.sizeHint().height()]
+    app.processEvents()
+    nouvelles = sorted(n for n in fichiers_mappes() - avant if n.lower().endswith(POLICES_EXT))
+    return {"glyphe": caractere, "mode": mode, "polices": len(nouvelles), "exemples": nouvelles[:3],
+            "taille": taille, "famille": symbol_family()}
+
+
 def _decrire(w) -> dict:
     from PySide6.QtWidgets import QAbstractButton, QLabel
 
@@ -704,6 +742,10 @@ def main(argv=None) -> int:
     if args.enfant == "polices":
         print(json.dumps(cout_polices_a_froid(args.natif), ensure_ascii=False))
         return 0
+    if args.enfant and args.enfant.startswith("glyphe:"):
+        mode, _, caractere = args.enfant[len("glyphe:"):].partition(":")
+        print(json.dumps(cout_du_glyphe(args.natif, caractere, mode or "texte"), ensure_ascii=False))
+        return 0
     if args.enfant == "attribution":
         print(json.dumps(attribution_contenu(args.natif), ensure_ascii=False))
         return 0
@@ -712,8 +754,18 @@ def main(argv=None) -> int:
         return 0
     natif = ["--natif"] if args.natif else []
     if args.sonde_polices:
+        inventaire = symboles_du_dashboard()
+        couts: dict[str, list[int]] = {}
+        for caractere in inventaire:
+            compte = []
+            for mode in ("texte", "icone"):
+                sortie = _enfant(["--enfant", f"glyphe:{mode}:{caractere}", *natif])
+                compte.append(sortie.get("polices"))
+            couts[caractere] = compte
         sonde = {"couverture": _enfant(["--enfant", "couverture", *natif]),
-                 "attribution": _enfant(["--enfant", "attribution", *natif])}
+                 "attribution": _enfant(["--enfant", "attribution", *natif]),
+                 "couts_glyphes [texte, icone]": couts,
+                 "glyphes_couteux": {c: v for c, v in couts.items() if v[0] and v[0] > 5}}
         rendus = {}
         for mode in ("rendu:Segoe UI:latin", "rendu:Segoe UI|Inter|Noto Sans:latin", "rendu:Segoe UI:symboles",
                      "rendu:Segoe UI Symbol:symboles", "icone:Segoe UI Symbol:symboles",
