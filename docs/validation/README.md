@@ -26,7 +26,7 @@ dans la zone de notification : ne pas cliquer dedans et ne pas fermer la console
 | B. Environnements | Venv de validation créé avec `requirements.txt` + `requirements-dev.txt` de la PR (comme la CI). Le `.venv` de développement et l'installation quotidienne (`%LOCALAPPDATA%\Jarvis\app`) sont **inspectés sans être modifiés** : versions de Python, PySide6, Qt (`Qt6Core.dll`). Le défaut de PySide6 6.12.0 est mesuré sur ce PC dans un venv **jetable**. Inspection des scripts de lancement, de packaging et de mise à jour. |
 | C. Tests automatisés | Suite pytest complète (protocole CI) sous la garde des données, avec JUnit et journal de progression (un plantage natif est détecté et le test en cours identifié). Vues par domaine **extraites de la même exécution** (aucun double comptage). Étapes diagnostiques `unittest` de la CI, protocole officiel du Dashboard, ruff, compileall, tests de fumée du code de la PR et de l'exécutable installé. |
 | D. Dashboard réel | Fenêtres Qt **natives** (plateforme `windows`) : ouverture, outil vocal, page inconnue, zone de notification, Ctrl+D de l'orbe, pages et widgets, navigation chronométrée, mode édition et enregistrement, thèmes, notes, tâches, tâches de fond, notifications (dont une vraie notification Windows si autorisée), six fermetures/réouvertures avec contrôle des exceptions et de la libération mémoire, persistance, plein écran, CPU au repos. Captures d'écran natives. |
-| E. Gemini Live réel et audio | Si une clé est disponible et autorisée : les deux scripts officiels (`validate_real_gemini.py`, `validate_reconnect_v174_real.py`) et les scénarios 1 à 10 Dashboard + Gemini (`gemini_reel_dashboard.py`), avec de l'audio réel synthétisé envoyé dans le vrai pipeline vocal. Inventaire des périphériques audio sans capture ; test guidé du haut-parleur et du micro dans la fenêtre finale. |
+| E. Gemini Live réel et audio | Si une clé est disponible et autorisée : les deux scripts officiels (`validate_real_gemini.py`, `validate_reconnect_v174_real.py`) et les scénarios 1 à 10 Dashboard + Gemini (`gemini_reel_dashboard.py`). Les énoncés (voix réelle synthétisée) passent par la **vraie `AudioIO` et le pont micro de production**, alimentés par une fausse carte son qui capture **en continu** comme un vrai micro (la VAD de Gemini voit la fin de chaque phrase) ; l'interruption est un vrai barge-in vocal pendant la lecture. Inventaire des périphériques audio sans capture ; test guidé du haut-parleur et du micro dans la fenêtre finale. |
 | F. Mémoire et données | Migration, restauration et limite d'historique (bases temporaires) ; migration de **votre** base sur une **copie** (si autorisée) ; recherche de secrets dans toutes les sorties ; instantanés avant/après des données réelles ; incidents de la garde. |
 
 ## Garanties
@@ -79,11 +79,47 @@ serveur ne valide jamais Windows ou Gemini réel.
 | 2 | Validation insuffisante — aucun échec bloquant, mais des contrôles requis NON TESTÉS ou BLOQUÉS. |
 | 3 | Erreur du protocole ou interruption (le rapport est tout de même écrit). |
 
+## Contrôles humains (fenêtre finale)
+
+Ces contrôles ne sont pas automatisables ; sans réponse, ils restent « NON TESTÉ » (jamais comptés
+comme réussis). Ils ne sont pas requis pour le verdict, mais une réponse « non » est un ÉCHEC.
+
+* **D18 — captures natives** (vignettes affichées dans la fenêtre finale ; originaux `D*.png` dans
+  le dossier de l'exécution) : répondre « oui » seulement si, sur **toutes** les captures :
+  1. chaque page affiche ses widgets (aucune zone vide, aucun texte coupé ou superposé) ;
+  2. `D01_ouverture.png` montre la page **avec son contenu** — l'état « Chargement du tableau de
+     bord… » ne doit apparaître qu'un instant à la première ouverture, jamais sur une capture ;
+  3. le thème est lisible (contraste du texte, icônes visibles) et les captures de thèmes diffèrent ;
+  4. le Dashboard en plein écran et restauré a la bonne taille (aucune fenêtre tronquée).
+* **D19 — notification Windows** : cocher « Notification Windows de test » dans la fenêtre de
+  lancement ; une seule notification « Validation Jarvis » est émise pendant D10 ; répondre « oui »
+  si elle est apparue (coin de l'écran ou centre de notifications), sinon « non » ; « pas regardé »
+  si vous n'étiez pas devant l'écran (NON TESTÉ).
+* **E14/E15 — haut-parleur et micro** : tonalité d'une seconde à entendre ; 3 secondes de micro
+  mesurées en mémoire (niveau seulement, rien n'est enregistré).
+
+## Lire un échec des scénarios E1–E10
+
+Chaque ÉCHEC joint, dans `gemini_reel.json` (champ `preuve`) et le journal, l'état exact du moteur
+au moment de l'échec (aucune clé, valeurs masquées) :
+
+| Champ | Lecture |
+|---|---|
+| `moteur` | `engine_snapshot()` : session ouverte/prête, `speaking`, `regeneration_pending`, `text_turn_pending`, `turn_open`, nombre de sessions, `stalls_recovered`. |
+| `porte_micro` | Raison pour laquelle le micro n'était pas transmis (`jarvis parle`, `message texte en cours`, `session en preparation`…). |
+| `audio` | Jarvis éveillé, voix en cours, octets de lecture encore en attente. |
+| `erreurs_session` | Dernières erreurs de session : classe, message, `code`/`status` d'API, code WebSocket. |
+| `traces_gemini` | Fin du cycle de tour (`TURN_OPEN`, `INTERRUPTION`, `RESPONSE_STALLED`, `SESSION_READY`…). |
+
+`RESPONSE_STALLED` signale que le serveur s'est tu alors qu'une réponse était due : Jarvis clôt le
+tour en échec (demande conservée) et relance la session après 30 s (`JARVIS_LIVE_STALL_TIMEOUT`).
+
 ## Limites assumées
 
 * La conversation avec **votre propre voix** au micro n'est pas automatisable : les scénarios réels
-  envoient une voix synthétisée (SAPI français local, sinon synthèse Gemini) dans le même chemin
-  `send_realtime_input` ; le micro lui-même est vérifié par le test guidé (niveau sonore).
+  envoient une voix synthétisée (SAPI français local, sinon synthèse Gemini) par `AudioIO` et le
+  pont micro de production (capture continue simulée) ; le micro lui-même est vérifié par le test
+  guidé (niveau sonore).
 * « Entendre » le haut-parleur et juger le rendu visuel demandent un humain (fenêtre finale).
 * Si Jarvis est ouvert pendant la validation, il peut écrire lui-même dans ses données : la preuve
   par instantané devient non concluante (F07 « NON TESTÉ ») — fermer Jarvis avant de lancer.
