@@ -11,11 +11,18 @@ réel se comporte comme prévu.
 
 Scénarios et verdicts produits (format imposé) ::
 
-    GEMINI LIVE RÉEL : PASS / NON TESTABLE
-    AUDIO RÉEL : PASS / NON TESTABLE
-    RECONNEXION RÉELLE : PASS / NON TESTABLE
-    SESSION RESUMPTION RÉELLE : PASS / NON TESTABLE
-    OUTILS RÉELS : PASS / NON TESTABLE
+    GEMINI LIVE RÉEL : PASS / FAIL / NON TESTABLE
+    AUDIO RÉEL : PASS / FAIL / NON TESTABLE
+    RECONNEXION RÉELLE : PASS / FAIL / NON TESTABLE
+    SESSION RESUMPTION RÉELLE : PASS / FAIL / NON TESTABLE
+    OUTILS RÉELS : PASS / FAIL / NON TESTABLE
+
+NON TESTABLE = prérequis absent (clé refusée, quota épuisé, réseau
+injoignable), avec sa raison. Un délai dépassé en attendant la réponse, une
+erreur de session ou un contenu incorrect est un FAIL, diagnostic du moteur
+joint (session, tour, porte micro, interruptions classées, fin de trace).
+L'entrée audio passe par un micro simulé CONTINU, filtré par ``can_send()``
+comme le pont micro de production (correctif PR #50).
 
 Modes d'entrée (le premier est le chemin audio complet, sans micro) :
 
@@ -113,7 +120,12 @@ def _install_wire_tap() -> None:
         return await orig_cc(self, turns=turns, turn_complete=turn_complete)
 
     async def rt(self, **kwargs):
-        kind = "realtime_text" if kwargs.get("text") is not None else "realtime_audio"
+        if kwargs.get("text") is not None:
+            kind = "realtime_text"
+        elif kwargs.get("audio_stream_end"):
+            kind = "audio_stream_end"
+        else:
+            kind = "realtime_audio"
         WIRE.append({"ts": time.monotonic(), "kind": kind})
         return await orig_rt(self, **kwargs)
 
@@ -278,6 +290,26 @@ async def record_microphone(seconds: float) -> bytes:
 
 
 class RealRunner:
+    """Le VRAI ``GeminiLive`` + sa boucle de reconnexion, alimenté comme en production.
+
+    Correctif PR #50 (E11 : AUDIO / RECONNEXION / REPRISE « NON TESTABLE » sur le
+    PC de validation alors que S1 et les outils passaient) :
+
+    * micro CONTINU : un bloc de 100 ms toutes les 100 ms, filtré par
+      ``can_send()`` comme le pont micro de ``src/ui.py`` (bruit de fond faible,
+      énoncé injecté dans le flux). L'ancienne version envoyait l'énoncé puis
+      COUPAIT le flux (0,4 s de silence, aucun ``audio_stream_end``) : la VAD
+      du serveur pouvait ne jamais clore la parole ;
+    * la reconnexion est réellement attendue (nouvelle génération de session
+      ET session prête) — l'ancien code attendait un évènement resté levé
+      depuis la PREMIÈRE connexion, et comptait les rejeux trop tôt ;
+    * la réponse à une question est le tour qui CONTIENT une transcription
+      utilisateur (jamais la réponse du modèle au rejeu de contexte).
+    """
+
+    #: Bruit de fond du micro simulé (RMS int16), comme ``RealAcousticPath``.
+    NOISE_RMS = 12.0
+
     def __init__(self, api_key: str, model: str, record_dir: Path | None):
         self.conversation = ConversationContext(max_turns=20, max_tokens=4096)
         self.turn_log: list[dict] = []
@@ -287,8 +319,12 @@ class RealRunner:
         self.connected = self._connected  # API publique pour les scénarios
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._mic_task: asyncio.Task | None = None
+        self._mic_queue = bytearray()
         self._audio_chunks: list[bytes] = []
         self._record_dir = record_dir
+        self.errors: list[str] = []
+        self.mic_blocks_sent = 0
         #: Injection d'entrée alternative (selftest) : prompt -> PCM. En mode
         #: réel ce champ reste None et le mode CLI (tts/mic/text) s'applique.
         self.input_policy = None
@@ -317,6 +353,7 @@ class RealRunner:
         self._current["interrupted"] = True
 
     def _on_turn_complete(self) -> None:
+        self._current["turn_id"] = self.gemini.turn_id
         self.turn_log.append(self._current)
         self._current = {
             "user": "",
@@ -330,9 +367,16 @@ class RealRunner:
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run())
         await asyncio.wait_for(self._connected.wait(), timeout=TURN_TIMEOUT)
+        self._mic_task = asyncio.create_task(self._mic_loop())
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._mic_task is not None:
+            self._mic_task.cancel()
+            try:
+                await self._mic_task
+            except BaseException:
+                pass
         try:
             await self.gemini._shutdown_session()
         except Exception:
@@ -358,7 +402,9 @@ class RealRunner:
             except asyncio.CancelledError:
                 break
             except Exception as exc:
-                safe_print(f"   [session] erreur : {type(exc).__name__}")
+                description = describe_exception(exc)
+                self.errors.append(description)
+                safe_print(f"   [session] erreur : {description}")
                 if not gemini.reconnect_requested:
                     await asyncio.sleep(1.0)
             finally:
@@ -367,38 +413,79 @@ class RealRunner:
                 except Exception:
                     pass
 
+    async def _mic_loop(self) -> None:
+        """Micro simulé CONTINU : chemin du pont micro de production."""
+        import numpy as np
+
+        rng = np.random.default_rng(20261016)
+        step = int(SAMPLE_RATE * CHUNK_MS / 1000)  # échantillons par bloc
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
+        while not self._stop.is_set():
+            block = rng.normal(0.0, self.NOISE_RMS, step)
+            if self._mic_queue:
+                take = bytes(self._mic_queue[: step * 2])
+                del self._mic_queue[: step * 2]
+                speech = np.frombuffer(take, dtype=np.int16).astype(np.float64)
+                block[: speech.size] += speech
+            pcm = np.clip(block, -32768, 32767).astype(np.int16).tobytes()
+            gemini = self.gemini
+            if gemini.can_send():
+                self.mic_blocks_sent += 1
+                try:
+                    await gemini.send_audio(
+                        pcm,
+                        capture_generation=gemini.session_generation,
+                        capture_turn_epoch=gemini.turn_epoch,
+                    )
+                except Exception:
+                    pass  # session en cours de fermeture : la boucle reconnecte
+            deadline += CHUNK_MS / 1000
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
+
     # -- interactions ------------------------------------------------------------
     async def _wait_sendable(self, timeout: float = TURN_TIMEOUT) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.gemini.can_send():
+            if self.gemini.can_send() and not self.gemini.speaking and not self._mic_queue:
                 return
             await asyncio.sleep(0.05)
-        raise TimeoutError("session non prête à recevoir de l'audio")
+        raise TurnTimeout(f"Jarvis indisponible {timeout:.0f} s avant la question", self.diagnostic())
 
-    async def speak_pcm(self, pcm: bytes) -> dict:
-        """Envoie de l'audio réel par morceaux, puis attend la fin du tour."""
+    async def _wait_answer(self, before: int, predicate, what: str) -> dict:
+        deadline = time.monotonic() + TURN_TIMEOUT
+        while time.monotonic() < deadline:
+            for turn in self.turn_log[before:]:
+                if predicate(turn):
+                    return turn
+            await asyncio.sleep(0.05)
+        raise TurnTimeout(f"aucune réponse {TURN_TIMEOUT:.0f} s après {what}", self.diagnostic())
+
+    async def speak_pcm(self, pcm) -> dict:
+        """Injecte l'énoncé dans le flux micro continu, puis attend SA réponse.
+
+        ``pcm`` : octets, ou fonction qui les produit AU MOMENT de l'injection
+        (l'auto-test y programme l'énoncé du faux serveur).
+        """
         await self._wait_sendable()
         self._turn_done.clear()
         self._audio_chunks.clear()
-        step = int(SAMPLE_RATE * 2 * CHUNK_MS / 1000)
-        for i in range(0, len(pcm), step):
-            await self.gemini.send_audio(pcm[i : i + step])
-            await asyncio.sleep(CHUNK_MS / 1000)
-        await asyncio.wait_for(self._turn_done.wait(), timeout=TURN_TIMEOUT)
-        return self.turn_log[-1] if self.turn_log else {}
+        before = len(self.turn_log)
+        self._mic_queue.extend(pcm() if callable(pcm) else pcm)
+        return await self._wait_answer(before, lambda turn: bool(turn.get("user")), "l'énoncé")
 
     async def speak_text(self, text: str) -> dict:
         await self._wait_sendable()
         self._turn_done.clear()
+        before = len(self.turn_log)
         await self.gemini.session.send_realtime_input(text=text)
-        await asyncio.wait_for(self._turn_done.wait(), timeout=TURN_TIMEOUT)
-        return self.turn_log[-1] if self.turn_log else {}
+        return await self._wait_answer(before, lambda turn: bool(turn.get("user") or turn.get("assistant")),
+                                       "le texte")
 
     async def ask(self, prompt: str, mode: str, client=None, tts_model: str = "") -> dict:
         safe_print(f"   [question] {prompt}")
         if self.input_policy is not None:
-            turn = await self.speak_pcm(self.input_policy(prompt))
+            turn = await self.speak_pcm(lambda: self.input_policy(prompt))
         elif mode == "text":
             turn = await self.speak_text(prompt)
         else:
@@ -423,11 +510,102 @@ class RealRunner:
             handle.writeframes(b"".join(self._audio_chunks))
         safe_print(f"   [audio]    réponse écrite : {path}")
 
-    async def drop_connection(self, keep_handle: bool) -> None:
-        """Coupure brutale (équivalent perte réseau), avec ou sans le handle."""
+    async def drop_connection(self, keep_handle: bool) -> int:
+        """Coupure brutale (équivalent perte réseau), avec ou sans le handle.
+
+        Retourne la génération de session AVANT la coupure (cf. ``wait_reconnected``).
+        """
+        generation = self.gemini.session_generation
+        self._connected.clear()
         if not keep_handle:
             self.gemini.resumption_handle = None
         await self.gemini._shutdown_session()  # le runner reconnecte aussitôt
+        return generation
+
+    async def wait_reconnected(self, generation_before: int, timeout: float = TURN_TIMEOUT) -> None:
+        """Attend une NOUVELLE session, prête à recevoir l'audio."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if (
+                self._connected.is_set()
+                and self.gemini.session_generation > generation_before
+                and self.gemini.can_send()
+            ):
+                return
+            await asyncio.sleep(0.05)
+        raise TurnTimeout(f"reconnexion non aboutie en {timeout:.0f} s", self.diagnostic())
+
+    def diagnostic(self) -> str:
+        """État du moteur et fin de trace, sans contenu échangé (masqué à l'affichage)."""
+        import json
+
+        gemini = self.gemini
+        keep = {"INTERRUPTION", "TURN_OPEN", "TURN_CLOSE", "TURN_COMPLETE", "TURN_KEPT_OPEN",
+                "EMPTY_GENERATION_RETRY", "EMPTY_TURN_COMPLETE_IN_PROGRESS", "RESPONSE_STALLED",
+                "SESSION_CONNECT", "SESSION_RESUME", "SESSION_READY", "SEED_COMMIT_TIMEOUT",
+                "SEED_COMMIT_CONFIRMED", "AUDIO_STREAM_END", "SERVER_VAD", "TEXT_TURN_TIMEOUT"}
+        fields = ("origin", "classification", "reason", "interrupted_generation", "interaction_status",
+                  "waiting_for_input", "turn_complete_reason", "has_model_content")
+        traces = [
+            {"kind": e["kind"], "turn": e.get("turn_id"), **{k: e[k] for k in fields if k in e}}
+            for e in gemini.trace_events() if e.get("kind") in keep
+        ][-14:]
+        try:
+            allowed, reason = gemini._can_send_now()
+        except Exception:  # pragma: no cover - diagnostic seulement
+            allowed, reason = None, "?"
+        state = {
+            "moteur": gemini.engine_snapshot(),
+            "porte_micro": {"ouverte": allowed, "raison": reason},
+            "blocs_micro_envoyes": self.mic_blocks_sent,
+            "tours_observes": len(self.turn_log),
+            "erreurs_session": self.errors[-3:],
+            "traces": traces,
+        }
+        return json.dumps(state, ensure_ascii=False, default=str)[:3000]
+
+
+class TurnTimeout(TimeoutError):
+    """Délai dépassé côté harnais, avec l'état du moteur à cet instant."""
+
+    def __init__(self, message: str, diagnostic: str) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Classe, message, code/statut d'API et cause chaînée — masqués, bornés."""
+    parts, seen, current = [], set(), exc
+    while current is not None and id(current) not in seen and len(parts) < 3:
+        seen.add(id(current))
+        details = [f"{attr}={getattr(current, attr)}" for attr in ("code", "status")
+                   if getattr(current, attr, None) not in (None, "")]
+        message = " ".join(str(current).split())[:200]
+        parts.append(f"{type(current).__name__}: {message}" + (f" [{', '.join(details)}]" if details else ""))
+        current = current.__cause__ or current.__context__
+    return _KEY_RE.sub("<clé masquée>", " <- ".join(parts))
+
+
+def classify_failure(exc: BaseException) -> tuple[str, str]:
+    """Verdict d'un scénario interrompu par une exception.
+
+    « NON TESTABLE » est réservé aux PRÉREQUIS absents (clé refusée, quota,
+    réseau injoignable) : un délai dépassé en attendant la réponse de Jarvis,
+    une erreur de session ou de protocole est un ÉCHEC (FAIL), produit ou
+    harnais, jamais un non-testable. L'ancien code classait TOUT en
+    NON TESTABLE (validation réelle du 2026-10-16 : E11).
+    """
+    text = describe_exception(exc).lower()
+    if isinstance(exc, gl.AuthError) or gl._is_auth_error(exc):
+        return "NON TESTABLE", "prérequis absent : clé API refusée"
+    if any(marker in text for marker in ("resource_exhausted", "quota", " 429", "code=429")):
+        return "NON TESTABLE", "prérequis absent : quota de l'API épuisé"
+    if any(marker in text for marker in ("getaddrinfo", "name resolution", "nodename nor servname",
+                                         "network is unreachable", "no route to host")):
+        return "NON TESTABLE", "prérequis absent : réseau injoignable"
+    reason = describe_exception(exc)
+    diagnostic = getattr(exc, "diagnostic", "")
+    return "FAIL", reason + (f" — diagnostic : {diagnostic}" if diagnostic else "")
 
 
 # ---------------------------------------------------------------------------
@@ -436,83 +614,100 @@ class RealRunner:
 
 
 async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -> tuple[dict, list]:
-    """S1-S4. Identique en mode réel et en selftest (seule l'entrée change)."""
+    """S1-S4. Identique en mode réel et en selftest (seule l'entrée change).
+
+    Chaque verdict dit ce qui a été RÉELLEMENT exercé : PASS (vérifié), FAIL
+    (exercé et incorrect — produit ou harnais, diagnostic joint) ou
+    NON TESTABLE (prérequis absent : clé, quota, réseau), cf. ``classify_failure``.
+    """
     verdicts: dict[str, str] = {}
     notes: list[str] = []
+
+    def failed(names: tuple[str, ...], label: str, exc: BaseException) -> None:
+        verdict, reason = classify_failure(exc)
+        for name in names:
+            verdicts[name] = verdict
+        notes.append(f"{label} : {reason}")
 
     # ---- S1 : GEMINI LIVE RÉEL (connexion + premier tour audio) -------------
     try:
         safe_print("\n=== S1 : connexion + premier tour audio ===")
         turn = await runner.ask("Bonjour Jarvis, tu m'entends bien ?", mode, client, tts_model)
-        ok = bool(turn.get("assistant") or turn.get("user"))
+        ok = bool(turn.get("assistant") and turn.get("user"))
         verdicts["GEMINI LIVE RÉEL"] = "PASS" if ok else "FAIL"
         if not ok:
-            notes.append("S1 : aucune transcription reçue (ni user ni assistant).")
+            notes.append(f"S1 : tour incomplet (transcription utilisateur={bool(turn.get('user'))}, "
+                         f"réponse={bool(turn.get('assistant'))}) — diagnostic : {runner.diagnostic()}")
     except Exception as exc:
-        verdicts["GEMINI LIVE RÉEL"] = "NON TESTABLE"
-        notes.append(f"S1 : {type(exc).__name__} — {exc}")
+        failed(("GEMINI LIVE RÉEL",), "S1", exc)
 
     # ---- S2 : AUDIO RÉEL + RECONNEXION RÉELLE (le correctif) -----------------
     try:
         safe_print("\n=== S2 : seed committé après reconnexion (correctif v1.7.1) ===")
         await runner.ask("Mon prénom est Simon.", mode, client, tts_model)
         mark = len(WIRE)
-        await runner.drop_connection(keep_handle=False)
-        await asyncio.wait_for(runner.connected.wait(), timeout=TURN_TIMEOUT)
-        runner.connected.clear()
+        generation = await runner.drop_connection(keep_handle=False)
+        await runner.wait_reconnected(generation)
         seed_sends = [e for e in wire_since(mark) if e["kind"] == "client_content"]
         safe_print(
-            f"   [câble] {len(seed_sends)} clientContent après reconnexion "
-            f"(turn_complete={[e['turn_complete'] for e in seed_sends]})"
+            f"   [câble] session {generation} → {runner.gemini.session_generation} : "
+            f"{len(seed_sends)} clientContent après reconnexion "
+            f"(turn_complete={[e['turn_complete'] for e in seed_sends]}), "
+            f"rejeu confirmé par le serveur={runner.gemini.context_seed_confirmed}"
         )
         turn = await runner.ask("Quel est mon prénom ?", mode, client, tts_model)
         answer = (turn.get("assistant") or "").lower()
         audio_ok = "simon" in answer
         verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
-        verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok else "FAIL"
+        verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok and seed_sends else "FAIL"
         if not audio_ok:
             notes.append(
                 "S2 : le rappel audio après seed a échoué — vérifier le protocole "
-                "sur ce modèle (cf. scripts/dump_wire_protocol.py, journal E2/E8)."
+                f"sur ce modèle (cf. scripts/dump_wire_protocol.py, journal E2/E8). Diagnostic : "
+                f"{runner.diagnostic()}"
             )
         if not seed_sends:
             notes.append("S2 : AUCUN clientContent observé après reconnexion sans handle.")
     except Exception as exc:
-        verdicts["AUDIO RÉEL"] = "NON TESTABLE"
-        verdicts["RECONNEXION RÉELLE"] = "NON TESTABLE"
-        notes.append(f"S2 : {type(exc).__name__} — {exc}")
+        failed(("AUDIO RÉEL", "RECONNEXION RÉELLE"), "S2", exc)
 
     # ---- S3 : SESSION RESUMPTION RÉELLE ---------------------------------------
     try:
         safe_print("\n=== S3 : reprise de session par handle ===")
         await runner.ask("J'habite à Tours.", mode, client, tts_model)
         # Le sessionResumptionUpdate arrive juste après le turnComplete :
-        # on laisse une seconde au serveur pour le délivrer.
-        await asyncio.sleep(1.0 if client is not None else 0.05)
+        # on laisse au serveur le temps de le délivrer (borné).
+        deadline = time.monotonic() + (5.0 if client is not None else 0.5)
+        while not runner.gemini.resumption_handle and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
         if not runner.gemini.resumption_handle:
-            verdicts["SESSION RESUMPTION RÉELLE"] = "NON TESTABLE"
-            notes.append("S3 : aucun handle de reprise reçu (update sessionResumptionUpdate absent).")
+            verdicts["SESSION RESUMPTION RÉELLE"] = "FAIL"
+            notes.append("S3 : aucun handle de reprise reçu (sessionResumptionUpdate absent) alors que la "
+                         "reprise est configurée — diagnostic : " + runner.diagnostic())
         else:
             mark = len(WIRE)
-            await runner.drop_connection(keep_handle=True)
-            await asyncio.wait_for(runner.connected.wait(), timeout=TURN_TIMEOUT)
-            runner.connected.clear()
+            generation = await runner.drop_connection(keep_handle=True)
+            await runner.wait_reconnected(generation)
             reseed = [e for e in wire_since(mark) if e["kind"] == "client_content"]
+            resumed = any(e["kind"] == "SESSION_RESUME" and e.get("session_generation", 0) > generation
+                          for e in runner.gemini.trace_events())
             safe_print(
-                f"   [câble] reprise avec handle : {len(reseed)} clientContent "
+                f"   [câble] reprise avec handle : session reprise={resumed}, {len(reseed)} clientContent "
                 "(0 attendu : le serveur restaure l'historique lui-même)"
             )
             turn = await runner.ask("Où est-ce que j'habite déjà ?", mode, client, tts_model)
             answer = (turn.get("assistant") or "").lower()
-            ok = "tours" in answer and len(reseed) == 0
+            ok = "tours" in answer and len(reseed) == 0 and resumed
             verdicts["SESSION RESUMPTION RÉELLE"] = "PASS" if ok else "FAIL"
             if "tours" not in answer:
-                notes.append("S3 : le rappel après reprise par handle a échoué.")
+                notes.append("S3 : le rappel après reprise par handle a échoué — diagnostic : "
+                             + runner.diagnostic())
             if reseed:
                 notes.append("S3 : un rejeu a été envoyé malgré le handle (doublon potentiel).")
+            if not resumed:
+                notes.append("S3 : la nouvelle session n'a pas été ouverte en reprise (handle refusé ?).")
     except Exception as exc:
-        verdicts["SESSION RESUMPTION RÉELLE"] = "NON TESTABLE"
-        notes.append(f"S3 : {type(exc).__name__} — {exc}")
+        failed(("SESSION RESUMPTION RÉELLE",), "S3", exc)
 
     # ---- S4 : OUTILS RÉELS ------------------------------------------------------
     try:
@@ -537,8 +732,7 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
                 "dans la réponse (ni dans le suivi)."
             )
     except Exception as exc:
-        verdicts["OUTILS RÉELS"] = "NON TESTABLE"
-        notes.append(f"S4 : {type(exc).__name__} — {exc}")
+        failed(("OUTILS RÉELS",), "S4", exc)
 
     return verdicts, notes
 
@@ -630,12 +824,23 @@ async def main() -> int:
     patchers = _install_validation_tool()
     for patcher in patchers:
         patcher.start()
+    verdicts: dict[str, str] = {}
     try:
-        await runner.start()
-        verdicts, scenario_notes = await run_scenarios(
-            runner, input_mode, client, args.tts_model
-        )
-        notes.extend(scenario_notes)
+        try:
+            await runner.start()
+        except Exception as exc:
+            # Aucune session : rien n'a pu être exercé. Prérequis absent
+            # (clé, quota, réseau) → NON TESTABLE ; autre cause → FAIL.
+            verdict, reason = classify_failure(exc)
+            if runner.errors and verdict == "FAIL":
+                verdict, reason = classify_failure(RuntimeError(runner.errors[-1]))
+            verdicts = {name: verdict for name in VERDICT_NAMES}
+            notes.append(f"connexion initiale impossible : {reason}")
+        else:
+            verdicts, scenario_notes = await run_scenarios(
+                runner, input_mode, client, args.tts_model
+            )
+            notes.extend(scenario_notes)
     finally:
         for patcher in patchers:
             patcher.stop()
@@ -724,16 +929,18 @@ def _install_fake_wire_tap(server) -> None:
     FakeLiveSession.send_tool_response = tr
 
 
+VERDICT_NAMES = (
+    "GEMINI LIVE RÉEL",
+    "AUDIO RÉEL",
+    "RECONNEXION RÉELLE",
+    "SESSION RESUMPTION RÉELLE",
+    "OUTILS RÉELS",
+)
+
+
 def print_verdicts(verdicts: dict[str, str], notes: list[str] | None = None) -> None:
-    order = [
-        "GEMINI LIVE RÉEL",
-        "AUDIO RÉEL",
-        "RECONNEXION RÉELLE",
-        "SESSION RESUMPTION RÉELLE",
-        "OUTILS RÉELS",
-    ]
     safe_print("\n" + "=" * 60)
-    for name in order:
+    for name in VERDICT_NAMES:
         verdict = verdicts.get(name, "NON TESTABLE")
         safe_print(f"{name} : {verdict}")
     if notes:
