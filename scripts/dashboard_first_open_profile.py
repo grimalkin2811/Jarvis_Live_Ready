@@ -248,16 +248,28 @@ def sonde_polices(natif: bool, mode: str) -> dict:
             manquants = "".join(ch for ch in SYMBOLES if not brute.supportsCharacter(ord(ch)))
             resultat[famille] = f"manquants : {manquants}" if manquants else "tous"
         return {"couverture": resultat}
-    familles = mode.split(":", 1)[1].split("|")
+    morceaux = mode.split(":")
+    familles = morceaux[1].split("|")
+    texte = SYMBOLES if (len(morceaux) < 3 or morceaux[2] == "symboles") else "Accueil · Mémoire — Tâches « Paramètres »"
     avant = fichiers_mappes()
     font = QFont()
     font.setFamilies(familles)
     t = time.perf_counter()
-    label = QLabel(SYMBOLES)
-    label.setFont(font)
-    label.show()
-    app.processEvents()
-    return {"familles": familles, "rendu_ms": _ms(t, time.perf_counter()),
+    if morceaux[0] == "icone":
+        # Dessin des glyphes dans une image (icônes) avec cette police seule.
+        from PySide6.QtGui import QPainter, QPixmap
+
+        pixmap = QPixmap(400, 40)
+        peintre = QPainter(pixmap)
+        peintre.setFont(font)
+        peintre.drawText(4, 30, texte)
+        peintre.end()
+    else:
+        label = QLabel(texte)
+        label.setFont(font)
+        label.show()
+        app.processEvents()
+    return {"mode": mode, "rendu_ms": _ms(t, time.perf_counter()),
             "polices_chargees": len(fichiers_mappes() - avant),
             "exemples": sorted(fichiers_mappes() - avant)[:8]}
 
@@ -287,14 +299,15 @@ def main(argv=None) -> int:
     if args.enfant == "polices":
         print(json.dumps(cout_polices_a_froid(args.natif), ensure_ascii=False))
         return 0
-    if args.enfant and args.enfant.startswith(("couverture", "rendu:")):
+    if args.enfant and args.enfant.startswith(("couverture", "rendu:", "icone:")):
         print(json.dumps(sonde_polices(args.natif, args.enfant), ensure_ascii=False))
         return 0
     natif = ["--natif"] if args.natif else []
     if args.sonde_polices:
         sonde = {"couverture": _enfant(["--enfant", "couverture", *natif])}
-        for chaine in ("Segoe UI", "Segoe UI|Segoe UI Symbol", "Segoe UI Symbol"):
-            sonde[chaine] = _enfant(["--enfant", f"rendu:{chaine}", *natif])
+        for mode in ("rendu:Segoe UI:latin", "rendu:Segoe UI|Inter|Noto Sans:latin", "rendu:Segoe UI:symboles",
+                     "rendu:Segoe UI Symbol:symboles", "icone:Segoe UI Symbol:symboles"):
+            sonde[mode] = _enfant(["--enfant", mode, *natif])
         print(json.dumps(sonde, ensure_ascii=False))
         if args.json:
             Path(args.json).write_text(json.dumps(sonde, ensure_ascii=False, indent=2), encoding="utf-8")
