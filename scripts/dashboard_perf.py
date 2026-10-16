@@ -135,7 +135,9 @@ def run(idle_seconds: float = 4.0) -> dict:
         results["window_first_open_ms"] = round((time.perf_counter() - start) * 1000, 1)
         probe.set_phase("contenu")
         deadline = time.monotonic() + 10.0
-        while getattr(controller.window, "_initial_build_pending", False) and time.monotonic() < deadline:
+        attente = getattr(controller.window, "content_pending", None)  # page ENTIÈREMENT construite
+        while (attente() if callable(attente) else getattr(controller.window, "_initial_build_pending", False)) \
+                and time.monotonic() < deadline:
             app.processEvents()
             time.sleep(0.002)
         results["window_first_content_ms"] = round((time.perf_counter() - start) * 1000, 1)

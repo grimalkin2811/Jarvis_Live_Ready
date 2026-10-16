@@ -451,3 +451,98 @@ def test_symbol_inventory_is_checked_against_real_fonts_on_native_windows():
     assert "continue-on-error" not in etape.split("run:", 1)[0]
     assert "interface_non_couverts" in etape and "symboles_non_couverts" in etape
     assert "sys.exit(1 if echecs else 0)" in etape
+
+
+def _ouvrir_jusqu_au_debut_du_contenu(controller, app):
+    controller.open()
+    window = controller.window
+    deadline = time.monotonic() + 5.0
+    while window._initial_build_pending and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.002)
+    assert not window._initial_build_pending
+    return window
+
+
+def test_first_open_builds_the_start_page_in_batches(tmp_path, monkeypatch):
+    """Correctif C10 : sous Windows natif, la latence maximale de la boucle Qt était mesurée
+    pendant la construction du contenu initial (page d'accueil créée d'un bloc). La page est
+    désormais construite par lots, la boucle Qt restant réactive entre deux lots."""
+    from UI.dashboard.controller import DashboardController
+    from UI.dashboard.pages_view import PageView
+
+    monkeypatch.setattr(PageView, "BUILD_BUDGET_MS", 0.0)  # un cadre par lot (au moins un garanti)
+    app = QApplication.instance() or QApplication([])
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            window = _ouvrir_jusqu_au_debut_du_contenu(controller, app)
+            view = window._page_views[window.current_page()]
+            attendus = sorted(p.id for p in view.page.widgets if not p.hidden)
+            assert len(attendus) >= 3
+            assert window.content_pending() and len(view.canvas.frames) < len(attendus), "page construite par lots"
+            observes = set()
+            deadline = time.monotonic() + 5.0
+            while window.content_pending() and time.monotonic() < deadline:
+                observes.add(len(view.canvas.frames))
+                app.processEvents()
+            assert not window.content_pending(), "le contenu arrive sans intervention"
+            assert len(observes) >= 2, observes
+            assert sorted(view.canvas.frames) == attendus
+            stats = window.widget_stats()
+            assert stats["active_widgets"] == stats["widgets"] == len(attendus)
+        finally:
+            controller.shutdown()
+
+
+def test_programmatic_access_gets_a_complete_start_page(tmp_path, monkeypatch):
+    from UI.dashboard.controller import DashboardController
+    from UI.dashboard.pages_view import PageView
+
+    monkeypatch.setattr(PageView, "BUILD_BUDGET_MS", 0.0)
+    app = QApplication.instance() or QApplication([])
+    for acces in ("all_canvases", "open_page"):
+        with isolated_jarvis():
+            controller = DashboardController(state_path=str(tmp_path / f"{acces}.json"), attach_bridge=False,
+                                             dialog_executor=lambda d: True)
+            try:
+                window = _ouvrir_jusqu_au_debut_du_contenu(controller, app)
+                assert window.content_pending()
+                if acces == "all_canvases":
+                    window.all_canvases()
+                else:
+                    window.open_page(window.current_page())
+                assert not window.content_pending(), acces
+                view = window._page_views[window.current_page()]
+                assert sorted(view.canvas.frames) == sorted(p.id for p in view.page.widgets if not p.hidden)
+            finally:
+                controller.shutdown()
+
+
+def test_start_page_is_not_built_while_the_window_is_hidden(tmp_path, monkeypatch):
+    from UI.dashboard.controller import DashboardController
+    from UI.dashboard.pages_view import PageView
+
+    monkeypatch.setattr(PageView, "BUILD_BUDGET_MS", 0.0)
+    app = QApplication.instance() or QApplication([])
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            window = _ouvrir_jusqu_au_debut_du_contenu(controller, app)
+            view = window._page_views[window.current_page()]
+            controller.hide_window()
+            app.processEvents()
+            figes = len(view.canvas.frames)
+            assert not view._build_timer.isActive(), "aucun minuteur de construction fenêtre masquée"
+            pump(app, 0.2)
+            assert len(view.canvas.frames) == figes, "aucune construction fenêtre masquée"
+            assert window.widget_stats()["active_widgets"] == 0
+            controller.open()
+            deadline = time.monotonic() + 5.0
+            while window.content_pending() and time.monotonic() < deadline:
+                app.processEvents()
+            assert not window.content_pending(), "reprise à la réouverture"
+        finally:
+            controller.shutdown()

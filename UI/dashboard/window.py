@@ -528,6 +528,7 @@ class DashboardWindow(QMainWindow):
 
     def all_canvases(self):
         self._complete_initial_build()
+        self._finish_page_builds()
         canvases = []
         for view in self._page_views.values():
             canvases.extend(view.canvases())
@@ -616,19 +617,36 @@ class DashboardWindow(QMainWindow):
             self.stack.removeWidget(label)
             label.deleteLater()
 
-    def _complete_initial_build(self) -> None:
-        """Construit la page courante si la première ouverture l'a différée."""
+    def _complete_initial_build(self, incremental: bool = False) -> None:
+        """Construit la page courante si la première ouverture l'a différée.
+
+        ``incremental`` (chemin naturel, après la première peinture) : les
+        cadres de la page sont créés par petits lots, la boucle Qt reste
+        réactive. Tout autre appelant (accès aux widgets, page demandée)
+        obtient une page complète.
+        """
         if not self._initial_build_pending:
             return
         self._initial_build_pending = False
         self._drop_loading_view()
         layout = self.store.config.layout
         pages = [p for p in layout.pages if not p.extras.get("_hidden_overflow")]
-        self._build_views(pages, layout.view_mode == "onepage")
+        self._build_views(pages, layout.view_mode == "onepage", incremental=incremental)
         minimized = bool(self.windowState() & Qt.WindowMinimized)
         self._set_views_active(self.isVisible() and not minimized)
 
-    def _build_views(self, pages, onepage: bool) -> None:
+    def _complete_initial_build_incrementally(self) -> None:
+        self._complete_initial_build(incremental=True)
+
+    def _finish_page_builds(self) -> None:
+        for view in self._page_views.values():
+            view.build_all()
+
+    def content_pending(self) -> bool:
+        """Contenu de la première ouverture pas encore entièrement construit (mesures D01)."""
+        return self._initial_build_pending or any(not v.fully_built() for v in self._page_views.values())
+
+    def _build_views(self, pages, onepage: bool, incremental: bool = False) -> None:
         if onepage:
             self._onepage = OnePageView(pages, self.registry, self.theme_manager, self._onepage_context(), self.stack)
             self.stack.addWidget(self._onepage)
@@ -643,7 +661,7 @@ class DashboardWindow(QMainWindow):
             self._onepage.set_active(self.isVisible())
             self.page_title.setText("OnePage")
         else:
-            self.open_page(self._current_page, animate=False)
+            self.open_page(self._current_page, animate=False, _incremental=incremental)
         self._apply_size_class(force=True)
 
     def _onepage_context(self):
@@ -658,24 +676,27 @@ class DashboardWindow(QMainWindow):
         canvas.hide_requested.connect(lambda p, c=canvas: self._hide_widget(c, p))
         canvas.remove_requested.connect(lambda p, c=canvas: self._remove_widget(c, p))
 
-    def _view_for(self, page_id: str) -> PageView | None:
+    def _view_for(self, page_id: str, build: bool = True) -> PageView | None:
         self._complete_initial_build()
         view = self._page_views.get(page_id)
         if view is None:
             page = self.store.config.layout.page(page_id)
             if page is None:
                 return None
-            view = PageView(page, self.registry, self.theme_manager, self.context_factory(page_id), self.stack)
+            view = PageView(page, self.registry, self.theme_manager, self.context_factory(page_id), self.stack,
+                            build=build)
             self._wire_canvas(view.canvas)
             view.canvas.set_edit_mode(self.edit_mode)
             self.stack.addWidget(view)
             self._page_views[page_id] = view
+        elif build:
+            view.build_all()  # page demandée : complète (construction différée en cours)
         return view
 
     def current_page(self) -> str:
         return self._current_page
 
-    def open_page(self, page_id: str, animate: bool = True) -> bool:
+    def open_page(self, page_id: str, animate: bool = True, _incremental: bool = False) -> bool:
         self._complete_initial_build()
         layout = self.store.config.layout
         page = layout.page(page_id)
@@ -688,7 +709,7 @@ class DashboardWindow(QMainWindow):
         if self._onepage is not None:
             self._onepage.scroll_to_page(page_id)
             return True
-        view = self._view_for(page_id)
+        view = self._view_for(page_id, build=not _incremental)
         previous = self.stack.currentWidget()
         for other in self._page_views.values():
             if other is not view:
@@ -961,8 +982,8 @@ class DashboardWindow(QMainWindow):
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
         if self._initial_build_pending:
-            self.root.after_first_paint = self._complete_initial_build
-            QTimer.singleShot(250, self._complete_initial_build)  # filet : fenêtre jamais peinte
+            self.root.after_first_paint = self._complete_initial_build_incrementally
+            QTimer.singleShot(250, self._complete_initial_build_incrementally)  # filet : fenêtre jamais peinte
         self._set_views_active(True)
         self.root.update_animation(True)
         self.emblem.set_running(True)

@@ -99,6 +99,12 @@ def fichiers_mappes() -> set[str]:
         return set()
 
 
+def contenu_en_attente(window) -> bool:
+    """Contenu de la première ouverture pas encore entièrement construit (page complète)."""
+    attente = getattr(window, "content_pending", None)
+    return attente() if callable(attente) else bool(getattr(window, "_initial_build_pending", False))
+
+
 def mesure_unique(natif: bool, reouvertures: int) -> dict:
     """Une première ouverture dans CE processus (neuf), puis des réouvertures."""
     if natif and sys.platform == "win32":
@@ -183,7 +189,7 @@ def mesure_unique(natif: bool, reouvertures: int) -> dict:
             app.processEvents()
             time.sleep(0.001)
         t_paint = stamps.get("peinture", time.perf_counter())
-        while getattr(window, "_initial_build_pending", False) and time.monotonic() < deadline:
+        while contenu_en_attente(window) and time.monotonic() < deadline:
             app.processEvents()
             time.sleep(0.001)
         t_content = time.perf_counter()
@@ -439,7 +445,7 @@ def attribution_contenu(natif: bool) -> dict:
         window = controller.ensure_window()
         construction = polices(initial)
         controller.open()
-        attendre(lambda: not getattr(window, "_initial_build_pending", False))
+        attendre(lambda: not contenu_en_attente(window))
 
         def page_complete(page_id: str) -> bool:
             toiles = [c for c in window.all_canvases() if c.page.id == page_id]

@@ -257,8 +257,14 @@ def d01(ctx: Contexte):
     window = controller.window
     exposed = bool(window is not None and window.windowHandle() is not None and window.windowHandle().isExposed())
     # Contenu complet (indicatif, sans seuil) : depuis le correctif D01, la page
-    # et ses widgets sont construits juste après la première peinture.
-    attendre(ctx, lambda: window is None or not getattr(window, "_initial_build_pending", False), 10.0)
+    # et ses widgets sont construits juste après la première peinture, par lots
+    # (correctif C10) ; la mesure attend la page ENTIÈREMENT construite.
+    attente = getattr(window, "content_pending", None)
+
+    def contenu_en_attente() -> bool:
+        return attente() if callable(attente) else bool(getattr(window, "_initial_build_pending", False))
+
+    attendre(ctx, lambda: window is None or not contenu_en_attente(), 10.0)
     contenu_ms = (time.perf_counter() - start) * 1000
     pomper(ctx, 0.4)
     image = ctx.capture(window, "D01_ouverture") if window is not None else ""

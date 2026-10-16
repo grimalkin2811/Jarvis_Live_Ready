@@ -24,7 +24,20 @@ def onepage_order(pages: list[Page]) -> list[Page]:
 
 
 class PageView(QScrollArea):
-    def __init__(self, page: Page, registry, theme_manager, context_factory: Callable, parent=None) -> None:
+    """Une page (vue multipage).
+
+    ``build=False`` (page de la première ouverture) : les cadres sont créés
+    quelques-uns par tour de boucle Qt, dans un budget de temps, tant que la
+    vue est active — jamais la page entière d'un bloc (correctif C10 : la
+    construction de la page d'accueil était le plus long blocage de la boucle
+    Qt mesuré sous Windows natif). ``build_all()`` termine sur-le-champ.
+    """
+
+    #: Budget de construction par tour de boucle Qt (ms), comme la vue OnePage.
+    BUILD_BUDGET_MS = 12.0
+
+    def __init__(self, page: Page, registry, theme_manager, context_factory: Callable, parent=None,
+                 build: bool = True) -> None:
         super().__init__(parent)
         self.page = page
         self.setWidgetResizable(True)
@@ -34,20 +47,47 @@ class PageView(QScrollArea):
         holder.setAttribute(Qt.WA_TranslucentBackground, True)
         layout = QVBoxLayout(holder)
         layout.setContentsMargins(4, 4, 8, 16)
-        self.canvas = GridCanvas(page, registry, theme_manager, context_factory, holder)
+        self.canvas = GridCanvas(page, registry, theme_manager, context_factory, holder, build=build)
         layout.addWidget(self.canvas)
         layout.addStretch(1)
         self.setWidget(holder)
         self.viewport().setAutoFillBackground(False)
         holder.setAutoFillBackground(False)
+        self._active = False
+        self._build_timer = QTimer(self)
+        self._build_timer.setSingleShot(True)
+        self._build_timer.setInterval(0)
+        self._build_timer.timeout.connect(self._build_next)
+
+    def fully_built(self) -> bool:
+        return self.canvas.built
+
+    def _build_next(self) -> None:
+        # Vue masquée ou désactivée : aucune construction (reprise à l'activation).
+        if self.canvas.built or not self._active:
+            return
+        if not self.canvas.build_step(self.BUILD_BUDGET_MS):
+            self._build_timer.start()
+
+    def build_all(self) -> None:
+        """Termine immédiatement la construction (accès programmatique, navigation)."""
+        self._build_timer.stop()
+        if not self.canvas.built:
+            self.canvas.rebuild()
 
     def canvases(self) -> list[GridCanvas]:
         return [self.canvas]
 
     def set_active(self, active: bool) -> None:
+        self._active = bool(active)
         self.canvas.set_active(active)
+        if self._active and not self.canvas.built:
+            self._build_timer.start()
+        elif not self._active:
+            self._build_timer.stop()
 
     def dispose(self) -> None:
+        self._build_timer.stop()
         self.canvas.dispose()
 
 
