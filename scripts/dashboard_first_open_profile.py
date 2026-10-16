@@ -315,9 +315,45 @@ def attribution_contenu(natif: bool) -> dict:
         vue = {"nom": "multipage"}
         originale = grille.GridCanvas._create_frame
 
+        elements: list[dict] = []
+
         def creer(self, placement):
             avant = fichiers_mappes()
             cadre = originale(self, placement)
+            if not cadres:
+                # Premier cadre : construction seule, puis chaque élément (feuilles
+                # d'abord : un conteneur rendrait tous ses enfants d'un coup).
+                construction_cadre = polices(avant)
+                elements.append({"element": "construction du cadre", "polices": len(construction_cadre)})
+                descendants = cadre.findChildren(QtWidgets.QWidget)
+
+                def profondeur(w) -> int:
+                    n = 0
+                    while w is not None and w is not cadre:
+                        w, n = w.parentWidget(), n + 1
+                    return n
+
+                for w in sorted(descendants, key=profondeur, reverse=True):
+                    a = fichiers_mappes()
+                    w.ensurePolished()
+                    w.sizeHint()
+                    if w.isVisibleTo(cadre):
+                        w.grab()
+                    nouvelles_w = polices(a)
+                    if nouvelles_w:
+                        f = w.font()
+                        texte = ""
+                        for lecture in (QtWidgets.QLabel.text, QtWidgets.QAbstractButton.text):
+                            try:
+                                texte = lecture(w)
+                                break
+                            except TypeError:
+                                continue
+                        elements.append({"element": type(w).__name__, "role": w.property("role"),
+                                         "glyph": bool(w.property("glyph")), "texte": str(texte)[:30],
+                                         "familles": f.families() or [f.family()], "graisse": int(f.weight()),
+                                         "px": f.pixelSize(), "pt": round(f.pointSizeF(), 1),
+                                         "espacement": round(f.letterSpacing(), 1), "polices": len(nouvelles_w)})
             cadre.grab()  # mise en page + peinture du cadre et de ses enfants
             app.processEvents()
             nouvelles = polices(avant)
@@ -358,6 +394,7 @@ def attribution_contenu(natif: bool) -> dict:
         par_page[cle] = par_page.get(cle, 0) + c["polices"]
     return {"polices_construction": len(construction), "cadres": len(cadres), "polices_par_page": par_page,
             "coupables": [c for c in cadres if c["polices"] > 0][:6],
+            "premier_cadre_par_element": elements[:8],
             "polices_fenetre_entiere": len(fenetre)}
 
 
@@ -427,6 +464,13 @@ def sonde_polices(natif: bool, mode: str) -> dict:
     avant = fichiers_mappes()
     font = QFont()
     font.setFamilies(familles)
+    style = morceaux[3] if len(morceaux) > 3 else ""
+    if "gras" in style:
+        font.setBold(True)
+    if "espacement" in style:
+        font.setLetterSpacing(QFont.AbsoluteSpacing, 2.0)
+    if "26px" in style:
+        font.setPixelSize(26)
     t = time.perf_counter()
     if morceaux[0] == "icone":
         # Dessin des glyphes dans une image (icônes) avec cette police seule.
@@ -482,9 +526,15 @@ def main(argv=None) -> int:
     if args.sonde_polices:
         sonde = {"couverture": _enfant(["--enfant", "couverture", *natif]),
                  "attribution": _enfant(["--enfant", "attribution", *natif])}
+        rendus = {}
         for mode in ("rendu:Segoe UI:latin", "rendu:Segoe UI|Inter|Noto Sans:latin", "rendu:Segoe UI:symboles",
-                     "rendu:Segoe UI Symbol:symboles", "icone:Segoe UI Symbol:symboles"):
-            sonde[mode] = _enfant(["--enfant", mode, *natif])
+                     "rendu:Segoe UI Symbol:symboles", "icone:Segoe UI Symbol:symboles",
+                     "rendu:Segoe UI Semibold:latin", "rendu:Segoe UI Semibold:latin:26px",
+                     "rendu:Segoe UI Semibold:latin:espacement", "rendu:Segoe UI:latin:gras",
+                     "rendu:Segoe UI:latin:espacement", "rendu:Cascadia Mono:latin", "rendu:Consolas:latin"):
+            r = _enfant(["--enfant", mode, *natif])
+            rendus[mode] = [r.get("rendu_ms"), r.get("polices_chargees")] if "rendu_ms" in r else r
+        sonde["rendus [ms, fichiers]"] = rendus
         print(json.dumps(sonde, ensure_ascii=False))
         if args.json:
             Path(args.json).write_text(json.dumps(sonde, ensure_ascii=False, indent=2), encoding="utf-8")
