@@ -68,45 +68,109 @@ jobs:
           QT_QPA_PLATFORM: windows
         run: python scripts/dashboard_perf.py --out perf_natif
 
-      - name: Synthèse (annotations)
+      # Synthèse en étapes SÉPARÉES : GitHub ne garde qu'environ 10 annotations
+      # par type et par étape (au-delà, elles sont perdues silencieusement).
+      - name: Synthèse — profil D01
         if: always()
         shell: python
         run: |
           import json, os
           from pathlib import Path
 
-          lines = ["## Dashboard sous Qt natif (runner GitHub, pas le PC cible)", ""]
           profil = Path("profil.json")
-          if profil.exists():
+          if not profil.exists():
+              print("::warning title=D01 Windows natif::profil absent")
+          else:
               data = json.loads(profil.read_text(encoding="utf-8"))
               synth = data.get("synthese", {})
-              phases = synth.get("phases_medianes_ms", {})
-              polices = data.get("polices_a_froid", [{}])[0]
               msg = (f"premiere ouverture mediane {synth.get('premiere_ouverture_mediane_ms')} ms "
                      f"(max {synth.get('premiere_ouverture_max_ms')}, seuil 1500) ; reouverture mediane "
-                     f"{synth.get('reouverture_mediane_ms')} ms ; phases {phases} ; polices a froid {polices}")
+                     f"{synth.get('reouverture_mediane_ms')} ms ; phases {synth.get('phases_medianes_ms', {})}")
               print(f"::notice title=D01 Windows natif::{msg}")
-              lines += [f"* {msg}", ""]
               for index, essai in enumerate(data.get("essais", []), 1):
-                  print(f"::notice title=D01 processus {index}::{json.dumps(essai, ensure_ascii=False)[:900]}")
+                  contenu = essai.get("polices_chargees_pendant_le_contenu", [])
+                  court = {"premiere_ouverture_ms": essai.get("premiere_ouverture_ms"),
+                           "contenu_complet_ms": essai.get("contenu_complet_ms"),
+                           "phases_ms": essai.get("phases_ms"),
+                           "rebuild_pages_ms": essai.get("etapes_constructeur_ms", {}).get("rebuild_pages"),
+                           "apply_stylesheet_ms": essai.get("etapes_constructeur_ms", {}).get("_apply_stylesheet"),
+                           "fichiers_construction": len(essai.get("fichiers_charges_pendant_la_construction", [])),
+                           "polices_contenu": len(contenu), "exemples_contenu": contenu[:4],
+                           "reouvertures_ms": essai.get("reouvertures_ms"), "erreur": essai.get("erreur")}
+                  print(f"::notice title=D01 processus {index}::{json.dumps(court, ensure_ascii=False)[:1200]}")
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as handle:
+                      handle.write(f"## Dashboard sous Qt natif (runner GitHub, pas le PC cible)\n\n* D01 : {msg}\n")
+
+      - name: Synthèse — sonde des polices
+        if: always()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
           sonde = Path("sonde_polices.json")
-          if sonde.exists():
+          if not sonde.exists():
+              print("::warning title=Sonde polices::sonde absente")
+          else:
               for cle, valeur in json.loads(sonde.read_text(encoding="utf-8")).items():
+                  if cle == "couverture" and isinstance(valeur, dict):
+                      valeur = {"couverture": valeur.get("couverture")}  # détail : étape « Couverture »
                   print(f"::notice title=Sonde polices {cle}::{json.dumps(valeur, ensure_ascii=False)[:1500]}")
+
+      - name: Synthèse — dashboard_perf (indicatif, runner)
+        if: always()
+        shell: python
+        run: |
+          import json
+          from pathlib import Path
+
           perf = Path("perf_natif/perf.json")
-          if perf.exists():
+          if not perf.exists():
+              print("::warning title=dashboard_perf Windows natif::mesures absentes")
+          else:
               data = json.loads(perf.read_text(encoding="utf-8"))
               checks = {k: (v.get("value"), v.get("limit"), v.get("ok")) for k, v in data.get("checks", {}).items()}
               ko = {k: v for k, v in checks.items() if not v[2]}
               msg = (f"plateforme {data.get('qpa')} ; criteres en echec {ko or 'aucun'} ; "
                      f"onepage premier affichage {data.get('onepage_build_ms')} ms")
               print(f"::notice title=dashboard_perf Windows natif::{msg}")
-              print(f"::notice title=dashboard_perf criteres::{json.dumps(checks, ensure_ascii=False)[:900]}")
-              lines += [f"* dashboard_perf : {msg}"]
-          summary = os.environ.get("GITHUB_STEP_SUMMARY")
-          if summary:
-              with open(summary, "a", encoding="utf-8") as handle:
-                  handle.write("\n".join(lines) + "\n")
+              print(f"::notice title=dashboard_perf criteres::{json.dumps(checks, ensure_ascii=False)[:1500]}")
+              if ko:
+                  # Visible sans bloquer : le runner n'est pas le PC cible (seuils du PC de validation).
+                  print(f"::warning title=dashboard_perf Windows natif — criteres en echec::{json.dumps(ko, ensure_ascii=False)}")
+
+
+      # Prémisses du correctif D01 vérifiées sur les polices RÉELLES de Windows :
+      # un symbole laissé dans le texte doit être dans chaque police principale des
+      # thèmes, tous les autres dans la police de symboles ; sinon Qt recharge les
+      # polices du système au premier rendu. Échec du job (pas un avertissement).
+      - name: Couverture des symboles du Dashboard (correctif D01)
+        if: always()
+        shell: python
+        run: |
+          import json, sys
+          from pathlib import Path
+
+          sonde = Path("sonde_polices.json")
+          couverture = json.loads(sonde.read_text(encoding="utf-8")).get("couverture", {}) if sonde.exists() else {}
+          echecs = []
+          if "interface_non_couverts" not in couverture:
+              echecs.append(f"sonde de couverture absente ou en erreur : {json.dumps(couverture, ensure_ascii=False)[:400]}")
+          else:
+              print(f"::notice title=Couverture des symboles (D01)::inventaire {couverture['inventaire']} ; "
+                    f"surs dans le texte {couverture['symboles_surs_dans_le_texte']} ; polices principales "
+                    f"{couverture['polices_principales']} ; police de symboles {couverture['police_symboles']}")
+              if couverture["interface_non_couverts"]:
+                  echecs.append("symboles laisses dans le texte absents d'une police principale : "
+                                f"{json.dumps(couverture['interface_non_couverts'], ensure_ascii=False)}")
+              if couverture["symboles_non_couverts"]:
+                  echecs.append(f"symboles absents de la police de symboles {couverture['police_symboles']} : "
+                                f"{couverture['symboles_non_couverts']}")
+          for echec in echecs:
+              print(f"::error title=Couverture des symboles (D01)::{echec}")
+          sys.exit(1 if echecs else 0)
 
   build:
     name: Build de validation — versions Qt et test de fumée
