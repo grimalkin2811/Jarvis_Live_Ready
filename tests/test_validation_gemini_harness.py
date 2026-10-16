@@ -98,6 +98,67 @@ class SelftestServerVadTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("INTERRUPTION", [e["kind"] for e in gemini.trace_events()])
 
 
+    async def test_two_sentences_with_a_pause_give_one_answered_turn(self):
+        """Motif réel E01/E07/E09/E10 (validation du 2026-10-16) : la VAD clôt la
+        parole à la pause, la phrase suivante annule la génération encore muette
+        (``interrupted`` puis ``turn_complete``). Le tour reste ouvert et reçoit LA
+        réponse ; aucune relance (sur 28234b0 : relance, micro retenu, délai)."""
+        gemini = self.harness.gemini
+        prompt = harnais.PROMPTS_VOIX["VA"]
+        self.server.next_user_transcripts[:] = harnais.phrases(prompt)
+        bruit = np.random.default_rng(9).normal(0.0, 12.0, 1280).astype(np.int16).tobytes()
+        for bloc in _blocs(harnais.enonce_synthetique(prompt)) + [bruit] * 10:
+            await gemini.send_audio(bloc)
+            await asyncio.sleep(0.01)
+        self.assertTrue(await self._wait_turns(1, 5.0), "aucune fin de tour")
+        kinds = [e["kind"] for e in gemini.trace_events()]
+        self.assertIn("TURN_KEPT_OPEN", kinds, "le motif réel (génération annulée muette) n'a pas été exercé")
+        self.assertNotIn("EMPTY_GENERATION_RETRY", kinds)
+        self.assertEqual(len(self.harness.turns), 1)
+        self.assertEqual(self.harness.turns[-1].assistant_text, "Madrid.")
+        users = [m.text for m in self.harness.conversation.get_messages() if m.role == "user"]
+        self.assertEqual(users, [prompt], "une seule demande, les deux phrases réunies")
+
+    async def test_client_content_during_speech_waits_for_the_end_of_the_activity(self):
+        """Règle reproduite : un ``clientContent`` pendant une parole attend la fin de
+        celle-ci ; sans ``audio_stream_end`` et sans audio, elle ne vient jamais."""
+        from tests.echo_loop_harness import _tone_pcm
+
+        gemini = self.harness.gemini
+        session = gemini.session
+        self.server.next_user_transcripts[:] = ["Bonjour"]
+        for bloc in _blocs(_tone_pcm(0.5, 2600.0, 16000)):
+            await gemini.send_audio(bloc)
+        await session.send_client_content(turns=[{"role": "user", "parts": [{"text": "Un texte"}]}],
+                                          turn_complete=True)
+        self.assertEqual(self.server.contenus_differes, 1)
+        await asyncio.sleep(0.3)
+        self.assertEqual(self.harness.turns, [], "rien ne doit répondre tant que la parole n'est pas close")
+        await session.send_realtime_input(audio_stream_end=True)
+        self.assertTrue(await self._wait_turns(1, 5.0), "audio_stream_end clôt la parole et libère le texte")
+
+
+class AttributionTests(unittest.TestCase):
+    def test_a_turn_without_user_request_is_never_the_answer_to_an_utterance(self):
+        """E08 sur le PC : la réponse du modèle au rejeu de contexte (tour sans
+        demande) était prise pour la réponse au message suivant."""
+
+        class Labo:
+            turns = [{"user": "", "assistant": "Je suis là, je t'écoute."},
+                     {"user": "Quel est mon prénom ?", "assistant": "Tu t'appelles Ada."}]
+
+        scenarios = harnais.Scenarios.__new__(harnais.Scenarios)
+        scenarios.labo = Labo()
+        self.assertEqual(scenarios.reponse_vocale(0)["assistant"], "Tu t'appelles Ada.")
+        self.assertIsNone(scenarios.reponse_vocale(2))
+
+    def test_multi_sentence_prompts_are_split_like_the_real_pauses(self):
+        self.assertEqual(harnais.phrases(harnais.PROMPTS_VOIX["VA"]),
+                         ["Quelle est la capitale de l'Espagne ?", "Réponds en un mot."])
+        self.assertEqual(len(harnais.phrases(harnais.PROMPTS_VOIX["V7"])), 3)
+        self.assertEqual(harnais.phrases(harnais.PROMPTS_VOIX["STOP"]), [harnais.PROMPTS_VOIX["STOP"]])
+
+
 class DiagnosticTests(unittest.TestCase):
     def test_exception_description_keeps_api_details_and_masks_keys(self):
         class FakeAPIError(Exception):

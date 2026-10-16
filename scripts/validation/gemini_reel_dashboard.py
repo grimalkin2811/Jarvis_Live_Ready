@@ -174,6 +174,27 @@ def ajuster_niveau(pcm: bytes, rms_min: float) -> bytes:
     return np.clip(samples * (rms_min / niveau), -32768, 32767).astype(np.int16).tobytes()
 
 
+def phrases(texte: str) -> list[str]:
+    """Découpe un énoncé en phrases (ponctuation finale suivie d'une espace)."""
+    return [morceau for morceau in re.split(r"(?<=[.?!])\s+", texte.strip()) if morceau]
+
+
+def enonce_synthetique(texte: str) -> bytes:
+    """Énoncé de l'auto-test : une salve par phrase, pauses de 0,9 s entre phrases.
+
+    Une pause plus longue que la fin de parole de la VAD (8 blocs de 80 ms) :
+    comme le vrai service, le faux serveur clôt la parole à la pause et commence
+    une génération que la phrase suivante annule (motif réel E01/E07/E09/E10).
+    """
+    from tests.echo_loop_harness import _tone_pcm
+
+    morceaux = phrases(texte)
+    if len(morceaux) <= 1:
+        return _tone_pcm(1.2, 2600.0, 16000) + b"\x00\x00" * 1600
+    pause = b"\x00\x00" * int(16000 * 0.9)
+    return pause.join(_tone_pcm(0.7, 2600.0, 16000) for _ in morceaux) + b"\x00\x00" * 1600
+
+
 # ---------------------------------------------------------------------------
 # Synthèse des énoncés (AVANT toute initialisation Qt : processus SAPI isolés)
 # ---------------------------------------------------------------------------
@@ -356,13 +377,60 @@ def installer_faux_serveur(path):
     voix_minimale = _tone_pcm(0.3, 3000.0, AudioIO.OUTPUT_RATE)
 
     class ServeurSelftest(VadLiveServer):
+        #: Latence avant le premier audio d'une réponse (le vrai service met
+        #: 0,5 à 1,5 s) : une phrase qui suit la pause annule une génération
+        #: encore MUETTE — motif réel E01/E07/E09/E10.
+        LATENCE_REFLEXION_S = 0.9
+        #: Réponse au rejeu de contexte après une coupure, plus lente que
+        #: ``SEED_COMMIT_TIMEOUT_SECONDS`` (historique long) — motif réel E08.
+        DELAI_REPONSE_REJEU_S = 6.0
+
         def __init__(self) -> None:
             super().__init__(path, end_blocks=8, threshold_rms=350.0)
             self.text_turns_use_oracle = True
             self._diffusions: dict[str, asyncio.Task] = {}
+            self.interruptions_par_client = 0
+            self.contenus_differes = 0
 
         def _register(self, session) -> None:
             super()._register(session)
+            sid = session.session_id
+            generer = session._generate
+            envoyer_contenu = session.send_client_content
+            session.__dict__["_differe"] = None
+
+            async def generer_tardif(recap: bool = False, answer_override=None) -> None:
+                # Comme le vrai service, une réponse (texte, suite d'outil, rejeu)
+                # prend du temps : pendant ce temps, un ``clientContent`` peut
+                # l'interrompre (cf. ``contenu_client``).
+                delai = self.DELAI_REPONSE_REJEU_S if recap else self.LATENCE_REFLEXION_S
+
+                async def plus_tard() -> None:
+                    await asyncio.sleep(delai)
+                    await generer(recap=recap, answer_override=answer_override)
+
+                self._diffusions[sid] = asyncio.ensure_future(plus_tard())
+
+            async def contenu_client(turns=None, turn_complete: bool = True) -> None:
+                tache = self._diffusions.get(sid)
+                if tache is not None and not tache.done():
+                    # « A message here will interrupt any current model generation. »
+                    tache.cancel()
+                    self.interruptions_par_client += 1
+                    await session._emit(msg_interrupted())
+                    await session._emit(msg_turn_complete())
+                if session.__dict__.get("_vad", {}).get("in_speech") and turn_complete:
+                    # Parole en cours : la VAD du serveur attend la fin de
+                    # l'activité avant de générer. Si le micro se tait sans
+                    # ``audio_stream_end``, cette fin n'arrive jamais (constat
+                    # réel : RESPONSE_STALLED après la relance).
+                    self.contenus_differes += 1
+                    session.__dict__["_differe"] = (turns, turn_complete)
+                    return
+                await envoyer_contenu(turns=turns, turn_complete=turn_complete)
+
+            session._generate = generer_tardif
+            session.send_client_content = contenu_client
             emettre = session._emit
 
             async def emettre_realiste(message) -> None:
@@ -382,28 +450,56 @@ def installer_faux_serveur(path):
 
             session._emit = emettre_realiste
 
-        async def _vad_send_realtime_input(self, session, audio=None, **kwargs):
-            avant = bool(session.__dict__.get("_vad", {}).get("in_speech"))
+        async def _vad_send_realtime_input(self, session, audio=None, audio_stream_end=None, **kwargs):
+            etat = session.__dict__.setdefault(
+                "_vad", {"in_speech": False, "below": 0, "started": 0.0, "peak": 0.0})
+            if audio_stream_end:
+                # « audioStreamEnd » : l'audio en cache est vidé, la parole en
+                # cours est close (documentation Live API).
+                if etat.get("in_speech"):
+                    etat.update(in_speech=False, below=0)
+                    texte = self.next_user_transcripts.pop(0) if self.next_user_transcripts else "je vous écoute"
+                    await self._commit_turn(session, texte, peak=etat.get("peak", 0.0), started=etat.get("started", 0.0))
+                await self._contenu_differe(session)
+                return
+            avant = bool(etat.get("in_speech"))
             await super()._vad_send_realtime_input(session, audio=audio, **kwargs)
-            if not avant and session.__dict__.get("_vad", {}).get("in_speech"):
+            pendant = bool(session.__dict__.get("_vad", {}).get("in_speech"))
+            if not avant and pendant:
                 tache = self._diffusions.get(session.session_id)
                 if tache is not None and not tache.done():
                     tache.cancel()
                     await session._emit(msg_interrupted())
                     await session._emit(msg_turn_complete())
+            if avant and not pendant:
+                await self._contenu_differe(session)
+
+        async def _contenu_differe(self, session) -> None:
+            differe = session.__dict__.get("_differe")
+            if differe is not None:
+                session.__dict__["_differe"] = None
+                await session.send_client_content(turns=differe[0], turn_complete=differe[1])
 
         async def _commit_turn(self, session, text: str, *, peak: float, started: float) -> None:
             session.committed.append({"role": "user", "parts": [{"text": text}]})
             await session._emit(msg_user_transcript(text))
+            # Le modèle répond à TOUT ce qui a été dit depuis sa dernière réponse
+            # (une génération annulée par la suite de la phrase ne perd rien).
+            demande = session.__dict__.setdefault("_demande", [])
+            demande.append(text)
+            complete = " ".join(demande)
             script = self.next_tool_script
-            if script is not None and re.search(script[0], text, re.IGNORECASE):
+            if script is not None and re.search(script[0], complete, re.IGNORECASE):
+                demande.clear()
                 await session._generate()  # appel d'outil ; la suite arrive avec le tool_response
                 return
-            answer, _ok = self.oracle.answer(text, session.visible())
-            seconds = 6.0 if re.search(r"en détail", text, re.IGNORECASE) else 1.0
+            answer, _ok = self.oracle.answer(complete, session.visible())
+            seconds = 6.0 if re.search(r"en détail", complete, re.IGNORECASE) else 1.0
             self._diffusions[session.session_id] = asyncio.create_task(self._diffuser(session, answer, seconds))
 
         async def _diffuser(self, session, answer: str, seconds: float) -> None:
+            await asyncio.sleep(self.LATENCE_REFLEXION_S)
+            session.__dict__.get("_demande", []).clear()
             audio = _tone_pcm(seconds, 3000.0, AudioIO.OUTPUT_RATE)
             parts = 8 if seconds > 2 else 2
             piece = (len(audio) // parts) & ~1
@@ -499,8 +595,8 @@ class Scenarios:
 
     def _dire(self, cle: str) -> None:
         if self.server is not None:
-            # Une seule transcription attendue à la fois (jamais de file décalée).
-            self.server.next_user_transcripts[:] = [PROMPTS_VOIX[cle]]
+            # Une transcription par phrase prononcée (jamais de file décalée).
+            self.server.next_user_transcripts[:] = phrases(PROMPTS_VOIX[cle])
         self.labo.wake()
         self.labo.speak_pcm(self.pcm[cle])
 
@@ -510,11 +606,17 @@ class Scenarios:
         self._dire(cle)
         return avant
 
+    def reponse_vocale(self, avant: int) -> dict | None:
+        """Premier tour terminé depuis ``avant`` qui contient une transcription
+        utilisateur : la réponse du modèle au rejeu de contexte (tour SANS
+        demande, après une reconnexion) n'est la réponse à aucun énoncé."""
+        return next((t for t in self.labo.turns[avant:] if str(t.get("user") or "").strip()), None)
+
     def attendre_tour(self, avant: int, cle: str, timeout: float | None = None) -> dict:
         timeout = timeout or self.delais["tour"]
-        if not attendre(self.app, lambda: len(self.labo.turns) > avant, timeout):
+        if not attendre(self.app, lambda: self.reponse_vocale(avant) is not None, timeout):
             raise TimeoutError(f"aucune fin de tour {timeout:.0f} s après l'énoncé {cle}")
-        return dict(self.labo.turns[-1])
+        return dict(self.reponse_vocale(avant))
 
     def parler(self, cle: str) -> dict:
         avant = self.parler_sans_attendre(cle)
@@ -544,8 +646,13 @@ class Scenarios:
         result = {"accepte": not banner and widget.input.toPlainText() == "", "banniere": banner,
                   "texte_conserve": widget.input.toPlainText() == TEXTES[cle]}
         if result["accepte"] and attendre_reponse:
-            if attendre(self.app, lambda: len(self.labo.turns) > avant, self.delais["tour"]):
-                result.update(self.labo.turns[-1])
+            # La réponse au message est le tour qui CONTIENT ce message (même
+            # règle que ``reponse_vocale``) : jamais un tour sans demande.
+            def reponse():
+                return next((t for t in self.labo.turns[avant:] if t.get("user") == TEXTES[cle]), None)
+
+            if attendre(self.app, lambda: reponse() is not None, self.delais["tour"]):
+                result.update(reponse())
             else:
                 result["sans_reponse"] = True
         return result
@@ -609,7 +716,7 @@ class Scenarios:
         avant = self.parler_sans_attendre("L1")
         speaking = attendre(self.app, lambda: bool(self.gemini.speaking), self.delais["parole"])
         refused = self.ecrire("T4", attendre_reponse=False) if speaking else {"accepte": None, "banniere": ""}
-        fin = attendre(self.app, lambda: len(self.labo.turns) > avant, self.delais["longue"])
+        fin = attendre(self.app, lambda: self.reponse_vocale(avant) is not None, self.delais["longue"])
         attendre(self.app, self.disponible, self.delais["longue"])
         absent = not self.message_dans_contexte(TEXTES["T4"])
         after = self.ecrire("T4B")
@@ -641,8 +748,8 @@ class Scenarios:
         self.controller.store.config.close.mode = "hide"
         self.controller.store.changed("close")
         reopened = self.ouvrir_conversation()
-        complete = attendre(self.app, lambda: len(self.labo.turns) > avant, self.delais["longue"])
-        turn = dict(self.labo.turns[-1]) if complete else {}
+        complete = attendre(self.app, lambda: self.reponse_vocale(avant) is not None, self.delais["longue"])
+        turn = dict(self.reponse_vocale(avant)) if complete else {}
         after = self.parler("VA")
         new_exc = EVENEMENTS["exceptions"][exc_before:]
         madrid = "madrid" in (after.get("assistant") or "").lower()
@@ -801,10 +908,9 @@ def main(argv=None) -> int:
     pcm: dict[str, bytes] = {}
     try:
         if args.selftest:
-            from tests.echo_loop_harness import _tone_pcm
-
-            pcm = {k: _tone_pcm(1.2, 2600.0, 16000) + b"\x00\x00" * 1600 for k in PROMPTS_VOIX}
-            rapport["entree"] = "faux serveur (énoncés synthétiques, VAD par énergie)"
+            pcm = {k: enonce_synthetique(v) for k, v in PROMPTS_VOIX.items()}
+            rapport["entree"] = ("faux serveur (énoncés synthétiques, une salve par phrase, pauses de 0,9 s ; "
+                                 "VAD par énergie)")
         else:
             cache, why = synthese_locale(prompts)
             if cache is None:
