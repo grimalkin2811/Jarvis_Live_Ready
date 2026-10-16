@@ -92,8 +92,9 @@ def _perf_details(path: Path) -> dict:
         return {"failed_checks": None, "details": "perf.json absent ou illisible"}
     failed = {name: {"value": item.get("value"), "limit": item.get("limit")}
               for name, item in data.get("checks", {}).items() if not item.get("ok")}
-    keys = ("window_first_open_ms", "window_first_content_ms", "event_loop_max_lag_ms", "page_switch_median_ms",
-            "page_switch_max_ms", "onepage_build_ms", "cpu_idle_pousse_pct", "cpu_hidden_pct")
+    keys = ("window_first_open_ms", "window_first_content_ms", "event_loop_max_lag_ms",
+            "event_loop_max_lag_by_phase_ms", "page_switch_median_ms", "page_switch_max_ms", "onepage_build_ms",
+            "cpu_idle_pousse_pct", "cpu_hidden_pct")
     return {"failed_checks": failed, "measures": {key: data.get(key) for key in keys if key in data}}
 
 

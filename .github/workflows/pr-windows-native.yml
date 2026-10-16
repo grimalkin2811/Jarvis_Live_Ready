@@ -138,7 +138,9 @@ jobs:
               checks = {k: (v.get("value"), v.get("limit"), v.get("ok")) for k, v in data.get("checks", {}).items()}
               ko = {k: v for k, v in checks.items() if not v[2]}
               msg = (f"plateforme {data.get('qpa')} ; criteres en echec {ko or 'aucun'} ; "
-                     f"onepage premier affichage {data.get('onepage_build_ms')} ms")
+                     f"onepage premier affichage {data.get('onepage_build_ms')} ms ; contenu initial "
+                     f"{data.get('window_first_content_ms')} ms ; latence max par phase "
+                     f"{data.get('event_loop_max_lag_by_phase_ms')}")
               print(f"::notice title=dashboard_perf Windows natif::{msg}")
               print(f"::notice title=dashboard_perf criteres::{json.dumps(checks, ensure_ascii=False)[:1500]}")
               if ko:

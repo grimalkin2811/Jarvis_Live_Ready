@@ -46,7 +46,11 @@ CRITERIA = {
 
 
 class LagProbe:
-    """Mesure la latence de la boucle Qt (battement toutes les 10 ms)."""
+    """Mesure la latence de la boucle Qt (battement toutes les 10 ms).
+
+    Le maximum est aussi ventilé par PHASE du scénario (diagnostic : quel bloc
+    gèle la boucle) ; le critère reste le maximum global.
+    """
 
     def __init__(self) -> None:
         from PySide6.QtCore import QTimer
@@ -56,16 +60,29 @@ class LagProbe:
         self.timer.timeout.connect(self._tick)
         self.last = None
         self.max_gap = 0.0
+        self.phase = "debut"
+        self.by_phase: dict[str, float] = {}
 
     def _tick(self) -> None:
         now = time.perf_counter()
         if self.last is not None:
-            self.max_gap = max(self.max_gap, (now - self.last) * 1000.0 - 10.0)
+            gap = (now - self.last) * 1000.0 - 10.0
+            self.max_gap = max(self.max_gap, gap)
+            if gap > self.by_phase.get(self.phase, 0.0):
+                self.by_phase[self.phase] = gap
         self.last = now
+
+    def set_phase(self, name: str) -> None:
+        """Phase courante : un écart est imputé à la phase où il est OBSERVÉ (battement suivant)."""
+        self.phase = name
+
+    def phases(self) -> dict[str, float]:
+        return {name: round(max(0.0, gap), 1) for name, gap in self.by_phase.items()}
 
     def start(self) -> None:
         self.last = None
         self.max_gap = 0.0
+        self.by_phase = {}
         self.timer.start()
 
     def stop(self) -> float:
@@ -106,6 +123,7 @@ def run(idle_seconds: float = 4.0) -> dict:
         results["controller_init_ms"] = round((time.perf_counter() - start) * 1000, 1)
         probe = LagProbe()
         probe.start()
+        probe.set_phase("ouverture")
         start = time.perf_counter()
         controller.open()
         controller.window.resize(1600, 950)
@@ -115,6 +133,7 @@ def run(idle_seconds: float = 4.0) -> dict:
         # jusqu'au contenu complet est mesuré séparément (indicatif).
         app.processEvents()
         results["window_first_open_ms"] = round((time.perf_counter() - start) * 1000, 1)
+        probe.set_phase("contenu")
         deadline = time.monotonic() + 10.0
         while getattr(controller.window, "_initial_build_pending", False) and time.monotonic() < deadline:
             app.processEvents()
@@ -123,6 +142,7 @@ def run(idle_seconds: float = 4.0) -> dict:
         controller.hub.jobs.wait_idle(10)
         pump(app, 0.2)
         switches = []
+        probe.set_phase("pages")
         pages = [p.id for p in controller.store.config.layout.pages]
         for _round in range(3):
             for page in pages:
@@ -133,6 +153,7 @@ def run(idle_seconds: float = 4.0) -> dict:
                 controller.hub.jobs.wait_idle(10)
         results["page_switch_median_ms"] = round(statistics.median(switches), 1)
         results["page_switch_max_ms"] = round(max(switches), 1)
+        probe.set_phase("onepage")
         start = time.perf_counter()
         controller.set_view_mode("onepage")
         app.processEvents()
@@ -146,9 +167,11 @@ def run(idle_seconds: float = 4.0) -> dict:
         results["onepage_full_build_ms"] = round((time.perf_counter() - start) * 1000, 1)
         controller.hub.jobs.wait_idle(10)
         pump(app, 0.3)
+        probe.set_phase("retour_multipage")
         controller.set_view_mode("multipage")
         pump(app, 0.2)
         results["event_loop_max_lag_ms"] = round(probe.stop(), 1)
+        results["event_loop_max_lag_by_phase_ms"] = probe.phases()
         results["widgets_after_navigation"] = controller.window.widget_stats()
 
         def cpu_over(seconds: float) -> float:

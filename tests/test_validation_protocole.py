@@ -421,6 +421,54 @@ def test_c10_names_the_exceeded_criterion_instead_of_the_last_line(tmp_path):
     assert "premier affichage 179" not in controle.resultat
 
 
+def test_c10_names_the_phase_that_froze_the_event_loop(tmp_path):
+    """Diagnostic du critère global event_loop_max_lag_ms : la phase du scénario où le pic est
+    observé (ouverture, contenu, pages, onepage, retour) est citée ; le seuil ne change pas."""
+    valider_pr = _valider_pr()
+    x = _execution(tmp_path, valider_pr)
+    x.args.sauter, x.worktree, x.python_tests = [], tmp_path, sys.executable
+    out_dir = x.run / "protocole_dashboard"
+    out_dir.mkdir(parents=True)
+    etapes = [{"step": "perf_measures", "returncode": 1, "last_line": "OnePage : premier affichage 179 ms",
+               "failed_checks": {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0}},
+               "measures": {"event_loop_max_lag_ms": 182.4,
+                            "event_loop_max_lag_by_phase_ms": {"ouverture": 120.0, "contenu": 182.4, "onepage": 90.0}}}]
+    (out_dir / "summary.json").write_text(json.dumps({"steps": etapes, "success": False, "exit_code": 1}),
+                                          encoding="utf-8")
+    x.executer = lambda *a, **k: (1, "Résumé : ÉCHEC")
+    valider_pr.protocole_dashboard(x)
+    controle = x.ctl("C10", "")
+    assert controle.statut == P.ECHEC
+    assert "event_loop_max_lag_ms=182.4 (seuil 150.0)" in controle.resultat
+    assert "latence maximale pendant « contenu » (182.4 ms)" in controle.resultat
+
+
+def test_lag_probe_charges_each_gap_to_the_phase_where_it_is_observed():
+    import importlib.util
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    chemin = Path(__file__).resolve().parents[1] / "scripts" / "dashboard_perf.py"
+    spec = importlib.util.spec_from_file_location("dashboard_perf_essai", chemin)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    probe = module.LagProbe()
+    probe.set_phase("contenu")
+    probe.last = time.perf_counter() - 0.200  # battement suivant observé 200 ms plus tard
+    probe._tick()
+    probe.set_phase("pages")
+    probe.last = time.perf_counter() - 0.050
+    probe._tick()
+    phases = probe.phases()
+    assert 185.0 <= phases["contenu"] < 260.0 and 35.0 <= phases["pages"] < 110.0
+    assert probe.max_gap == max(probe.by_phase.values())
+    probe.start()
+    assert probe.phases() == {} and probe.max_gap == 0.0
+    probe.stop()
+
+
 def test_protocol_summary_carries_the_failed_perf_criteria(tmp_path):
     module = _protocole_dashboard_module()
     perf = tmp_path / "perf.json"
@@ -430,6 +478,8 @@ def test_protocol_summary_carries_the_failed_perf_criteria(tmp_path):
     details = module._perf_details(perf)
     assert details["failed_checks"] == {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0}}
     assert details["measures"]["onepage_build_ms"] == 179.0
+    perf.write_text(json.dumps({"checks": {}, "event_loop_max_lag_by_phase_ms": {"contenu": 182.4}}), encoding="utf-8")
+    assert module._perf_details(perf)["measures"]["event_loop_max_lag_by_phase_ms"] == {"contenu": 182.4}
     assert module._perf_details(tmp_path / "absent.json")["failed_checks"] is None
 
 

@@ -1459,6 +1459,11 @@ def protocole_dashboard(x: Execution) -> None:
                     # Critère réellement dépassé (et non la dernière ligne, indicative).
                     tail = "critères en échec : " + "; ".join(
                         f"{k}={v.get('value')} (seuil {v.get('limit')})" for k, v in failed.items())
+                    phases = (step.get("measures") or {}).get("event_loop_max_lag_by_phase_ms") or {}
+                    if "event_loop_max_lag_ms" in failed and phases:
+                        # Bloc qui a gelé la boucle Qt (diagnostic, le critère reste global).
+                        pire = max(phases, key=lambda nom: phases[nom])
+                        tail += f" — latence maximale pendant « {pire} » ({phases[pire]} ms)"
                 parts.append(f"{name}={'OK' if ok else 'ÉCHEC'}" + (f" ({tail})" if tail else ""))
             detail = ", ".join(parts)
             etapes_ok = bool(verdicts) and all(verdicts)
