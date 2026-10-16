@@ -1349,23 +1349,33 @@ def protocole_dashboard(x: Execution) -> None:
                            cwd=x.worktree, env=x.env_enfant("protocole dashboard"), timeout=2400)
     summary = out_dir / "summary.json"
     detail = ""
+    etapes_ok: bool | None = None
     if summary.exists():
         try:
             data = json.loads(summary.read_text(encoding="utf-8"))
             steps = data.get("steps") or data.get("etapes") or []
             if isinstance(steps, dict):
                 steps = [dict(v, nom=k) for k, v in steps.items()]
-            parts = []
+            parts, verdicts = [], []
             for step in steps:
                 name = step.get("name") or step.get("nom") or step.get("step") or "?"
                 ok = step.get("ok", step.get("success", step.get("returncode", 1) == 0))
+                verdicts.append(bool(ok))
                 tail = str(step.get("last_line") or "")[:70]
                 parts.append(f"{name}={'OK' if ok else 'ÉCHEC'}" + (f" ({tail})" if tail else ""))
             detail = ", ".join(parts)
+            etapes_ok = bool(verdicts) and all(verdicts)
         except Exception:
             detail = "summary.json illisible"
-    x.ctl("C10", "").regler(P.REUSSI if code == 0 else P.ECHEC, detail or f"code {code}",
-                            x.rel(summary) + " — rendu hors écran (officiel)")
+    statut = P.REUSSI if code == 0 and etapes_ok is not False else P.ECHEC
+    if statut == P.ECHEC and code != 0 and etapes_ok:
+        # Incohérence (validation Windows PR #50 : « ÉCHEC » global, sous-étapes
+        # réussies) : le verdict reste ÉCHEC — rien n'est masqué — mais la
+        # cause visible est donnée : code observé et fin de la sortie du script.
+        fin = [ligne.strip() for ligne in x.masque(out or "").splitlines() if ligne.strip()][-2:]
+        detail = (f"code de sortie {'absent (délai dépassé)' if code is None else code} alors que toutes les "
+                  f"étapes du résumé ont réussi ({detail}) ; fin de sortie : {' | '.join(fin)[:240]}")
+    x.ctl("C10", "").regler(statut, detail or f"code {code}", x.rel(summary) + " — rendu hors écran (officiel)")
 
 
 def lint_et_compilation(x: Execution) -> None:

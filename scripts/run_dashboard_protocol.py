@@ -66,7 +66,11 @@ def _run(name: str, command: list[str], out_dir: Path) -> dict:
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
     started = time.perf_counter()
     print(f"\n=== {name} : {' '.join(command)}", flush=True)
-    proc = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True)
+    # Décodage tolérant : sous Windows, un message natif (Qt, système) peut sortir
+    # dans la page de code ANSI ; un décodage strict faisait planter le protocole
+    # (code de sortie non nul) alors que l'étape elle-même avait réussi.
+    proc = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace")
     elapsed = time.perf_counter() - started
     log = out_dir / f"{name}.log"
     log.write_text(proc.stdout + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else ""), encoding="utf-8")
@@ -107,18 +111,25 @@ def main(argv=None) -> int:
         if results and results[-1]["returncode"] != 0 and args.fail_fast:
             break
     ok = all(r["returncode"] == 0 for r in results)
+    exit_code = 0 if ok else 1
     summary = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "platform": f"{platform.system()} {platform.release()} · Python {platform.python_version()}",
         "qpa": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
         "steps": results,
         "success": ok,
+        # Code de sortie ATTENDU de ce script : l'orchestrateur le compare au
+        # code réellement observé pour signaler toute incohérence.
+        "exit_code": exit_code,
         "notes": "Moteur vocal simulé, données isolées. Ne remplace pas la validation Windows réelle "
                  "(voir la liste de contrôle de PROTOCOLE_DE_TEST.md).",
     }
     (out_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\nRésumé : {'SUCCÈS' if ok else 'ÉCHEC'} — {out_dir / 'summary.json'}")
-    return 0 if ok else 1
+    try:
+        print(f"\nRésumé : {'SUCCÈS' if ok else 'ÉCHEC'} — {out_dir / 'summary.json'}", flush=True)
+    except (OSError, UnicodeError):
+        pass  # l'affichage final ne doit jamais contredire le résultat des étapes
+    return exit_code
 
 
 if __name__ == "__main__":

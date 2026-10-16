@@ -344,3 +344,56 @@ def test_report_groups_series_of_checks_with_the_same_cause():
     lignes = P.regrouper(items)
     assert lignes[0].startswith("D01–D04 (4 contrôles) : NON TESTÉ — pas de Windows natif (offscreen)")
     assert lignes[1].startswith("E01 « e1 » : NON TESTÉ — clé indisponible") and len(lignes) == 2
+
+
+# ---------------------------------------------------------------------------
+# C10 : protocole officiel du Dashboard (validation Windows PR #50 : « ÉCHEC »
+# global alors que les sous-étapes étaient réussies)
+# ---------------------------------------------------------------------------
+
+
+def _protocole_dashboard_module():
+    import importlib.util
+
+    chemin = Path(__file__).resolve().parents[1] / "scripts" / "run_dashboard_protocol.py"
+    spec = importlib.util.spec_from_file_location("run_dashboard_protocol_essai", chemin)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_protocol_step_survives_output_in_the_windows_ansi_code_page(tmp_path):
+    """Un message natif en cp1252 ne doit pas faire planter le protocole (UTF-8 strict avant)."""
+    module = _protocole_dashboard_module()
+    commande = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'\\xc9tape r\\xe9ussie\\n')"]
+    resultat = module._run("essai", commande, tmp_path)
+    assert resultat["returncode"] == 0
+    assert resultat["last_line"].endswith("tape r\ufffdussie")
+
+
+def test_c10_mismatch_between_exit_code_and_steps_stays_failed_but_explained(tmp_path):
+    valider_pr = _valider_pr()
+    x = _execution(tmp_path, valider_pr)
+    x.args.sauter = []
+    x.worktree = tmp_path
+    x.python_tests = sys.executable
+    out_dir = x.run / "protocole_dashboard"
+    out_dir.mkdir(parents=True)
+    etapes = [{"step": nom, "returncode": 0, "last_line": "ok"} for nom in ("unit", "integration", "perf_tests")]
+    (out_dir / "summary.json").write_text(json.dumps({"steps": etapes, "success": True, "exit_code": 0}),
+                                          encoding="utf-8")
+    x.executer = lambda *a, **k: (1, "…\nTraceback (most recent call last):\nOSError: [Errno 22] Invalid argument\n")
+    valider_pr.protocole_dashboard(x)
+    controle = x.ctl("C10", "")
+    assert controle.statut == P.ECHEC, "un code de sortie non nul n'est jamais transformé en réussite"
+    assert "code de sortie 1 alors que toutes les étapes du résumé ont réussi" in controle.resultat
+    assert "OSError: [Errno 22] Invalid argument" in controle.resultat
+    # Cas nominal : code 0 et étapes réussies -> RÉUSSI.
+    (tmp_path / "b").mkdir()
+    x2 = _execution(tmp_path / "b", valider_pr)
+    x2.args.sauter, x2.worktree, x2.python_tests = [], tmp_path, sys.executable
+    (x2.run / "protocole_dashboard").mkdir(parents=True)
+    (x2.run / "protocole_dashboard" / "summary.json").write_text(json.dumps({"steps": etapes}), encoding="utf-8")
+    x2.executer = lambda *a, **k: (0, "Résumé : SUCCÈS")
+    valider_pr.protocole_dashboard(x2)
+    assert x2.ctl("C10", "").statut == P.REUSSI
