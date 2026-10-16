@@ -1860,22 +1860,18 @@ def emplacement(x: Execution, rel: str, motif: str) -> str:
 
 
 def points_connus(x: Execution) -> None:
-    """Points relevés par l'audit (docs/dashboard/AUDIT_PRE_FUSION.md), non corrigés car optionnels."""
+    """Points relevés par l'audit (docs/dashboard/AUDIT_PRE_FUSION.md) encore ouverts."""
     if x.ctl("E10", "").statut != P.REUSSI:
         x.probleme("important", "Intention du modèle face à une simple mention du « tableau de bord » non validée : "
                    "aucune garde locale, seule la description de l'outil guide Gemini",
                    "Couvert par E10 (Gemini réel) ; tant que E10 n'est pas RÉUSSI, le risque d'ouverture intempestive "
                    "reste non mesuré.", emplacement(x, "src/tools.py", '"Ouvre le Dashboard (tableau de bord'), "E10")
-    x.probleme("mineur", "Deux notifications pour une même panne audio (« Problème audio » et « Backend vocal "
-               "indisponible »)", "Choix d'ergonomie relevé par l'audit, sans impact de stabilité.",
-               emplacement(x, "UI/dashboard/hub.py", '"Backend vocal indisponible"'), "")
-    x.probleme("mineur", "Message écrit : l'overlay Desktop affiche brièvement « à l'écoute » alors que le micro "
-               "n'écoute pas", "Évènement « transcription » réutilisé pour le texte ; à confirmer visuellement sous "
-               "Windows (liste de contrôle, item 4/14).",
-               emplacement(x, "src/gemini_live.py", "self._notify(self.on_user_transcript, cleaned, True)"), "")
-    x.probleme("mineur", "`python -m unittest discover tests` ne charge pas conftest.py (isolation des données "
-               "seulement avec pytest)", "Sans conséquence pendant ce protocole : C09 tourne sous la garde avec des "
-               "données redirigées.", emplacement(x, "tests/conftest.py", "_ISOLATED_DATA_ENV"), "C09")
+    # Corrigés depuis la validation Windows du 2026-10-16 (ne plus les signaler) :
+    # double notification pour une panne audio (UI/dashboard/hub.py), overlay
+    # « à l'écoute » pendant un message écrit (GeminiLive.submit_text publie
+    # « réflexion » d'abord), ``python -m unittest`` sans isolation des données
+    # (tests/_isolation.py). Tests : test_dashboard_ui_feedback.py,
+    # test_unittest_isolation.py.
 
 
 def resume_windows(x: Execution) -> None:

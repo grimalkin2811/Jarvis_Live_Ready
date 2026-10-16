@@ -52,23 +52,12 @@ os.environ.setdefault("JARVIS_LIVE_SEED_COMMIT_TIMEOUT", "1.5")
 # (``JARVIS_*_DATABASE_PATH``, ``JARVIS_USER_CONTENT_DIR``) est ignoré
 # pendant les tests ; ceux qui ont besoin d'un dossier ``user_content`` le
 # posent eux-mêmes (``isolated_jarvis``, ``patch.dict``).
-import atexit  # noqa: E402
-import shutil  # noqa: E402
-import tempfile  # noqa: E402
-
 import pytest  # noqa: E402
 
-_TEST_DATA_ROOT = tempfile.mkdtemp(prefix="jarvis-tests-data-")
-_ISOLATED_DATA_ENV = {"JARVIS_DATA_DIR": _TEST_DATA_ROOT}
-os.environ.update(_ISOLATED_DATA_ENV)
-for _variable in (
-    "JARVIS_MEMORY_DATABASE_PATH",
-    "JARVIS_SCHEDULE_DATABASE_PATH",
-    "JARVIS_TODO_DATABASE_PATH",
-    "JARVIS_USER_CONTENT_DIR",
-):
-    os.environ.pop(_variable, None)
-atexit.register(shutil.rmtree, _TEST_DATA_ROOT, True)
+from tests._isolation import apply_test_isolation  # noqa: E402
+
+# Même isolation que sous ``python -m unittest`` (tests/_isolation.py).
+_ISOLATED_DATA_ENV = apply_test_isolation()
 
 
 @pytest.fixture(autouse=True)
