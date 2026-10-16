@@ -103,37 +103,43 @@ jobs:
                   with open(summary, "a", encoding="utf-8") as handle:
                       handle.write(f"## Dashboard sous Qt natif (runner GitHub, pas le PC cible)\n\n* D01 : {msg}\n")
 
+      # Le résumé d'étape n'est pas plafonné (contrairement aux annotations,
+      # limitées à ~10 par étape) : toute la sonde y est écrite, et seuls
+      # quelques points clés sont publiés en annotations.
       - name: Synthèse — sonde des polices
         if: always()
         shell: python
         run: |
-          import json
+          import json, os
           from pathlib import Path
 
           sonde = Path("sonde_polices.json")
           if not sonde.exists():
               print("::warning title=Sonde polices::sonde absente")
-          else:
-              for cle, valeur in json.loads(sonde.read_text(encoding="utf-8")).items():
-                  if cle == "couverture" and isinstance(valeur, dict):
-                      valeur = {"couverture": valeur.get("couverture")}  # détail : étape « Couverture »
-                  if cle == "attribution" and isinstance(valeur, dict) and "premier_cadre_par_element" in valeur:
-                      elements = valeur.pop("premier_cadre_par_element")
-                      print(f"::notice title=Sonde polices premier cadre (par element)::"
-                            f"{json.dumps(elements, ensure_ascii=False)[:1500]}")
-                      appels = valeur.pop("premier_cadre_appels_longs", [])
-                      print(f"::notice title=Sonde polices premier cadre (appels natifs longs)::"
-                            f"{json.dumps(appels, ensure_ascii=False)[:1500]}")
-                      sauts = valeur.pop("premier_cadre_sauts_de_polices", [])
-                      print(f"::notice title=Sonde polices premier cadre (appels qui chargent des polices)::"
-                            f"{json.dumps(sauts, ensure_ascii=False)[:1500]}")
-                      dissection = valeur.pop("premier_cadre_dissection", [])
-                      print(f"::notice title=Sonde polices premier cadre (dissection)::"
-                            f"{json.dumps(dissection, ensure_ascii=False)[:1500]}")
-                      etapes = valeur.pop("polices_par_etape", [])
-                      print(f"::notice title=Sonde polices chargées par étape::"
-                            f"{json.dumps(etapes, ensure_ascii=False)[:1500]}")
-                  print(f"::notice title=Sonde polices {cle}::{json.dumps(valeur, ensure_ascii=False)[:1500]}")
+              raise SystemExit(0)
+          data = json.loads(sonde.read_text(encoding="utf-8"))
+          lignes = ["## Sonde des polices (Windows natif)", ""]
+          for cle, valeur in data.items():
+              lignes.append(f"### {cle}")
+              lignes.append("")
+              lignes.append("```json")
+              lignes.append(json.dumps(valeur, ensure_ascii=False, indent=1)[:4000])
+              lignes.append("```")
+              lignes.append("")
+          resume = os.environ.get("GITHUB_STEP_SUMMARY")
+          if resume:
+              with open(resume, "a", encoding="utf-8") as handle:
+                  handle.write("\n".join(lignes) + "\n")
+          couverture = data.get("couverture", {})
+          if isinstance(couverture, dict) and "couverture" in couverture:
+              print(f"::notice title=Sonde polices couverture::"
+                    f"{json.dumps(couverture['couverture'], ensure_ascii=False)[:1200]}")
+          couts = {k: v for k, v in data.items() if k.startswith("couts_glyphes") or k == "glyphes_couteux"}
+          for cle, valeur in couts.items():
+              print(f"::notice title=Sonde polices {cle}::{json.dumps(valeur, ensure_ascii=False)[:2500]}")
+          etapes = data.get("attribution", {}).get("polices_par_etape")
+          if etapes:
+              print(f"::notice title=Sonde polices chargées par étape::{json.dumps(etapes, ensure_ascii=False)[:1200]}")
 
       - name: Synthèse — dashboard_perf (indicatif, runner)
         if: always()
