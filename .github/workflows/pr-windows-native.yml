@@ -91,7 +91,8 @@ jobs:
                   print(f"::notice title=D01 processus {index}::{json.dumps(essai, ensure_ascii=False)[:900]}")
           sonde = Path("sonde_polices.json")
           if sonde.exists():
-              print(f"::notice title=Sonde polices::{sonde.read_text(encoding='utf-8')[:1800]}")
+              for cle, valeur in json.loads(sonde.read_text(encoding="utf-8")).items():
+                  print(f"::notice title=Sonde polices {cle}::{json.dumps(valeur, ensure_ascii=False)[:1500]}")
           perf = Path("perf_natif/perf.json")
           if perf.exists():
               data = json.loads(perf.read_text(encoding="utf-8"))
