@@ -121,6 +121,9 @@ jobs:
                       elements = valeur.pop("premier_cadre_par_element")
                       print(f"::notice title=Sonde polices premier cadre (par element)::"
                             f"{json.dumps(elements, ensure_ascii=False)[:1500]}")
+                      appels = valeur.pop("premier_cadre_appels_longs", [])
+                      print(f"::notice title=Sonde polices premier cadre (appels natifs longs)::"
+                            f"{json.dumps(appels, ensure_ascii=False)[:1500]}")
                   print(f"::notice title=Sonde polices {cle}::{json.dumps(valeur, ensure_ascii=False)[:1500]}")
 
       - name: Synthèse — dashboard_perf (indicatif, runner)

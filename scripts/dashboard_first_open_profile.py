@@ -270,6 +270,41 @@ def _caracteres_hors_latin1(racine) -> str:
     return "".join(sorted({ch for texte in textes for ch in texte if ord(ch) > 0xFF}))
 
 
+def _pile_dashboard(cadre_py, limite: int = 4) -> list[str]:
+    pile = []
+    while cadre_py is not None and len(pile) < limite:
+        chemin = cadre_py.f_code.co_filename.replace("\\", "/")
+        if "/UI/dashboard/" in chemin:
+            pile.append(f"{Path(chemin).name}:{cadre_py.f_lineno} {cadre_py.f_code.co_name}")
+        cadre_py = cadre_py.f_back
+    return pile
+
+
+def profileur_appels_natifs(seuil_ms: float = 5.0):
+    """Profileur (sys.setprofile) : appels NATIFS (PySide6) d'au moins ``seuil_ms``.
+
+    Chaque appel est rapporté avec la ligne du Dashboard qui l'a fait (pile) :
+    un repli des polices du système est un appel natif anormalement long,
+    même quand les fichiers sont déjà en cache.
+    """
+    en_cours: list = []
+    longs: list[dict] = []
+
+    def profil(cadre_py, evenement, fonction):
+        if evenement == "c_call":
+            en_cours.append((time.perf_counter(), fonction, cadre_py))
+        elif evenement in ("c_return", "c_exception") and en_cours:
+            debut, fonction, cadre_py = en_cours.pop()
+            duree = (time.perf_counter() - debut) * 1000.0
+            soi = getattr(fonction, "__self__", None)
+            module = type(soi).__module__ if soi is not None else str(getattr(fonction, "__module__", "") or "")
+            if duree >= seuil_ms and module.startswith("PySide6"):
+                longs.append({"ms": round(duree, 1), "appel": f"{type(soi).__name__}.{getattr(fonction, '__name__', '?')}",
+                              "pile": _pile_dashboard(cadre_py)})
+
+    return profil, longs
+
+
 def attribution_contenu(natif: bool) -> dict:
     """Polices chargées par CHAQUE cadre (rendu forcé dès sa création), processus neuf.
 
@@ -316,10 +351,20 @@ def attribution_contenu(natif: bool) -> dict:
         originale = grille.GridCanvas._create_frame
 
         elements: list[dict] = []
+        appels_longs: list[dict] = []
 
         def creer(self, placement):
             avant = fichiers_mappes()
-            cadre = originale(self, placement)
+            if not cadres:
+                profil, longs = profileur_appels_natifs()
+                sys.setprofile(profil)
+                try:
+                    cadre = originale(self, placement)
+                finally:
+                    sys.setprofile(None)
+                appels_longs.extend(sorted(longs, key=lambda a: -a["ms"])[:8])
+            else:
+                cadre = originale(self, placement)
             if not cadres:
                 # Premier cadre : construction seule, puis chaque élément (feuilles
                 # d'abord : un conteneur rendrait tous ses enfants d'un coup).
@@ -395,6 +440,7 @@ def attribution_contenu(natif: bool) -> dict:
     return {"polices_construction": len(construction), "cadres": len(cadres), "polices_par_page": par_page,
             "coupables": [c for c in cadres if c["polices"] > 0][:6],
             "premier_cadre_par_element": elements[:8],
+            "premier_cadre_appels_longs": appels_longs,
             "polices_fenetre_entiere": len(fenetre)}
 
 
