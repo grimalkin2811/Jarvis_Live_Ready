@@ -48,6 +48,32 @@ def _ms(a: float, b: float) -> float:
     return round((b - a) * 1000.0, 1)
 
 
+#: Symboles de l'interface du Dashboard (icônes de pages, boutons, cadres) :
+#: absents de la police d'interface par défaut, ils peuvent déclencher une
+#: recherche de police de REPLI au premier rendu.
+SYMBOLES = "⌂◈◎☑⚙✎▤▦●◫⤢✉○⋯✕◌→"
+
+#: Étapes du constructeur de la fenêtre chronométrées une à une.
+ETAPES_CONSTRUCTEUR = ("_build_header", "_build_sidebar", "_build_edit_bar", "_install_shortcuts",
+                       "_apply_stylesheet", "rebuild_pages", "_update_status", "_update_bell",
+                       "_restore_geometry")
+
+
+def fichiers_mappes() -> set[str]:
+    """Bibliothèques et polices projetées en mémoire par ce processus (psutil)."""
+    try:
+        import psutil
+
+        noms = set()
+        for carte in psutil.Process().memory_maps(grouped=True):
+            chemin = str(getattr(carte, "path", "") or "")
+            if chemin.lower().endswith((".dll", ".pyd", ".so", ".ttf", ".ttc", ".otf", ".fon")) or ".so." in chemin:
+                noms.add(Path(chemin).name)
+        return noms
+    except Exception:
+        return set()
+
+
 def mesure_unique(natif: bool, reouvertures: int) -> dict:
     """Une première ouverture dans CE processus (neuf), puis des réouvertures."""
     if natif and sys.platform == "win32":
@@ -83,6 +109,27 @@ def mesure_unique(natif: bool, reouvertures: int) -> dict:
             native_sender=lambda title, message: None, reduced_motion_probe=lambda: False,
         )
         phases["controleur"] = _ms(t, time.perf_counter())
+        # Chronométrage des étapes du constructeur (enveloppes posées AVANT la
+        # mesure, hors du temps mesuré ; même code exécuté).
+        import UI.dashboard.window as module_fenetre
+
+        etapes: dict[str, float] = {}
+
+        def enveloppe(nom, fonction):
+            def mesuree(self, *args, **kwargs):
+                debut = time.perf_counter()
+                try:
+                    return fonction(self, *args, **kwargs)
+                finally:
+                    etapes[nom] = round(etapes.get(nom, 0.0) + (time.perf_counter() - debut) * 1000.0, 1)
+            return mesuree
+
+        classe = module_fenetre.DashboardWindow
+        originales = {nom: getattr(classe, nom) for nom in ETAPES_CONSTRUCTEUR if hasattr(classe, nom)}
+        for nom, fonction in originales.items():
+            setattr(classe, nom, enveloppe(nom, fonction))
+        modules_avant = set(sys.modules)
+        cartes_avant = fichiers_mappes()
         # ---- Évènement D01 : de la demande d'ouverture à la fenêtre peinte ----
         t0 = time.perf_counter()
         import UI.dashboard.window  # noqa: F401
@@ -90,6 +137,11 @@ def mesure_unique(natif: bool, reouvertures: int) -> dict:
         t_import = time.perf_counter()
         window = controller.ensure_window()
         t_build = time.perf_counter()
+        for nom, fonction in originales.items():
+            setattr(classe, nom, fonction)
+        resultat["etapes_constructeur_ms"] = etapes
+        resultat["modules_importes_pendant_la_construction"] = sorted(set(sys.modules) - modules_avant)[:40]
+        resultat["fichiers_charges_pendant_la_construction"] = sorted(fichiers_mappes() - cartes_avant)[:60]
         stamps: dict[str, float] = {}
         original = window._complete_initial_build
 
@@ -144,6 +196,8 @@ def cout_polices_a_froid(natif: bool) -> dict:
     from PySide6.QtGui import QFontDatabase
     from PySide6.QtWidgets import QApplication, QLabel
 
+    from PySide6.QtGui import QFontMetrics
+
     app = QApplication.instance() or QApplication([])
     t = time.perf_counter()
     familles = len(QFontDatabase.families())
@@ -152,7 +206,16 @@ def cout_polices_a_froid(natif: bool) -> dict:
     label.show()
     app.processEvents()
     t_label = time.perf_counter()
-    return {"familles": familles, "base_polices_ms": _ms(t, t_db), "premier_libelle_ms": _ms(t_db, t_label)}
+    avant = fichiers_mappes()
+    t_sym = time.perf_counter()
+    largeur = QFontMetrics(label.font()).horizontalAdvance(SYMBOLES)
+    symboles = QLabel(SYMBOLES)
+    symboles.show()
+    app.processEvents()
+    t_sym_end = time.perf_counter()
+    return {"familles": familles, "base_polices_ms": _ms(t, t_db), "premier_libelle_ms": _ms(t_db, t_label),
+            "symboles_ms": _ms(t_sym, t_sym_end), "symboles_largeur": largeur,
+            "fichiers_charges_par_les_symboles": sorted(fichiers_mappes() - avant)[:30]}
 
 
 def _enfant(args: list[str]) -> dict:
