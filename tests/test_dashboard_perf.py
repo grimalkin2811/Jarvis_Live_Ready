@@ -550,9 +550,11 @@ def test_start_page_is_not_built_while_the_window_is_hidden(tmp_path, monkeypatc
 
 def test_first_open_probe_reports_sane_phases(tmp_path):
     """La sonde de profil D01 (scripts/dashboard_first_open_profile.py) doit horodater la vraie
-    première peinture : elle enveloppe le point d'entrée que la fenêtre appelle après sa peinture
-    (_complete_initial_build_incrementally). Le jour où ce point changea sans la sonde, la mesure
-    native a rapporté « première peinture 14 993 ms, contenu 0 ms » — artefact, pas produit."""
+    première peinture : elle enveloppe les DEUX points d'entrée qui peuvent suivre la peinture
+    (``_complete_initial_build_incrementally``, chemin naturel, et ``_complete_initial_build``,
+    filet des accès directs) — chacun suffit ; retirer les deux fait échouer ce test. Le jour où
+    le chemin a changé sans la sonde, la mesure native a rapporté « première peinture
+    14 993 ms, contenu 0 ms » : artefact de mesure, pas du produit."""
     import json
     import subprocess
 
