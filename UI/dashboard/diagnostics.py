@@ -174,6 +174,14 @@ def versions() -> dict[str, str]:
     except Exception:
         info["pyside6"] = "indisponible"
     try:
+        # Binaire construit avant la borne PySide6<6.12 (ex. Qt 6.12.0 embarqué) :
+        # signalé, pas bloquant (PR #50, src/qt_versions.py).
+        from src import qt_versions
+
+        info["pyside6_validation"] = qt_versions.describe()
+    except Exception:
+        info["pyside6_validation"] = "inconnue"
+    try:
         from importlib.metadata import version as _v
 
         info["google-genai"] = _v("google-genai")

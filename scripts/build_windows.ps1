@@ -60,6 +60,13 @@ if ($LASTEXITCODE -ne 0) { throw "pip install requirements échoué" }
 & $venvPython -m pip install pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller échoué" }
 
+# --- Cohérence PySide6 / Qt (PR #50) ---
+# PyInstaller collecte PySide6 dans CE même interpréteur : le binaire embarque
+# donc exactement les versions vérifiées ici (celles que la CI a testées).
+Write-Host "[build] Vérification des versions PySide6 / Qt embarquées..."
+& $venvPython scripts/check_qt_runtime.py --requirements requirements.txt --out (Join-Path $DistDir "qt_versions.json")
+if ($LASTEXITCODE -ne 0) { throw "Versions PySide6/Qt incohérentes avec requirements.txt : build refusé." }
+
 # --- Modèles OpenWakeWord ---
 if (-not $SkipModels) {
     Write-Host "[build] Téléchargement des modèles OpenWakeWord..."
