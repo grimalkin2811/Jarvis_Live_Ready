@@ -91,11 +91,16 @@ class OnePageView(QScrollArea):
         self._build_timer.timeout.connect(self._build_next)
         self._build_timer.start()
 
+    #: Budget de construction par tour de boucle Qt (ms) : quelques widgets à
+    #: la fois, jamais une section entière d'un bloc (correctif C10).
+    BUILD_BUDGET_MS = 12.0
+
     def _build_next(self) -> None:
         if not self._pending:
             return
-        canvas = self._pending.pop(0)
-        canvas.rebuild()
+        canvas = self._pending[0]
+        if canvas.build_step(self.BUILD_BUDGET_MS):
+            self._pending.pop(0)
         if self._active:
             self._update_visibility()
         if self._pending:
@@ -104,7 +109,9 @@ class OnePageView(QScrollArea):
     def build_all(self) -> None:
         """Termine immédiatement la construction (tests, captures)."""
         while self._pending:
-            self._build_next()
+            self._pending.pop(0).rebuild()
+        if self._active:
+            self._update_visibility()
 
     def fully_built(self) -> bool:
         return not self._pending
