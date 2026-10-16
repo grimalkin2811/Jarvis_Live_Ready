@@ -96,3 +96,56 @@ def test_page_switch_and_first_open_stay_interactive(tmp_path):
             assert max(durations) < 2.0
         finally:
             controller.shutdown()
+
+
+def test_first_open_paints_the_window_before_building_the_page(tmp_path):
+    """Correctif D01 (validation Windows PR #50 : 1 898 ms > 1 500 ms sur Pentium G5400).
+
+    La fenêtre s'affiche d'abord (en-tête, navigation, « Chargement… ») ; la page
+    et ses widgets sont construits juste après la première peinture. Tout accès
+    aux widgets, ou une page demandée explicitement, termine la construction
+    sur-le-champ : aucun appelant ne voit de fenêtre vide.
+    """
+    from UI.dashboard.controller import DashboardController
+
+    app = QApplication.instance() or QApplication([])
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.open()
+            app.processEvents()  # première peinture
+            window = controller.window
+            assert window.isVisible()
+            assert window._initial_build_pending, "la page doit être construite APRÈS la première peinture"
+            assert window.stack.currentWidget() is window._loading_view
+            deadline = time.monotonic() + 5.0
+            while window._initial_build_pending and time.monotonic() < deadline:
+                app.processEvents()
+                time.sleep(0.002)
+            assert not window._initial_build_pending, "le contenu arrive sans intervention"
+            assert window._loading_view is None
+            assert window.widget_stats()["widgets"] > 0
+            stats = window.widget_stats()
+            assert stats["active_widgets"] == stats["widgets"], "widgets actifs une fois la fenêtre visible"
+        finally:
+            controller.shutdown()
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "t.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.ensure_window()
+            assert controller.window._initial_build_pending
+            assert controller.window.all_canvases(), "un accès aux widgets termine la construction"
+            assert not controller.window._initial_build_pending
+        finally:
+            controller.shutdown()
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "u.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.open("memoire")  # page demandée (commande vocale) : construction immédiate
+            assert not controller.window._initial_build_pending
+            assert controller.window.current_page() == "memoire"
+        finally:
+            controller.shutdown()

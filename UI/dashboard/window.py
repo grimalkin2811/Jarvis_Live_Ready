@@ -58,6 +58,8 @@ class DashboardRoot(QWidget):
         self.energy = 0.0
         self._start = time.monotonic()
         self.frames_painted = 0
+        #: Rappel exécuté juste APRÈS la prochaine peinture (une seule fois).
+        self.after_first_paint = None
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
@@ -87,6 +89,11 @@ class DashboardRoot(QWidget):
         self.renderer.paint(painter, self.size(), theme, phase, energy=self.energy, dpr=self.devicePixelRatioF())
         painter.end()
         self.frames_painted += 1
+        callback, self.after_first_paint = self.after_first_paint, None
+        if callback is not None:
+            # Posté PENDANT la peinture : exécuté à une passe suivante de la
+            # boucle d'évènements, donc une fois la fenêtre visible à l'écran.
+            QTimer.singleShot(0, callback)
 
 
 class Emblem(QWidget):
@@ -231,7 +238,6 @@ class DashboardWindow(QMainWindow):
         self.store = controller.store
         self.theme_manager = controller.theme_manager
         self.hub = controller.hub
-        self.registry = controller.registry
         self.setWindowTitle(f"Jarvis — {DASHBOARD_NAME}")
         self.setMinimumSize(QSize(560, 420))
         self.resize(1360, 860)
@@ -242,6 +248,12 @@ class DashboardWindow(QMainWindow):
         self._current_page = self.store.config.window.last_page or "accueil"
         self._size_class = ""
         self._pre_fullscreen_state = "normal"
+        # Première ouverture (correctif D01, validation Windows PR #50) : la
+        # fenêtre s'affiche d'abord (en-tête, navigation, « Chargement… »), la
+        # page et ses widgets sont construits juste après la première peinture.
+        # Tout accès aux pages ou aux widgets termine la construction sur-le-champ.
+        self._initial_build_pending = False
+        self._loading_view: QLabel | None = None
 
         self.root = DashboardRoot(self.theme_manager)
         self.setCentralWidget(self.root)
@@ -273,7 +285,7 @@ class DashboardWindow(QMainWindow):
         self.hub.notification_added.connect(self._on_notification)
         self.controller.layout_changed.connect(self.rebuild_pages)
         self._apply_stylesheet()
-        self.rebuild_pages()
+        self.rebuild_pages(defer_views=True)
         self._update_status()
         self._update_bell()
         self._restore_geometry()
@@ -491,6 +503,7 @@ class DashboardWindow(QMainWindow):
         return _make
 
     def all_canvases(self):
+        self._complete_initial_build()
         canvases = []
         for view in self._page_views.values():
             canvases.extend(view.canvases())
@@ -498,8 +511,19 @@ class DashboardWindow(QMainWindow):
             canvases.extend(self._onepage.canvases())
         return canvases
 
-    def rebuild_pages(self) -> None:
-        """Reconstruit navigation et vues (changement de pages / de préréglage)."""
+    @property
+    def registry(self):
+        """Registre des widgets : ses modules ne sont importés qu'à la construction d'une page."""
+        return self.controller.registry
+
+    def rebuild_pages(self, defer_views: bool = False) -> None:
+        """Reconstruit navigation et vues (changement de pages / de préréglage).
+
+        ``defer_views`` (première construction seulement) : la navigation est
+        construite tout de suite, les vues après la première peinture.
+        """
+        self._drop_loading_view()
+        self._initial_build_pending = False
         for view in list(self._page_views.values()):
             view.set_active(False)
             view.dispose()
@@ -536,6 +560,49 @@ class DashboardWindow(QMainWindow):
         self.sidebar.setVisible(True)
         if layout.page(self._current_page) is None:
             self._current_page = "accueil"
+        if defer_views:
+            self._show_loading_view(onepage)
+            return
+        self._build_views(pages, onepage)
+
+    def _show_loading_view(self, onepage: bool) -> None:
+        """État de chargement cohérent : page sélectionnée, contenu à venir."""
+        self._initial_build_pending = True
+        label = QLabel("Chargement du tableau de bord…")
+        label.setAlignment(Qt.AlignCenter)
+        label.setProperty("role", "dim")
+        self._loading_view = label
+        self.stack.addWidget(label)
+        self.stack.setCurrentWidget(label)
+        page = self.store.config.layout.page(self._current_page)
+        if onepage:
+            self.page_title.setText("OnePage")
+        elif page is not None:
+            self.page_title.setText(f"/ {page.title}")
+            button = self.nav_buttons.get(page.id)
+            if button is not None:
+                button.setChecked(True)
+        self._apply_size_class(force=True)
+
+    def _drop_loading_view(self) -> None:
+        label, self._loading_view = self._loading_view, None
+        if label is not None:
+            self.stack.removeWidget(label)
+            label.deleteLater()
+
+    def _complete_initial_build(self) -> None:
+        """Construit la page courante si la première ouverture l'a différée."""
+        if not self._initial_build_pending:
+            return
+        self._initial_build_pending = False
+        self._drop_loading_view()
+        layout = self.store.config.layout
+        pages = [p for p in layout.pages if not p.extras.get("_hidden_overflow")]
+        self._build_views(pages, layout.view_mode == "onepage")
+        minimized = bool(self.windowState() & Qt.WindowMinimized)
+        self._set_views_active(self.isVisible() and not minimized)
+
+    def _build_views(self, pages, onepage: bool) -> None:
         if onepage:
             self._onepage = OnePageView(pages, self.registry, self.theme_manager, self._onepage_context(), self.stack)
             self.stack.addWidget(self._onepage)
@@ -566,6 +633,7 @@ class DashboardWindow(QMainWindow):
         canvas.remove_requested.connect(lambda p, c=canvas: self._remove_widget(c, p))
 
     def _view_for(self, page_id: str) -> PageView | None:
+        self._complete_initial_build()
         view = self._page_views.get(page_id)
         if view is None:
             page = self.store.config.layout.page(page_id)
@@ -582,6 +650,7 @@ class DashboardWindow(QMainWindow):
         return self._current_page
 
     def open_page(self, page_id: str, animate: bool = True) -> bool:
+        self._complete_initial_build()
         layout = self.store.config.layout
         page = layout.page(page_id)
         if page is None:
@@ -642,6 +711,7 @@ class DashboardWindow(QMainWindow):
         self.controller.set_view_mode(mode)
 
     def onepage_order(self) -> list[str]:
+        self._complete_initial_build()
         return self._onepage.section_order() if self._onepage is not None else []
 
     # ------------------------------------------------------------------
@@ -671,6 +741,7 @@ class DashboardWindow(QMainWindow):
             canvas.set_edit_mode(enabled)
 
     def _current_canvas(self):
+        self._complete_initial_build()
         if self._onepage is not None:
             canvases = self._onepage.canvases()
             for canvas in canvases:
@@ -863,6 +934,9 @@ class DashboardWindow(QMainWindow):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if self._initial_build_pending:
+            self.root.after_first_paint = self._complete_initial_build
+            QTimer.singleShot(250, self._complete_initial_build)  # filet : fenêtre jamais peinte
         self._set_views_active(True)
         self.root.update_animation(True)
         self.emblem.set_running(True)

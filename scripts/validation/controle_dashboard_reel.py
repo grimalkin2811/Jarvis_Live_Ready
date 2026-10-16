@@ -230,13 +230,17 @@ def d01(ctx: Contexte):
     elapsed_ms = (time.perf_counter() - start) * 1000
     window = controller.window
     exposed = bool(window is not None and window.windowHandle() is not None and window.windowHandle().isExposed())
+    # Contenu complet (indicatif, sans seuil) : depuis le correctif D01, la page
+    # et ses widgets sont construits juste après la première peinture.
+    attendre(ctx, lambda: window is None or not getattr(window, "_initial_build_pending", False), 10.0)
+    contenu_ms = (time.perf_counter() - start) * 1000
     pomper(ctx, 0.4)
     image = ctx.capture(window, "D01_ouverture") if window is not None else ""
     mesures = {"plateforme_qt": QGuiApplication.platformName(), "ouverture_ms": round(elapsed_ms, 1),
-               "exposee": exposed, "seuil_ms": SEUIL_OUVERTURE_MS}
+               "contenu_ms": round(contenu_ms, 1), "exposee": exposed, "seuil_ms": SEUIL_OUVERTURE_MS}
     ok = shown and exposed and elapsed_ms <= SEUIL_OUVERTURE_MS
-    texte = (f"fenêtre affichée en {elapsed_ms:.0f} ms (seuil {SEUIL_OUVERTURE_MS:.0f}), plateforme "
-             f"{mesures['plateforme_qt']}, exposée={exposed}")
+    texte = (f"fenêtre affichée en {elapsed_ms:.0f} ms (seuil {SEUIL_OUVERTURE_MS:.0f}), contenu complet en "
+             f"{contenu_ms:.0f} ms (indicatif), plateforme {mesures['plateforme_qt']}, exposée={exposed}")
     return (REUSSI if ok else ECHEC), texte, image, mesures
 
 

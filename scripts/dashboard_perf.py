@@ -109,8 +109,17 @@ def run(idle_seconds: float = 4.0) -> dict:
         start = time.perf_counter()
         controller.open()
         controller.window.resize(1600, 950)
-        pump(app, 0.01)
+        # Même évènement que le contrôle réel D01 : fenêtre affichée (une passe
+        # d'évènements = première peinture). Depuis le correctif D01, la page et
+        # ses widgets sont construits juste APRÈS cette peinture : le temps
+        # jusqu'au contenu complet est mesuré séparément (indicatif).
+        app.processEvents()
         results["window_first_open_ms"] = round((time.perf_counter() - start) * 1000, 1)
+        deadline = time.monotonic() + 10.0
+        while getattr(controller.window, "_initial_build_pending", False) and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.002)
+        results["window_first_content_ms"] = round((time.perf_counter() - start) * 1000, 1)
         controller.hub.jobs.wait_idle(10)
         pump(app, 0.2)
         switches = []
