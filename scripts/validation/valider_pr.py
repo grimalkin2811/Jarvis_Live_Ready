@@ -1377,6 +1377,11 @@ def protocole_dashboard(x: Execution) -> None:
                 ok = step.get("ok", step.get("success", step.get("returncode", 1) == 0))
                 verdicts.append(bool(ok))
                 tail = str(step.get("last_line") or "")[:70]
+                failed = step.get("failed_checks")
+                if not ok and failed:
+                    # Critère réellement dépassé (et non la dernière ligne, indicative).
+                    tail = "critères en échec : " + "; ".join(
+                        f"{k}={v.get('value')} (seuil {v.get('limit')})" for k, v in failed.items())
                 parts.append(f"{name}={'OK' if ok else 'ÉCHEC'}" + (f" ({tail})" if tail else ""))
             detail = ", ".join(parts)
             etapes_ok = bool(verdicts) and all(verdicts)

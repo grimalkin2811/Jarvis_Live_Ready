@@ -80,6 +80,23 @@ def _run(name: str, command: list[str], out_dir: Path) -> dict:
             "last_line": tail[0], "log": str(log.relative_to(ROOT)) if log.is_relative_to(ROOT) else str(log)}
 
 
+def _perf_details(path: Path) -> dict:
+    """Critères dépassés et mesures clés de ``dashboard_perf.py`` (correctif C10).
+
+    Le résumé ne donnait que la dernière ligne de chaque étape : pour les
+    mesures, la ligne OnePage (indicative) — jamais le critère dépassé.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"failed_checks": None, "details": "perf.json absent ou illisible"}
+    failed = {name: {"value": item.get("value"), "limit": item.get("limit")}
+              for name, item in data.get("checks", {}).items() if not item.get("ok")}
+    keys = ("window_first_open_ms", "window_first_content_ms", "event_loop_max_lag_ms", "page_switch_median_ms",
+            "page_switch_max_ms", "onepage_build_ms", "cpu_idle_pousse_pct", "cpu_hidden_pct")
+    return {"failed_checks": failed, "measures": {key: data.get(key) for key in keys if key in data}}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", default=str(ROOT / "build" / "dashboard_protocol"))
@@ -105,6 +122,8 @@ def main(argv=None) -> int:
     for step in selected:
         for name, command in commands[step]:
             result = _run(name, command, out_dir)
+            if name == "perf_measures":
+                result.update(_perf_details(out_dir / "perf" / "perf.json"))
             results.append(result)
             if result["returncode"] != 0 and args.fail_fast:
                 break

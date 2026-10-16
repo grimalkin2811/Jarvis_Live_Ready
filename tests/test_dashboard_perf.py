@@ -149,3 +149,69 @@ def test_first_open_paints_the_window_before_building_the_page(tmp_path):
             assert controller.window.current_page() == "memoire"
         finally:
             controller.shutdown()
+
+
+def test_onepage_builds_a_few_widgets_per_event_loop_turn(tmp_path, monkeypatch):
+    """Correctif C10 (validation Windows PR #50 : OnePage « premier affichage 179 » ms,
+    un seul bloc de la boucle Qt au-delà du seuil de latence de 150 ms).
+
+    Chaque tour de boucle ne crée que quelques widgets (budget de temps, au moins
+    un widget par tour) ; le résultat final est identique à une construction d'un
+    bloc ; ``build_all`` termine tout immédiatement (captures, tests).
+    """
+    from UI.dashboard import grid_view, pages_view
+    from UI.dashboard.controller import DashboardController
+
+    app = QApplication.instance() or QApplication([])
+    created_per_turn: list[int] = []
+    original_step = grid_view.GridCanvas.build_step
+
+    def counting_step(self, budget_ms=12.0):
+        before = len(self.frames)
+        done = original_step(self, budget_ms)
+        created_per_turn.append(len(self.frames) - before)
+        return done
+
+    monkeypatch.setattr(grid_view.GridCanvas, "build_step", counting_step)
+    monkeypatch.setattr(pages_view.OnePageView, "BUILD_BUDGET_MS", 0.0)  # pire cas : un widget par tour
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.open()
+            controller.set_view_mode("onepage")
+            onepage = controller.window._onepage
+            deadline = time.monotonic() + 10.0
+            while not onepage.fully_built() and time.monotonic() < deadline:
+                app.processEvents()
+            assert onepage.fully_built()
+            assert created_per_turn and max(created_per_turn) == 1, created_per_turn
+            expected = sum(len([p for p in c.page.widgets if not p.hidden]) for c in onepage.canvases())
+            assert sum(len(c.frames) for c in onepage.canvases()) == expected
+            for canvas in onepage.canvases():
+                assert canvas.built
+                assert set(canvas.frames) == {p.id for p in canvas.page.widgets if not p.hidden}
+        finally:
+            controller.shutdown()
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "t.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.open()
+            controller.set_view_mode("onepage")
+            onepage = controller.window._onepage
+            onepage.build_all()
+            assert onepage.fully_built()
+            assert all(canvas.built for canvas in onepage.canvases())
+        finally:
+            controller.shutdown()
+
+
+def test_perf_script_ends_with_the_failed_criteria():
+    """Correctif C10 : la dernière ligne (reprise par le protocole) nomme le critère dépassé."""
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import dashboard_perf
+
+    results = {"checks": {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0, "ok": False},
+                          "window_first_open_ms": {"value": 61.0, "limit": 1500.0, "ok": True}}}
+    assert dashboard_perf.echecs(results) == ["event_loop_max_lag_ms=182.4 (seuil 150.0)"]

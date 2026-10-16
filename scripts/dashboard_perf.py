@@ -211,7 +211,16 @@ def main(argv=None) -> int:
             print(f"  [{'OK' if item['ok'] else 'ÉCHEC'}] {key} = {item['value']} (seuil {item['limit']})")
         print(f"  initialisation contrôleur : {results['controller_init_ms']} ms ; OnePage : premier affichage "
               f"{results['onepage_build_ms']} ms, construction complète {results['onepage_full_build_ms']} ms")
+    # Dernière ligne = verdict lisible (correctif C10, validation Windows PR #50 : le
+    # protocole affichait la ligne OnePage, indicative, et jamais le critère dépassé).
+    print(f"Critères en échec : {'; '.join(echecs(results))}" if echecs(results) else "Tous les critères respectés")
     return 0 if results["all_ok"] else 1
+
+
+def echecs(results: dict) -> list[str]:
+    """Critères dépassés, « nom=valeur (seuil limite) »."""
+    return [f"{name}={item['value']} (seuil {item['limit']})"
+            for name, item in results.get("checks", {}).items() if not item.get("ok")]
 
 
 if __name__ == "__main__":

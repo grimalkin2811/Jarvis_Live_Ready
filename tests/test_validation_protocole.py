@@ -399,6 +399,40 @@ def test_c10_mismatch_between_exit_code_and_steps_stays_failed_but_explained(tmp
     assert x2.ctl("C10", "").statut == P.REUSSI
 
 
+def test_c10_names_the_exceeded_criterion_instead_of_the_last_line(tmp_path):
+    """Validation Windows PR #50 : C10 affichait « perf_measures=ÉCHEC (… premier affichage 179) »,
+    la dernière ligne (OnePage, indicative) au lieu du critère réellement dépassé."""
+    valider_pr = _valider_pr()
+    x = _execution(tmp_path, valider_pr)
+    x.args.sauter, x.worktree, x.python_tests = [], tmp_path, sys.executable
+    out_dir = x.run / "protocole_dashboard"
+    out_dir.mkdir(parents=True)
+    etapes = [{"step": "perf_tests", "returncode": 0, "last_line": "4 passed"},
+              {"step": "perf_measures", "returncode": 1,
+               "last_line": "initialisation contrôleur : 4 ms ; OnePage : premier affichage 179 ms",
+               "failed_checks": {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0}}}]
+    (out_dir / "summary.json").write_text(json.dumps({"steps": etapes, "success": False, "exit_code": 1}),
+                                          encoding="utf-8")
+    x.executer = lambda *a, **k: (1, "Résumé : ÉCHEC")
+    valider_pr.protocole_dashboard(x)
+    controle = x.ctl("C10", "")
+    assert controle.statut == P.ECHEC
+    assert "critères en échec : event_loop_max_lag_ms=182.4 (seuil 150.0)" in controle.resultat
+    assert "premier affichage 179" not in controle.resultat
+
+
+def test_protocol_summary_carries_the_failed_perf_criteria(tmp_path):
+    module = _protocole_dashboard_module()
+    perf = tmp_path / "perf.json"
+    perf.write_text(json.dumps({"checks": {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0, "ok": False},
+                                           "page_switch_max_ms": {"value": 90.0, "limit": 400.0, "ok": True}},
+                                "event_loop_max_lag_ms": 182.4, "onepage_build_ms": 179.0}), encoding="utf-8")
+    details = module._perf_details(perf)
+    assert details["failed_checks"] == {"event_loop_max_lag_ms": {"value": 182.4, "limit": 150.0}}
+    assert details["measures"]["onepage_build_ms"] == 179.0
+    assert module._perf_details(tmp_path / "absent.json")["failed_checks"] is None
+
+
 def test_jarvis_harnesses_come_from_the_tested_commit(tmp_path):
     """La copie locale peut être en retard sur la PR : son harnais ne doit pas tester le nouveau code."""
     valider_pr = _valider_pr()
