@@ -192,6 +192,14 @@ jobs:
               if couverture["symboles_non_couverts"]:
                   echecs.append(f"symboles absents de la police de symboles {couverture['police_symboles']} : "
                                 f"{couverture['symboles_non_couverts']}")
+              # Coût de chaque glyphe (processus neufs) : au-delà de quelques fichiers,
+              # le rendu balaie les polices du système (mesure native D01).
+              couts = next((v for k, v in json.loads(sonde.read_text(encoding="utf-8")).items()
+                            if k.startswith("couts_glyphes")), {})
+              couteux = {g: c for g, c in couts.items() if c and c[0] and c[0] > 5}
+              print(f"::notice title=Cout des glyphes (D01)::{json.dumps(couteux or 'aucun', ensure_ascii=False)}")
+              if couteux:
+                  echecs.append(f"glyphes dont le rendu charge les polices du système (texte, icone) : {couteux}")
           for echec in echecs:
               print(f"::error title=Couverture des symboles (D01)::{echec}")
           sys.exit(1 if echecs else 0)

@@ -571,3 +571,30 @@ def test_first_open_probe_reports_sane_phases(tmp_path):
     assert 0.0 < phases["contenu"] < 5000.0, phases
     assert data["premiere_ouverture_ms"] < 2500.0, data["premiere_ouverture_ms"]
     assert 0.0 < data["contenu_complet_ms"] < 8000.0
+
+
+def test_no_glyph_known_to_scan_the_system_fonts():
+    """Mesure native (sonde par glyphe, processus neufs) : sur les 37 glyphes de
+    l'interface, « ⚡ » (U+26A1) est le SEUL dont le rendu charge les polices du système
+    (149 fichiers), en texte comme en icône peinte — les 36 autres en coûtent 1. La tuile
+    « Actions rapides » utilise « ▷ ». La garde générale est l'étape native « Couverture des
+    symboles du Dashboard » (coût par glyphe, échec au-delà de 5 fichiers)."""
+    import importlib.util
+
+    from pathlib import Path
+
+    from UI.dashboard.registry import default_registry
+
+    racine = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("profil_d01_glyphes",
+                                                  racine / "scripts" / "dashboard_first_open_profile.py")
+    profil = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profil)
+    inventaire = profil.symboles_du_dashboard()
+    assert "⚡" not in inventaire, "glyphe dont le rendu balaie les polices du système (mesure native)"
+    assert "▷" in inventaire
+    spec_widget = default_registry().spec("jarvis.quick_actions")
+    assert spec_widget is not None and spec_widget.icon == "▷", spec_widget and spec_widget.icon
+    flux = (racine / ".github" / "workflows" / "pr-windows-native.yml").read_text(encoding="utf-8")
+    etape = flux.split("- name: Couverture des symboles du Dashboard (correctif D01)", 1)[1]
+    assert "couts_glyphes" in etape and "> 5" in etape, "la garde native du coût par glyphe a disparu"

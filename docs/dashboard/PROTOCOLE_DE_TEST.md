@@ -136,6 +136,22 @@ polices des thèmes se terminent par des polices de symboles explicites
 Noto Sans Symbols 2, DejaVu Sans). Seuil inchangé ; D01 rapporte désormais la
 part construction / affichage et les polices chargées pendant l'ouverture.
 
+Cause exacte du repli, établie par dissection sur un Windows natif : à la
+construction du premier cadre, Qt chargeait 136 fichiers de police au moment
+de la **mise en page** (`sizeHint`) d'**un seul** élément — l'icône d'un cadre
+(`QLabel`, règle `glyph`, police Segoe UI Symbol) portant « ⚡ », l'icône de la
+tuile « Actions rapides » (`registry.py`). Le coût venait du **caractère**, pas
+d'une police manquante : la couverture des symboles par la police était
+complète. Mesure du coût de chaque glyphe (sonde, deux processus neufs par
+glyphe) : sur les 37 glyphes de l'interface, « ⚡ » (U+26A1) est le **seul** à
+charger les polices du système (149 fichiers, en texte comme en icône peinte) ;
+tous les autres en chargent 1. La tuile utilise désormais « ▷ » et l'étape
+native « Couverture des symboles du Dashboard » échoue si un glyphe coûte plus
+de 5 fichiers (garde générale, mesure refaite à chaque exécution).
+
+Après corrections : construction de la fenêtre 13 fichiers (Segoe UI +
+Segoe UI Symbol), contenu 14 — au lieu de 155.
+
 Le runner GitHub n'est pas le PC de validation : ces chiffres sont un repère
 Windows natif ; la mesure qui fait foi reste D01 sur le PC cible.
 

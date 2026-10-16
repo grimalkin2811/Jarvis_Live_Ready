@@ -100,7 +100,9 @@ def _builtin_specs() -> list[WidgetSpec]:
                    "jarvis", f(QuickActionsWidget), (3, 3), (4, 4), capabilities=frozenset({"actions", "settings"}),
                    settings=(SettingField("show_routines", "Afficher les routines activées", "bool", True),
                              SettingField("show_protocols", "Afficher les protocoles visuels", "bool", False)),
-                   icon="⚡", actions=("mic.toggle", "voice.stop", "conversation.new", "interface.blob",
+                   # « ▷ » et non « ⚡ » : mesure native D01, le seul glyphe de
+                   # l'interface dont le rendu charge les 149 polices du système.
+                   icon="▷", actions=("mic.toggle", "voice.stop", "conversation.new", "interface.blob",
                                       "interface.desktop", "folder.results", "routine.run", "protocol.run")),
         WidgetSpec("tasks.background", "Tâches d'arrière-plan",
                    "Statuts réels du Task Manager ; voir, ouvrir, annuler ou relancer selon le statut.",
