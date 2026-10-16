@@ -180,9 +180,27 @@ EMPTY_GENERATION_MAX_RETRIES = int(
 TEXT_INPUT_MAX_CHARS = 4000
 
 #: Filet de sécurité (s) : si un message texte n'a reçu AUCUNE réponse du
-#: serveur dans ce délai, la porte micro retenue pour lui est rouverte (le
-#: tour reste ouvert : une réponse tardive est toujours traitée normalement).
+#: serveur dans ce délai, son tour est clos en échec (message conservé et
+#: marqué ``failed``) et la porte micro retenue pour lui est rouverte. Une
+#: réponse tardive est encore affichée normalement. Si le serveur n'a RIEN
+#: envoyé depuis l'envoi du texte, la session est considérée comme muette et
+#: relancée (même reprise que ``RESPONSE_STALL_TIMEOUT_SECONDS``).
 TEXT_TURN_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_TEXT_TURN_TIMEOUT", "30") or 30)
+
+#: Chien de garde « serveur muet » (s) — correctif PR #50, validation Windows
+#: réelle. Défaut serveur documenté (googleapis/python-genai#2117, google-
+#: gemini/cookbook#1225) : en pleine génération, l'audio cesse d'arriver, sans
+#: ``turn_complete``, sans ``generation_complete``, sans erreur, et le
+#: WebSocket reste ouvert. Sans borne, ``speaking`` (ou une relance, ou une
+#: demande transcrite) restait vrai indéfiniment : micro fermé (« jarvis
+#: parle »), texte refusé (« Jarvis est occupé »), Jarvis sourd jusqu'à une
+#: coupure réseau. Si une réponse est DUE et que le serveur n'a envoyé AUCUN
+#: message pendant ce délai, le tour est clos en échec (demande conservée) et
+#: la session est relancée (handle de reprise conservé : contexte restauré).
+#: Même ordre de grandeur que le filet texte : un flux de réponse réel ne se
+#: tait jamais aussi longtemps. Un outil local en cours n'est jamais compté.
+#: ``0`` désactive le chien de garde (diagnostic uniquement).
+RESPONSE_STALL_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_STALL_TIMEOUT", "30") or 30)
 
 
 class TextSubmitError(RuntimeError):
@@ -381,6 +399,17 @@ class GeminiLive:
         self._turn_closed = True
         self._loop = None
         self._watcher_task = None
+        # Chien de garde « serveur muet » (cf. RESPONSE_STALL_TIMEOUT_SECONDS) :
+        # ``_last_server_message`` = dernier message REÇU du serveur ;
+        # ``_last_exchange`` = dernier échange qui relance l'attente (message
+        # reçu, ou requête qui oblige le serveur à répondre : texte, relance,
+        # réponse d'outil, session prête). Mises à jour sans coût sur le
+        # chemin nominal ; seule la tâche de surveillance les compare.
+        self._last_server_message = time.monotonic()
+        self._last_exchange = self._last_server_message
+        self._stall_task = None
+        #: Nombre de blocages serveur détectés puis repris (diagnostic).
+        self.stalls_recovered = 0
         self._voice_version_used = None
         # Vrai quand la session a été fermée volontairement pour appliquer un
         # réglage (changement de voix) : la boucle externe reconnecte
@@ -1197,6 +1226,7 @@ class GeminiLive:
         # pendant que le serveur génère encore sa réponse à ce rejeu.
         self.context_seeded = await self._seed_context()
         self._session_ready = True
+        self._last_exchange = time.monotonic()
         # Diagnostic (v1.7.4 — validation réelle, item #7 de l'audit) :
         # marqueur explicite de l'instant où le micro est de nouveau autorisé
         # à écrire sur CETTE session (``_can_send_now`` refuse tout envoi
@@ -1214,6 +1244,7 @@ class GeminiLive:
             context_seed_confirmed=self.context_seed_confirmed,
         )
         self._start_voice_watcher()
+        self._start_response_watchdog()
 
     def _start_voice_watcher(self) -> None:
         """Surveille les changements de voix pour reconnecter proprement."""
@@ -1383,8 +1414,8 @@ class GeminiLive:
             return "Une demande vocale est en cours de traitement."
         return ""
 
-    def _abort_text_turn(self, reason: str) -> None:
-        """Clôt en échec un tour texte dont l'envoi n'a pas abouti."""
+    def _abort_text_turn(self, reason: str, source: str = "text_input_failed") -> None:
+        """Clôt en échec un tour texte dont l'envoi (ou la réponse) n'a pas abouti."""
         self.conversation.fail_open_turn(reason)
         self._turn_user_text.clear()
         self._turn_model_text.clear()
@@ -1394,7 +1425,7 @@ class GeminiLive:
         self._turn_closed = True
         if not already_closed:
             self.turn_epoch += 1
-            self._record_trace("TURN_CLOSE", source="text_input_failed")
+            self._record_trace("TURN_CLOSE", source=source)
             self._notify(self.on_turn_resolved)
 
     async def submit_text(self, text: str) -> dict:
@@ -1463,9 +1494,12 @@ class GeminiLive:
             raise TextSubmitError(
                 "send_failed", "Envoi impossible : la connexion au modèle a été interrompue."
             ) from exc
+        # Le serveur doit maintenant répondre : l'attente part de l'envoi.
+        sent_at = time.monotonic()
+        self._last_exchange = sent_at
         try:
             asyncio.get_running_loop().call_later(
-                TEXT_TURN_TIMEOUT_SECONDS, self._text_turn_watchdog, epoch
+                TEXT_TURN_TIMEOUT_SECONDS, self._text_turn_watchdog, epoch, sent_at
             )
         except RuntimeError:  # pragma: no cover - hors boucle
             pass
@@ -1476,19 +1510,42 @@ class GeminiLive:
             "chars": len(cleaned),
         }
 
-    def _text_turn_watchdog(self, epoch: int) -> None:
-        """Rouvre la porte micro si le serveur n'a jamais répondu au texte."""
-        if (
+    def _text_turn_watchdog(self, epoch: int, sent_at: float | None = None) -> None:
+        """Le serveur n'a jamais répondu au texte : le tour est clos, rien ne reste bloqué.
+
+        AVANT (constaté en validation PR #50) : seule la porte micro était
+        rouverte ; le tour restait ouvert avec le texte, si bien que chaque
+        message écrit suivant était refusé (« Une demande vocale est en cours
+        de traitement », message de surcroît inexact) jusqu'à la fin d'un
+        autre tour. Désormais le tour est clos en échec (message conservé,
+        marqué ``failed``) ; si le serveur n'a RIEN envoyé depuis l'envoi, la
+        session est muette et elle est relancée (chien de garde).
+        """
+        if not (
             self._text_turn_pending
             and self.turn_epoch == epoch
             and not self._turn_model_content_seen
         ):
-            self._text_turn_pending = False
-            self._record_trace("TEXT_TURN_TIMEOUT", timeout=TEXT_TURN_TIMEOUT_SECONDS)
-            log.warning(
-                "gen=%s : aucune réponse au message texte après %.0f s -- porte micro rouverte",
-                self.session_generation, TEXT_TURN_TIMEOUT_SECONDS,
-            )
+            return
+        self._record_trace("TEXT_TURN_TIMEOUT", timeout=TEXT_TURN_TIMEOUT_SECONDS)
+        if (
+            sent_at is not None
+            and self.session is not None
+            and self._last_server_message <= sent_at
+        ):
+            # Aucun message du serveur depuis l'envoi : même reprise que le
+            # chien de garde (tour clos en échec, session relancée).
+            silence = time.monotonic() - sent_at
+            try:
+                asyncio.ensure_future(self._recover_from_stall("message écrit sans réponse", silence))
+                return
+            except RuntimeError:  # pragma: no cover - boucle arrêtée
+                pass
+        log.warning(
+            "gen=%s : aucune réponse au message texte après %.0f s -- tour clos en échec, micro rouvert",
+            self.session_generation, TEXT_TURN_TIMEOUT_SECONDS,
+        )
+        self._abort_text_turn("aucune réponse du modèle au message écrit", source="text_turn_timeout")
 
     def submit_text_threadsafe(self, text: str) -> "concurrent.futures.Future":
         """Point d'entrée thread-safe de ``submit_text`` (thread Qt, tests).
@@ -1517,6 +1574,8 @@ class GeminiLive:
             "tool_active": bool(self.tool_active),
             "regeneration_pending": bool(self._regeneration_pending),
             "text_turn_pending": bool(self._text_turn_pending),
+            "turn_open": not self._turn_closed and bool(self._turn_user_text or self._turn_model_text),
+            "stalls_recovered": self.stalls_recovered,
             "turn_counter": self.turn_counter,
             "context_seeded": bool(self.context_seeded),
             "resumable": bool(self.resumption_handle),
@@ -1557,6 +1616,124 @@ class GeminiLive:
         # SUIVANTE (même instance ``GeminiLive`` réutilisée à la reconnexion).
         self._regeneration_pending = False
         self._text_turn_pending = False
+
+    # ------------------------------------------------------------------
+    # Chien de garde « serveur muet » (correctif PR #50)
+    # ------------------------------------------------------------------
+
+    def _pending_response_reason(self) -> str:
+        """Pourquoi une réponse du serveur est DUE à cet instant (``""`` sinon).
+
+        Un outil local en cours n'en fait jamais partie : la boucle de
+        réception attend alors l'outil (``asyncio.to_thread``), pas le serveur,
+        et un outil peut légitimement durer.
+        """
+        if self.session is None or not self._session_ready or self.tool_active:
+            return ""
+        if self._regeneration_pending:
+            return "relance de génération sans réponse"
+        if self.speaking:
+            return "réponse vocale arrêtée en cours de route"
+        if self._text_turn_pending:
+            return "message écrit sans réponse"
+        if (
+            not self._turn_closed
+            and " ".join(self._turn_user_text).strip()
+            and not self._turn_model_content_seen
+        ):
+            return "demande vocale sans réponse"
+        return ""
+
+    def _start_response_watchdog(self) -> None:
+        if RESPONSE_STALL_TIMEOUT_SECONDS <= 0:
+            return
+        task = self._stall_task
+        if task is not None and not task.done():
+            return
+        try:
+            self._stall_task = asyncio.create_task(
+                self._watch_response_stall(self.session_generation)
+            )
+        except RuntimeError:  # pragma: no cover - hors boucle asyncio
+            self._stall_task = None
+
+    async def _watch_response_stall(self, generation: int) -> None:
+        """Surveille UNE session : reprise si le serveur se tait alors qu'il doit répondre."""
+        while self.session is not None and self.session_generation == generation:
+            timeout = RESPONSE_STALL_TIMEOUT_SECONDS
+            if timeout <= 0:
+                return
+            await asyncio.sleep(min(1.0, max(0.05, timeout / 4)))
+            if self.session is None or self.session_generation != generation:
+                return
+            reason = self._pending_response_reason()
+            if not reason:
+                continue
+            silence = time.monotonic() - self._last_exchange
+            if silence >= timeout:
+                await self._recover_from_stall(reason, silence)
+                return
+
+    async def _recover_from_stall(self, reason: str, silence: float) -> None:
+        """Clôt le tour bloqué (demande conservée) puis relance la session.
+
+        Rien n'est masqué : le tour est marqué ``failed`` dans le contexte
+        avec la raison, l'évènement est tracé (``RESPONSE_STALLED``) et
+        journalisé, et la boucle externe reconnecte (états publiés comme pour
+        toute reconnexion). Le handle de reprise est conservé : le serveur
+        restaure le contexte ; à défaut, le rejeu local s'en charge.
+        """
+        if self.session is None or self.reconnect_requested:
+            return  # une reprise (ou une reconnexion voulue) est déjà en cours
+        self.stalls_recovered += 1
+        had_model_content = bool(self.speaking or self._turn_model_content_seen)
+        self._record_trace(
+            "RESPONSE_STALLED",
+            reason=reason,
+            silence_s=round(silence, 1),
+            timeout_s=RESPONSE_STALL_TIMEOUT_SECONDS,
+        )
+        log.warning(
+            "gen=%s : aucun message du serveur depuis %.1f s alors qu'une réponse est due (%s) "
+            "-- tour clos en échec (demande conservée), session relancée",
+            self.session_generation, silence, reason,
+        )
+        self._close_stalled_turn(f"le serveur ne répondait plus ({reason})")
+        if had_model_content:
+            # La réponse commencée est coupée : l'interface quitte l'état
+            # « Jarvis parle » et la lecture résiduelle est vidée (même
+            # crochet qu'une interruption, câblé sur ``clear_output``).
+            self._notify(self.on_interrupted)
+        self._reconnect_reason = "stall"
+        self.reconnect_requested = True
+        # Protégé : la boucle externe annule cette tâche dans ``close()`` dès
+        # que la réception s'arrête ; la fermeture du WebSocket doit aller à
+        # son terme quand même.
+        await asyncio.shield(self._shutdown_session())
+
+    def _close_stalled_turn(self, reason: str) -> None:
+        """Clôt le tour en cours comme le chemin d'erreur, en notifiant sa résolution."""
+        self._commit_user_text()
+        if self._turn_model_text:
+            self._commit_assistant_text()  # réponse partielle conservée
+        elif self.conversation.has_open_turn():
+            self.conversation.fail_open_turn(reason)
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self.speaking = False
+        self._regeneration_pending = False
+        self._text_turn_pending = False
+        self._clear_interrupt()
+        self._interrupt_was_active = False
+        already_closed = self._turn_closed
+        self._turn_closed = True
+        if not already_closed:
+            self.turn_epoch += 1
+            self._record_trace("TURN_CLOSE", source="stall")
+            # Le minuteur de conversation d'``AudioIO`` (suspendu par
+            # ``on_turn_open``) doit reprendre : même règle que ``_finish_turn``.
+            self._notify(self.on_turn_resolved)
 
     async def _receive_loop(self):
         """Reçoit les messages Gemini pour TOUS les tours de la session.
@@ -1644,6 +1821,8 @@ class GeminiLive:
         received_any = False
         async for r in self.session.receive():
             received_any = True
+            # Tout message prouve que le serveur est vivant (chien de garde).
+            self._last_server_message = self._last_exchange = time.monotonic()
 
             sru = getattr(
                 r,
@@ -1978,6 +2157,9 @@ class GeminiLive:
                             self.session_generation, exc,
                         )
                     else:
+                        # La relance oblige le serveur à répondre : l'attente
+                        # du chien de garde repart de cet envoi.
+                        self._last_exchange = time.monotonic()
                         # ``session.receive()`` se termine NATURELLEMENT dès
                         # ``turn_complete`` (confirmé par Google, issue
                         # googleapis/python-genai#1224) : la boucle
@@ -2169,6 +2351,9 @@ class GeminiLive:
                     )
                 finally:
                     self.tool_active = False
+                    # Le temps passé dans l'outil n'est pas un silence du
+                    # serveur : l'attente de la suite du tour part d'ici.
+                    self._last_exchange = time.monotonic()
         return received_any
 
     async def _shutdown_session(self) -> None:
@@ -2192,10 +2377,11 @@ class GeminiLive:
                 pass
 
     async def close(self) -> None:
-        task = self._watcher_task
-        self._watcher_task = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
+        for name in ("_watcher_task", "_stall_task"):
+            task = getattr(self, name)
+            setattr(self, name, None)
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
         # Le contexte survit à la session (reconnexion, changement de voix,
         # changement d'interface) : seul le pont de reset est détaché.
         self.conversation.unbind_session(self._handle_context_reset)

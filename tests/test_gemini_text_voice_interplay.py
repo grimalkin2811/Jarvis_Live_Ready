@@ -282,7 +282,9 @@ class WatchdogAndCancellationTests(_Base):
             self.assertFalse(self.gemini.can_send())
             # Le filet du second message, lui, finit bien par rendre le micro.
             self.assertTrue(await self._wait(lambda: not self.gemini._text_turn_pending, 3.0))
-        self.assertTrue(self.gemini.can_send())
+        # Serveur resté muet depuis l'envoi : la session est relancée (chien de
+        # garde, PR #50) — le micro revient dès la nouvelle session prête.
+        self.assertTrue(await self._wait(self.gemini.can_send, 3.0))
         self.assertIn("TEXT_TURN_TIMEOUT", [e["kind"] for e in self.gemini.trace_events()])
 
     async def test_cancelled_submission_never_leaves_the_mic_closed(self):
