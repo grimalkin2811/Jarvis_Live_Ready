@@ -1339,6 +1339,21 @@ def etapes_ci(x: Execution) -> None:
                             "comptés à part", (fails.group(0) if fails else "OK"))
 
 
+def harnais(x: Execution, nom: str) -> str:
+    """Harnais qui exerce le code de Jarvis : celui du COMMIT TESTÉ (copie isolée).
+
+    Correctif (validation PR #50) : la copie de travail locale peut être en
+    retard sur la PR (A02) ; exécuter son ancien harnais contre le nouveau code
+    produisait des résultats trompeurs. Repli sur la copie locale seulement si
+    le commit testé ne contient pas ce harnais.
+    """
+    if x.worktree is not None:
+        candidat = Path(x.worktree) / "scripts" / "validation" / nom
+        if candidat.is_file():
+            return str(candidat)
+    return str(ICI / nom)
+
+
 def protocole_dashboard(x: Execution) -> None:
     if "protocole" in x.args.sauter:
         x.ctl("C10", "").regler(P.NON_TESTE, raison="étape sautée à la demande (--sauter protocole)")
@@ -1425,7 +1440,7 @@ def dashboard_reel(x: Execution) -> None:
             x.ctl(cid, "").regler(P.BLOQUE, raison="environnement de validation indisponible")
         return
     out_dir = x.run / "dashboard_reel"
-    cmd = [x.python_tests, str(ICI / "controle_dashboard_reel.py"), "--out", str(out_dir)]
+    cmd = [x.python_tests, harnais(x, "controle_dashboard_reel.py"), "--out", str(out_dir)]
     if WINDOWS:
         cmd.append("--natif")
     if x.consentements.get("notification_windows"):
@@ -1508,7 +1523,7 @@ def gemini_et_audio(x: Execution) -> None:
         return
     env = x.env_enfant("gemini reel", cle=True, qt=None if WINDOWS else "offscreen")
     code, out = x.executer("validate_real_gemini.py --mode auto (RÉEL)", [
-        x.python_tests, str(ICI / "outils_surs.py"), "--script", "scripts/validate_real_gemini.py", "--", "--mode", "auto"],
+        x.python_tests, harnais(x, "outils_surs.py"), "--script", "scripts/validate_real_gemini.py", "--", "--mode", "auto"],
         cwd=x.worktree, env=env, timeout=1800)
     verdicts = dict(re.findall(VERDICT_RE, out, re.MULTILINE))
     statut = P.REUSSI if verdicts and all(v == "PASS" for v in verdicts.values()) and code == 0 else (
@@ -1516,7 +1531,7 @@ def gemini_et_audio(x: Execution) -> None:
     x.ctl("E11", "").regler(statut, ", ".join(f"{k}={v}" for k, v in verdicts.items()) or f"code {code}",
                             "sortie du script officiel (journal masqué)")
     code2, out2 = x.executer("validate_reconnect_v174_real.py (RÉEL)", [
-        x.python_tests, str(ICI / "outils_surs.py"), "--script", "scripts/validate_reconnect_v174_real.py"],
+        x.python_tests, harnais(x, "outils_surs.py"), "--script", "scripts/validate_reconnect_v174_real.py"],
         cwd=x.worktree, env=env, timeout=2400)
     verdicts2 = dict(re.findall(VERDICT_RE, out2, re.MULTILINE))
     statut2 = P.REUSSI if verdicts2 and all(v == "PASS" for v in verdicts2.values()) and code2 == 0 else (
@@ -1524,7 +1539,7 @@ def gemini_et_audio(x: Execution) -> None:
     x.ctl("E12", "").regler(statut2, ", ".join(f"{k}={v}" for k, v in verdicts2.items()) or f"code {code2}",
                             "sortie du script officiel (journal masqué)")
     out_dir = x.run / "gemini_reel"
-    cmd = [x.python_tests, str(ICI / "gemini_reel_dashboard.py"), "--out", str(out_dir)]
+    cmd = [x.python_tests, harnais(x, "gemini_reel_dashboard.py"), "--out", str(out_dir)]
     if WINDOWS:
         cmd.append("--natif")
     code3, _ = x.executer("Scénarios réels Dashboard + Gemini (E1-E10)", cmd, cwd=x.worktree, env=env, timeout=2400)
@@ -1555,7 +1570,7 @@ def selftests(x: Execution) -> None:
     code1, out1 = x.executer("Auto-test du script officiel (faux serveur)", [
         x.python_tests, "scripts/validate_real_gemini.py", "--selftest"], cwd=x.worktree, env=env, timeout=600)
     out_dir = x.run / "selftest_dashboard"
-    cmd = [x.python_tests, str(ICI / "gemini_reel_dashboard.py"), "--selftest", "--out", str(out_dir)]
+    cmd = [x.python_tests, harnais(x, "gemini_reel_dashboard.py"), "--selftest", "--out", str(out_dir)]
     if WINDOWS:
         cmd.append("--natif")
     code2, _ = x.executer("Auto-test du harnais Dashboard + Gemini (faux serveur)", cmd, cwd=x.worktree, env=env,

@@ -397,3 +397,19 @@ def test_c10_mismatch_between_exit_code_and_steps_stays_failed_but_explained(tmp
     x2.executer = lambda *a, **k: (0, "Résumé : SUCCÈS")
     valider_pr.protocole_dashboard(x2)
     assert x2.ctl("C10", "").statut == P.REUSSI
+
+
+def test_jarvis_harnesses_come_from_the_tested_commit(tmp_path):
+    """La copie locale peut être en retard sur la PR : son harnais ne doit pas tester le nouveau code."""
+    valider_pr = _valider_pr()
+    x = _execution(tmp_path, valider_pr)
+    x.worktree = None
+    assert valider_pr.harnais(x, "gemini_reel_dashboard.py") == str(VALIDATION / "gemini_reel_dashboard.py")
+    copie = tmp_path / "copie_pr"
+    (copie / "scripts" / "validation").mkdir(parents=True)
+    (copie / "scripts" / "validation" / "gemini_reel_dashboard.py").write_text("# harnais du commit testé\n")
+    x.worktree = copie
+    assert valider_pr.harnais(x, "gemini_reel_dashboard.py") == str(copie / "scripts" / "validation" /
+                                                                   "gemini_reel_dashboard.py")
+    # Commit testé plus ancien, sans ce harnais : repli explicite sur la copie locale.
+    assert valider_pr.harnais(x, "controle_dashboard_reel.py") == str(VALIDATION / "controle_dashboard_reel.py")
