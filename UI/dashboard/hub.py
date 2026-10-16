@@ -238,7 +238,10 @@ class DashboardHub(QObject):
                     "La conversation est arrêtée : vérifie GEMINI_API_KEY dans le fichier .env.",
                     level="error", key="intervention:auth",
                 )
-            elif state == EngineState.FAILED:
+            elif state == EngineState.FAILED and snapshot.get("audio_state") != "failed":
+                # Échec dû au pipeline audio : même cause que l'alerte « Problème
+                # audio » ci-dessous, qui porte le détail exact — une seule
+                # notification (avant : deux alertes pour une seule panne).
                 self.notifications.notify(
                     "intervention", "Backend vocal indisponible",
                     snapshot.get("engine_detail") or "Le moteur vocal n'a pas pu démarrer.",

@@ -1490,6 +1490,12 @@ class GeminiLive:
         self._turn_user_text.append(cleaned)
         self._text_turn_pending = True
         self._record_trace("TEXT_INPUT_SENT", chars=len(cleaned))
+        # « Jarvis traite » AVANT la transcription (correctif PR #50) : pour
+        # l'overlay Desktop, une transcription signifie « l'utilisateur
+        # parle » et faisait passer un halo caché en « à l'écoute » pendant
+        # le traitement d'un message ÉCRIT. Dans cet ordre, l'état affiché
+        # est « réflexion » et le texte de la demande reste affiché.
+        self._notify(self.on_thinking)
         self._notify(self.on_user_transcript, cleaned, True)
         self._commit_user_text()
         # Époque du tour CAPTURÉE AVANT l'envoi (audit pré-fusion) : pendant
