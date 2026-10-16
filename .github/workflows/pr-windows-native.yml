@@ -127,6 +127,9 @@ jobs:
                       sauts = valeur.pop("premier_cadre_sauts_de_polices", [])
                       print(f"::notice title=Sonde polices premier cadre (appels qui chargent des polices)::"
                             f"{json.dumps(sauts, ensure_ascii=False)[:1500]}")
+                      dissection = valeur.pop("premier_cadre_dissection", [])
+                      print(f"::notice title=Sonde polices premier cadre (dissection)::"
+                            f"{json.dumps(dissection, ensure_ascii=False)[:1500]}")
                   print(f"::notice title=Sonde polices {cle}::{json.dumps(valeur, ensure_ascii=False)[:1500]}")
 
       - name: Synthèse — dashboard_perf (indicatif, runner)

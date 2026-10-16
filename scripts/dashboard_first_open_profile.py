@@ -333,6 +333,80 @@ def profileur_appels_natifs(seuil_ms: float = 5.0, compter=None):
     return profil, longs
 
 
+def _decrire(w) -> dict:
+    from PySide6.QtWidgets import QAbstractButton, QLabel
+
+    f = w.font()
+    texte = ""
+    for lecture in (QLabel.text, QAbstractButton.text):
+        try:
+            texte = lecture(w)
+            break
+        except TypeError:
+            continue
+    return {"element": type(w).__name__, "nom": w.objectName(), "role": w.property("role"),
+            "glyph": bool(w.property("glyph")), "texte": str(texte)[:24],
+            "familles": f.families() or [f.family()], "px": f.pixelSize(), "pt": round(f.pointSizeF(), 1),
+            "graisse": int(f.weight()), "espacement": round(f.letterSpacing(), 2)}
+
+
+def dissection_premier_cadre(toile, placement, compter) -> list[dict]:
+    """Double JETABLE du premier cadre (même parent : même feuille de style),
+    construit étape par étape avec un comptage des polices après chacune :
+    construction du widget, du cadre, puis pour chaque élément (feuilles
+    d'abord) stylage, police, tailles, rendu. Détruit ensuite : le vrai cadre
+    est construit normalement."""
+    from PySide6 import QtWidgets
+
+    from UI.dashboard.frame import WidgetFrame
+
+    etapes: list[dict] = []
+    dernier = compter()
+
+    def noter(etape: str, w=None) -> None:
+        nonlocal dernier
+        n = compter()
+        if n > dernier:
+            entree = {"etape": etape, "polices": n - dernier}
+            if w is not None:
+                entree.update(_decrire(w))
+            etapes.append(entree)
+        dernier = n
+
+    spec = toile.registry.spec(placement.type)
+    widget = toile.registry.create(placement, toile.context_factory(placement))
+    noter("construction du widget")
+    cadre = WidgetFrame(placement, spec, widget, toile.theme_manager, toile)
+    noter("construction du cadre")
+    descendants = cadre.findChildren(QtWidgets.QWidget)
+
+    def profondeur(w) -> int:
+        n = 0
+        while w is not None and w is not cadre:
+            w, n = w.parentWidget(), n + 1
+        return n
+
+    ordre = sorted(descendants, key=profondeur, reverse=True) + [cadre]
+    for w in ordre:
+        w.ensurePolished()
+        noter("stylage", w)
+    for w in ordre:
+        w.fontMetrics().height()
+        noter("police", w)
+    for w in ordre:
+        w.sizeHint()
+        w.minimumSizeHint()
+        noter("tailles", w)
+    cadre.grab()
+    noter("rendu du cadre")
+    if cadre.widget is not None:
+        cadre.widget.dispose()
+    cadre.hide()
+    cadre.setParent(None)
+    cadre.deleteLater()
+    return etapes[:8]
+
+
 def attribution_contenu(natif: bool) -> dict:
     """Polices chargées par CHAQUE cadre (rendu forcé dès sa création), processus neuf.
 
@@ -381,6 +455,7 @@ def attribution_contenu(natif: bool) -> dict:
         elements: list[dict] = []
         appels_longs: list[dict] = []
         sauts_polices: list[dict] = []
+        dissection: list[dict] = []
 
         def creer(self, placement):
             avant = fichiers_mappes()
@@ -388,6 +463,8 @@ def attribution_contenu(natif: bool) -> dict:
                 def compter() -> int:
                     return sum(1 for n in fichiers_mappes() if n.lower().endswith(POLICES_EXT))
 
+                dissection.extend(dissection_premier_cadre(self, placement, compter))
+                avant = fichiers_mappes()
                 profil, longs = profileur_appels_natifs(compter=compter)
                 sys.setprofile(profil)
                 try:
@@ -475,6 +552,7 @@ def attribution_contenu(natif: bool) -> dict:
             "premier_cadre_par_element": elements[:8],
             "premier_cadre_appels_longs": appels_longs,
             "premier_cadre_sauts_de_polices": sauts_polices,
+            "premier_cadre_dissection": dissection,
             "polices_fenetre_entiere": len(fenetre)}
 
 
