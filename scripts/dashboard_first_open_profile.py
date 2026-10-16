@@ -280,28 +280,50 @@ def _pile_dashboard(cadre_py, limite: int = 4) -> list[str]:
     return pile
 
 
-def profileur_appels_natifs(seuil_ms: float = 5.0):
-    """Profileur (sys.setprofile) : appels NATIFS (PySide6) d'au moins ``seuil_ms``.
+def _nom_appel(fonction) -> tuple[str, bool]:
+    soi = getattr(fonction, "__self__", None)
+    module = type(soi).__module__ if soi is not None else str(getattr(fonction, "__module__", "") or "")
+    return f"{type(soi).__name__}.{getattr(fonction, '__name__', '?')}", module.startswith("PySide6")
 
-    Chaque appel est rapporté avec la ligne du Dashboard qui l'a fait (pile) :
-    un repli des polices du système est un appel natif anormalement long,
-    même quand les fichiers sont déjà en cache.
+
+def profileur_appels_natifs(seuil_ms: float = 5.0, compter=None):
+    """Profileur (sys.setprofile) des appels NATIFS (PySide6) d'une portion de code.
+
+    - appels d'au moins ``seuil_ms`` (durée), avec la ligne du Dashboard qui les a faits ;
+    - si ``compter`` est fourni (nombre de fichiers de police projetés), chaque
+      appel PySide6 après lequel ce nombre AUGMENTE, avec les appels natifs
+      englobants (un rappel Python exécuté pendant un appel plus large n'est
+      pas confondu avec lui). À chaud (fichiers en cache), un repli des
+      polices peut durer moins de ``seuil_ms`` : seul le comptage le voit.
     """
     en_cours: list = []
     longs: list[dict] = []
+    sauts: list[dict] = []
+    etat = {"dernier": compter() if compter else 0}
 
     def profil(cadre_py, evenement, fonction):
         if evenement == "c_call":
             en_cours.append((time.perf_counter(), fonction, cadre_py))
-        elif evenement in ("c_return", "c_exception") and en_cours:
-            debut, fonction, cadre_py = en_cours.pop()
-            duree = (time.perf_counter() - debut) * 1000.0
-            soi = getattr(fonction, "__self__", None)
-            module = type(soi).__module__ if soi is not None else str(getattr(fonction, "__module__", "") or "")
-            if duree >= seuil_ms and module.startswith("PySide6"):
-                longs.append({"ms": round(duree, 1), "appel": f"{type(soi).__name__}.{getattr(fonction, '__name__', '?')}",
-                              "pile": _pile_dashboard(cadre_py)})
+            return
+        if evenement not in ("c_return", "c_exception") or not en_cours:
+            return
+        debut, fonction, cadre_appel = en_cours.pop()
+        duree = (time.perf_counter() - debut) * 1000.0
+        nom, pyside = _nom_appel(fonction)
+        if not pyside:
+            return
+        if duree >= seuil_ms:
+            longs.append({"ms": round(duree, 1), "appel": nom, "pile": _pile_dashboard(cadre_appel)})
+        if compter is not None and len(sauts) < 6:
+            n = compter()
+            if n > etat["dernier"]:
+                englobants = [f"{_nom_appel(f)[0]} @ {(_pile_dashboard(c, 1) or ['?'])[0]}"
+                              for _t, f, c in en_cours if _nom_appel(f)[1]]
+                sauts.append({"polices": n - etat["dernier"], "appel": nom, "ms": round(duree, 1),
+                              "pile": _pile_dashboard(cadre_appel, 3), "englobants": englobants[-3:]})
+            etat["dernier"] = n
 
+    profil.sauts = sauts
     return profil, longs
 
 
@@ -352,17 +374,22 @@ def attribution_contenu(natif: bool) -> dict:
 
         elements: list[dict] = []
         appels_longs: list[dict] = []
+        sauts_polices: list[dict] = []
 
         def creer(self, placement):
             avant = fichiers_mappes()
             if not cadres:
-                profil, longs = profileur_appels_natifs()
+                def compter() -> int:
+                    return sum(1 for n in fichiers_mappes() if n.lower().endswith(POLICES_EXT))
+
+                profil, longs = profileur_appels_natifs(compter=compter)
                 sys.setprofile(profil)
                 try:
                     cadre = originale(self, placement)
                 finally:
                     sys.setprofile(None)
-                appels_longs.extend(sorted(longs, key=lambda a: -a["ms"])[:8])
+                appels_longs.extend(sorted(longs, key=lambda a: -a["ms"])[:4])
+                sauts_polices.extend(profil.sauts)
             else:
                 cadre = originale(self, placement)
             if not cadres:
@@ -441,6 +468,7 @@ def attribution_contenu(natif: bool) -> dict:
             "coupables": [c for c in cadres if c["polices"] > 0][:6],
             "premier_cadre_par_element": elements[:8],
             "premier_cadre_appels_longs": appels_longs,
+            "premier_cadre_sauts_de_polices": sauts_polices,
             "polices_fenetre_entiere": len(fenetre)}
 
 
