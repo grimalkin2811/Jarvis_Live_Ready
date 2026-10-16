@@ -152,8 +152,18 @@ def run(idle_seconds: float = 4.0) -> dict:
         results["widgets_after_navigation"] = controller.window.widget_stats()
 
         def cpu_over(seconds: float) -> float:
+            # Attente AU REPOS (QEventLoop) : l'ancienne boucle pump() réveillait
+            # le processus toutes les 5 ms et mesurait donc aussi son propre coût.
+            from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QTimer
+
+            # Destructions différées (deleteLater) des étapes précédentes : jamais
+            # traitées par pump()/processEvents(), elles seraient exécutées en bloc
+            # pendant la mesure ; la boucle de production les traite au fil de l'eau.
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            loop = QEventLoop()
             wall0, cpu0 = time.perf_counter(), time.process_time()
-            pump(app, seconds)
+            QTimer.singleShot(int(seconds * 1000), loop.quit)
+            loop.exec()
             return round((time.process_time() - cpu0) / max(1e-6, time.perf_counter() - wall0) * 100.0, 2)
 
         controller.window.open_page("accueil", animate=False)

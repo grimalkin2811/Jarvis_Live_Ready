@@ -44,6 +44,14 @@ SEUIL_OUVERTURE_MS = 1500.0
 SEUIL_PAGE_MEDIANE_MS = 150.0
 SEUIL_PAGE_MAX_MS = 400.0
 SEUIL_CPU_MASQUE = 2.0
+#: Mesure CPU de D17 : médiane de plusieurs fenêtres au repos. Sous Windows, le
+#: temps CPU (GetProcessTimes) est compté par tops de 15,625 ms : sur une seule
+#: fenêtre de 3 s, la mesure ne pouvait valoir que 0 / 0,52 / 1,04 / 1,56 / 2,08 %
+#: (validation PR #50 : 2,08 % = exactement 4 tops, un cran au-dessus du seuil).
+#: 3 × 5 s : pas de 0,31 % par fenêtre, valeur aberrante écartée par la médiane.
+#: Le seuil (2 %) et le périmètre (processus entier) sont inchangés.
+FENETRE_CPU_S = 5.0
+REPETITIONS_CPU = 3
 SEUIL_RSS_MO = 40.0
 
 RESULTATS: list[dict] = []
@@ -682,25 +690,82 @@ def d16(ctx: Contexte):
 
 @controle("D17", "Dashboard masqué : aucun widget actif, aucun minuteur, CPU au repos")
 def d17(ctx: Contexte):
-    from PySide6.QtCore import QEventLoop, QTimer
+    import collections
+
+    from PySide6.QtCore import QEvent, QEventLoop, QObject, QTimer
+
+    from PySide6.QtCore import QCoreApplication
 
     controller = ctx.controller
     controller.open()
     attendre(ctx, controller.is_open, 3)
     pomper(ctx, 0.3)
     controller.hide_window()
+    # Le harnais pompe les évènements avec processEvents(), qui ne traite JAMAIS
+    # les destructions différées (deleteLater) : les vues et fenêtres libérées par
+    # les contrôles précédents s'accumulaient et étaient détruites en bloc pendant
+    # la mesure (validation PR #50 : ~5 000 évènements Destroy/ChildRemoved
+    # observés dans une fenêtre). En production, la boucle d'évènements les traite
+    # au fil de l'eau, juste après chaque libération : on part du même état.
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     pomper(ctx, 0.5)
     stats = controller.window.widget_stats() if controller.window is not None else {"active_widgets": 0, "active_timers": 0}
-    loop = QEventLoop()
-    cpu0, wall0 = time.process_time(), time.perf_counter()
-    QTimer.singleShot(3000, loop.quit)
-    loop.exec()
-    cpu = (time.process_time() - cpu0) / max(1e-6, time.perf_counter() - wall0) * 100
+
+    class Minuteries(QObject):
+        """Diagnostic : qui reçoit des évènements de minuterie pendant la mesure ?"""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.recus: collections.Counter = collections.Counter()
+
+        def eventFilter(self, obj, event):  # noqa: N802
+            if event.type() in (QEvent.Timer, QEvent.ZeroTimerEvent):
+                parent = obj.parent()
+                nom = type(obj).__name__ + (f"<-{type(parent).__name__}" if parent is not None else "")
+                self.recus[nom] += 1
+            return False
+
+    def cpu_par_thread() -> dict[str, float]:
+        """Diagnostic : temps CPU cumulé par thread (psutil), clé = nom Python."""
+        try:
+            import psutil
+
+            noms = {t.native_id: t.name for t in threading.enumerate()}
+            return {noms.get(t.id, f"natif-{t.id}"): t.user_time + t.system_time for t in psutil.Process().threads()}
+        except Exception:
+            return {}
+
+    minuteries = Minuteries()
+    ctx.app.installEventFilter(minuteries)
+    fenetres = []
+    threads_avant = cpu_par_thread()
+    try:
+        for _ in range(REPETITIONS_CPU):
+            loop = QEventLoop()  # attente au repos (aucune scrutation active)
+            cpu0, wall0 = time.process_time(), time.perf_counter()
+            QTimer.singleShot(int(FENETRE_CPU_S * 1000), loop.quit)
+            loop.exec()
+            fenetres.append((time.process_time() - cpu0) / max(1e-6, time.perf_counter() - wall0) * 100)
+    finally:
+        ctx.app.removeEventFilter(minuteries)
+    threads_apres = cpu_par_thread()
+    par_thread = sorted(((round((v - threads_avant.get(k, 0.0)) * 1000), k) for k, v in threads_apres.items()),
+                        reverse=True)
+    consommateurs = [f"{nom}={ms} ms" for ms, nom in par_thread if ms >= 5][:5]
+    cpu = statistics.median(fenetres)
     resources = controller.hub.resources.running()
     ok = stats.get("active_widgets") == 0 and stats.get("active_timers") == 0 and not resources and cpu <= SEUIL_CPU_MASQUE
+    actives = ", ".join(f"{nom}×{n}" for nom, n in minuteries.recus.most_common(4)) or "aucune"
+    threads = sorted(t.name for t in threading.enumerate())
     texte = (f"widgets actifs={stats.get('active_widgets')}, minuteurs={stats.get('active_timers')}, "
-             f"mesures ressources={'actives' if resources else 'arrêtées'}, CPU {cpu:.2f} % (seuil {SEUIL_CPU_MASQUE})")
-    return (REUSSI if ok else ECHEC), texte, "", {"cpu_pct": round(cpu, 2)}
+             f"mesures ressources={'actives' if resources else 'arrêtées'}, CPU médiane {cpu:.2f} % (seuil "
+             f"{SEUIL_CPU_MASQUE}) sur {REPETITIONS_CPU} × {FENETRE_CPU_S:.0f} s "
+             f"[{' / '.join(f'{v:.2f}' for v in fenetres)}], minuteries reçues : {actives}, CPU par thread "
+             f"(≥ 5 ms) : {', '.join(consommateurs) or 'aucun'}")
+    return (REUSSI if ok else ECHEC), texte, "", {
+        "cpu_pct": round(cpu, 2), "cpu_fenetres_pct": [round(v, 2) for v in fenetres],
+        "fenetre_s": FENETRE_CPU_S, "minuteries": dict(minuteries.recus.most_common(10)), "threads": threads,
+        "cpu_par_thread_ms": {nom: ms for ms, nom in par_thread if ms > 0}}
 
 
 # ---------------------------------------------------------------------------
