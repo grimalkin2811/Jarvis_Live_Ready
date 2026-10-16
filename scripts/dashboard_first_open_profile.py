@@ -175,13 +175,24 @@ def mesure_unique(natif: bool, reouvertures: int) -> dict:
         cartes_apres_construction = fichiers_mappes()
         resultat["fichiers_charges_pendant_la_construction"] = sorted(cartes_apres_construction - cartes_avant)[:60]
         stamps: dict[str, float] = {}
-        original = window._complete_initial_build
+        # La fenêtre appelle ``_complete_initial_build_incrementally`` après sa
+        # première peinture (construction par lots) : on enveloppe CE point
+        # d'entrée pour horodater la peinture, puis on laisse le chemin naturel.
+        original_incremental = window._complete_initial_build_incrementally
 
         def premiere_peinture() -> None:
             stamps.setdefault("peinture", time.perf_counter())
-            original()
+            original_incremental()
 
-        window._complete_initial_build = premiere_peinture
+        window._complete_initial_build_incrementally = premiere_peinture
+        # Filet : toute autre entrée (accès aux widgets) horodate aussi la peinture.
+        original_complet = window._complete_initial_build
+
+        def complet(*args, **kwargs):
+            stamps.setdefault("peinture", time.perf_counter())
+            return original_complet(*args, **kwargs)
+
+        window._complete_initial_build = complet
         controller.open()
         t_show = time.perf_counter()
         deadline = time.monotonic() + 15.0
@@ -519,10 +530,19 @@ def attribution_contenu(natif: bool) -> dict:
 
         grille.GridCanvas._create_frame = creer
         initial = fichiers_mappes()
+        etapes_polices: list[dict] = []
+
+        def releve(etape: str) -> None:
+            chargees = polices(initial)
+            etapes_polices.append({"etape": etape, "polices": len(chargees), "exemples": chargees[:4]})
+
         window = controller.ensure_window()
         construction = polices(initial)
+        releve("fenêtre construite")
         controller.open()
+        releve("open() appelé")
         attendre(lambda: not contenu_en_attente(window))
+        releve("contenu construit")
 
         def page_complete(page_id: str) -> bool:
             toiles = [c for c in window.all_canvases() if c.page.id == page_id]
@@ -553,6 +573,7 @@ def attribution_contenu(natif: bool) -> dict:
             "premier_cadre_appels_longs": appels_longs,
             "premier_cadre_sauts_de_polices": sauts_polices,
             "premier_cadre_dissection": dissection,
+            "polices_par_etape": etapes_polices,
             "polices_fenetre_entiere": len(fenetre)}
 
 
