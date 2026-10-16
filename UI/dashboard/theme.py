@@ -108,17 +108,52 @@ DENSITY_METRICS = {
 #: « normal » : seul l'emblème (34 px) est animé. « poussé » : emblème plus
 #: fluide + fond animé à cadence réduite (le coût de repeinture du fond est
 #: borné par le cache des cadres de widgets, cf. frame.py).
-#: Polices de SYMBOLES nommées explicitement après celles du thème (correctif
-#: D01, validation Windows PR #50 : première ouverture 1 867 ms sur le PC de
-#: validation). La navigation, l'en-tête et les cadres affichent des symboles
-#: (⌂ ◈ ◎ ☑ ⚙ ✎ ▤ ▦ ● ◫ ⤢ ✉ ○ ⋯ ✕ ◌) absents de la police d'interface :
-#: faute de famille désignée, Qt parcourait sa liste de polices de REPLI du
-#: système en CHARGEANT chaque fichier jusqu'à trouver le glyphe — des
-#: dizaines de polices projetées en mémoire pendant la construction de la
-#: navigation, mesurées sur un Windows natif (3,5 s à froid, 0,55 s tiède,
-#: 34 ms chaud). Une famille absente du système est ignorée sans accès disque.
-SYMBOL_FONT_FALLBACKS = ("Segoe UI Symbol", "Segoe UI Emoji", "Apple Symbols", "Noto Sans Symbols 2",
-                         "DejaVu Sans")
+#: Polices de SYMBOLES (police PRINCIPALE des glyphes de l'interface), par ordre
+#: de préférence ; la première installée est retenue.
+SYMBOL_FAMILIES = ("Segoe UI Symbol", "Apple Symbols", "Noto Sans Symbols 2", "DejaVu Sans")
+
+# Correctif D01 (validation Windows PR #50 : première ouverture 1 867 ms sur le
+# PC de validation), cause établie par une sonde sur un Windows NATIF : Qt 6.11
+# construit la liste de repli des polices du SYSTÈME — 155 fichiers de police
+# chargés, 3,5 s à froid — (1) dès qu'une police porte PLUSIEURS familles
+# (les chaînes « "Segoe UI", "Inter", … » des thèmes, même pour du texte
+# latin) et (2) dès qu'un glyphe manque à la police principale (les symboles
+# ⌂ ◈ ◎ ☑ ⚙ ✎ ▤ ▦ ◫ ⤢ ✉ ⋯ ✕ ne sont pas dans Segoe UI). Les familles
+# secondaires ne sont pas consultées avant ce repli. D'où : UNE famille
+# installée par rôle (résolue ici), et les symboles rendus avec une police de
+# symboles comme police PRINCIPALE (``UI/dashboard/glyphs.py``).
+_INSTALLED_FAMILIES: frozenset[str] | None = None
+
+
+def installed_families() -> frozenset[str]:
+    """Familles installées (liste des noms seulement : aucun fichier chargé)."""
+    global _INSTALLED_FAMILIES
+    if _INSTALLED_FAMILIES is None:
+        try:
+            from PySide6.QtGui import QFontDatabase, QGuiApplication
+
+            if QGuiApplication.instance() is None:
+                return frozenset()
+            _INSTALLED_FAMILIES = frozenset(QFontDatabase.families())
+        except Exception:
+            return frozenset()
+    return _INSTALLED_FAMILIES
+
+
+def first_installed(families) -> str:
+    """Première famille installée de la liste (à défaut : la première de la liste)."""
+    installed = installed_families()
+    for name in families:
+        if name in installed:
+            return name
+    return families[0] if families else ""
+
+
+def symbol_family() -> str:
+    """Police de symboles installée, ou « » si aucune (le repli de Qt s'applique)."""
+    installed = installed_families()
+    return next((name for name in SYMBOL_FAMILIES if name in installed), "")
+
 
 EMBLEM_FPS = {"leger": 0, "normal": 15, "pousse": 30}
 BACKGROUND_FPS = {"leger": 0, "normal": 0, "pousse": 8}
@@ -198,9 +233,9 @@ class ResolvedTheme:
         }.get(status, self.text_dim)
 
     def font_family(self, kind: str = "ui") -> str:
+        """UNE famille installée (jamais une chaîne : cf. correctif D01 ci-dessus)."""
         families = {"ui": self.spec.font_ui, "title": self.spec.font_title, "mono": self.spec.font_mono}[kind]
-        ordered = list(dict.fromkeys((*families, *SYMBOL_FONT_FALLBACKS)))
-        return ", ".join(f'"{name}"' for name in ordered)
+        return f'"{first_installed(families)}"'
 
     def title(self, text: str) -> str:
         return text.upper() if self.spec.title_upper else text
@@ -243,6 +278,10 @@ def stylesheet(theme: ResolvedTheme) -> str:
     small = max(10, round(11.5 * t.font_scale))
     radius = {"rounded": 8, "chamfered": 2, "soft": 12}[t.spec.shape]
     accent = t.accent.name()
+    symbol = symbol_family()
+    # Éléments qui n'affichent qu'un glyphe (``glyphs.mark``) : police de symboles
+    # PRINCIPALE, pour qu'aucun repli des polices du système ne soit déclenché.
+    glyph_rule = f'*[glyph="true"] {{ font-family: "{symbol}"; }}' if symbol else ""
     return f"""
     QWidget {{ color: {t.text.name()}; font-family: {t.font_family('ui')}; font-size: {base}px; }}
     QMainWindow, QWidget#DashboardRoot {{ background: transparent; }}
@@ -291,6 +330,7 @@ def stylesheet(theme: ResolvedTheme) -> str:
     QToolButton[role="frame"] {{ background: transparent; border: 1px solid transparent; padding: 2px 6px;
         color: {t.text_dim.name()}; }}
     QToolButton[role="frame"]:hover {{ border-color: {_rgba(t.accent, 120)}; color: {t.text.name()}; }}
+    {glyph_rule}
     QSlider::groove:horizontal {{ height: 4px; background: {_rgba(t.text_dim, 80)}; border-radius: 2px; }}
     QSlider::handle:horizontal {{ width: 14px; margin: -6px 0; border-radius: 7px; background: {accent}; }}
     QProgressBar {{ border: 1px solid {_rgba(t.border, 90)}; border-radius: {radius}px; background: transparent;

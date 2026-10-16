@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QComboBox, QGridLayout, QPushButton, QSizePolicy, 
 from src.runtime_status import ENGINE_LABELS, HEALTH_LABELS, EngineState
 
 from ..actions import ActionHost, build_actions, mic_toggle, voice_stop
+from ..glyphs import glyph_icon
 from ..widget_api import STATE_EMPTY, STATE_READY, DashboardWidget, WidgetAction
 from .common import Ring, StatusDot, button, clock, hrow, label
 
@@ -377,6 +378,13 @@ class QuickActionsWidget(DashboardWidget):
         self.run_job(build_actions, self._host(), on_done=self._build,
                      on_error=lambda exc: self.set_state("error", str(exc)))
 
+    def on_theme_changed(self, theme) -> None:
+        # Glyphes peints à la couleur du texte du thème (correctif D01) : repeints.
+        for btn, action in self._buttons.values():
+            if getattr(action, "icon", ""):
+                btn.setIcon(glyph_icon(action.icon, theme.text, 16))
+        super().on_theme_changed(theme)
+
     def _build(self, actions) -> None:
         while self._grid.count():
             item = self._grid.takeAt(0)
@@ -392,7 +400,9 @@ class QuickActionsWidget(DashboardWidget):
                    and (a.group != "Protocoles" or show_protocols)]
         columns = 2
         for index, action in enumerate(visible):
-            btn = QPushButton(f"{action.icon}  {action.label}")
+            btn = QPushButton(action.label)
+            if action.icon:
+                btn.setIcon(glyph_icon(action.icon, self.context.theme.text, 16))
             btn.setToolTip(action.description)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.clicked.connect(lambda _=False, a=action: self._trigger(a))

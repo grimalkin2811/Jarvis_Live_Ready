@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import DASHBOARD_NAME
+from .glyphs import glyph_icon, mark
 from .layout_model import Placement, find_free_slot, new_instance_id, size_class_for_width
 from .painting import BackgroundRenderer
 from .pages_view import OnePageView, PageView
@@ -319,7 +320,7 @@ class DashboardWindow(QMainWindow):
         self.view_button.setToolTip("Basculer OnePage / pages multiples (Ctrl+O)")
         self.view_button.clicked.connect(self._toggle_view)
         self.edit_button = QToolButton()
-        self.edit_button.setText("✎ Éditer")
+        self.edit_button.setText("Éditer")
         self.edit_button.setCheckable(True)
         self.edit_button.setToolTip("Mode édition (Ctrl+E)")
         self.edit_button.clicked.connect(lambda checked: self.set_edit_mode(checked))
@@ -327,11 +328,11 @@ class DashboardWindow(QMainWindow):
         self.bell.setToolTip("Notifications du Dashboard")
         self.bell.clicked.connect(self._show_notifications_menu)
         self.full_button = QToolButton()
-        self.full_button.setText("⤢")
+        mark(self.full_button).setText("⤢")
         self.full_button.setToolTip("Plein écran (F11)")
         self.full_button.clicked.connect(self.toggle_fullscreen)
         self.settings_button = QToolButton()
-        self.settings_button.setText("⚙")
+        mark(self.settings_button).setText("⚙")
         self.settings_button.setToolTip("Paramètres")
         self.settings_button.clicked.connect(lambda: self.open_page("parametres"))
         for widget in (self.view_button, self.edit_button, self.bell, self.full_button, self.settings_button):
@@ -355,11 +356,11 @@ class DashboardWindow(QMainWindow):
         self.interfaces_caption = QLabel("Interfaces")
         self.interfaces_caption.setProperty("role", "dim")
         layout.addWidget(self.interfaces_caption)
-        self.orb_button = QPushButton("●  Orbe")
+        self.orb_button = QPushButton("Orbe")
         self.orb_button.setProperty("role", "nav")
         self.orb_button.setToolTip("Passer en mode orbe (la voix et les tâches continuent)")
         self.orb_button.clicked.connect(lambda: self.controller.set_interface_mode("blob"))
-        self.desktop_button = QPushButton("◫  Desktop")
+        self.desktop_button = QPushButton("Desktop")
         self.desktop_button.setProperty("role", "nav")
         self.desktop_button.setToolTip("Passer en mode Desktop (la voix et les tâches continuent)")
         self.desktop_button.clicked.connect(lambda: self.controller.set_interface_mode("desktop"))
@@ -416,6 +417,29 @@ class DashboardWindow(QMainWindow):
         self.root.theme_changed()
         self.root.update_animation(self.isVisible())
         self.emblem.set_running(self.isVisible())
+        self._refresh_glyphs()
+
+    def _refresh_glyphs(self) -> None:
+        """Symboles des boutons, peints avec la police de symboles (correctif D01).
+
+        Un symbole dans le libellé, rendu par la police d'interface qui ne le
+        contient pas, faisait charger toutes les polices du système (cf.
+        ``UI/dashboard/glyphs.py``). Couleur du texte du thème : lisible dans
+        tous les états (seul le fond change au survol ou à la sélection).
+        """
+        color = self.theme_manager.theme.text
+        onepage = self.store.config.layout.view_mode == "onepage"
+        pairs = [(self.edit_button, "✎"), (self.bell, "✉"), (self.orb_button, "●"),
+                 (self.desktop_button, "◫"), (self.view_button, "▦" if onepage else "▤")]
+        pairs += [(button, str(button.property("page_icon") or "")) for button in self.nav_buttons.values()]
+        for button, symbol in pairs:
+            if symbol:
+                button.setIcon(glyph_icon(symbol, color, 16))
+                button.setIconSize(QSize(16, 16))
+        # QToolButton n'affiche QUE l'icône par défaut : le libellé (« OnePage »,
+        # « Éditer », nombre de notifications) reste visible à côté.
+        for button in (self.view_button, self.edit_button, self.bell):
+            button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
 
     def _on_theme(self, _theme) -> None:
         self._apply_stylesheet()
@@ -452,7 +476,7 @@ class DashboardWindow(QMainWindow):
 
     def _update_bell(self) -> None:
         unread = self.hub.notifications.unread_count()
-        self.bell.setText(f"✉ {unread}" if unread else "✉")
+        self.bell.setText(str(unread) if unread else "")
 
     def _show_notifications_menu(self) -> None:
         menu = QMenu(self)
@@ -546,8 +570,9 @@ class DashboardWindow(QMainWindow):
         layout = self.store.config.layout
         pages = [p for p in layout.pages if not p.extras.get("_hidden_overflow")]
         for index, page in enumerate(pages):
-            button = QPushButton(f"{page.icon}  {page.title}")
+            button = QPushButton(page.title)
             button.setProperty("role", "nav")
+            button.setProperty("page_icon", page.icon or "")
             button.setCheckable(True)
             button.setToolTip(f"{page.title} (Ctrl+{index + 1})" if index < 9 else page.title)
             button.clicked.connect(lambda _=False, pid=page.id: self.open_page(pid))
@@ -556,7 +581,8 @@ class DashboardWindow(QMainWindow):
             self.nav_buttons[page.id] = button
         onepage = layout.view_mode == "onepage"
         self.view_button.setChecked(onepage)
-        self.view_button.setText("▤ OnePage" if not onepage else "▦ Pages")
+        self.view_button.setText("OnePage" if not onepage else "Pages")
+        self._refresh_glyphs()
         self.sidebar.setVisible(True)
         if layout.page(self._current_page) is None:
             self._current_page = "accueil"
@@ -907,19 +933,19 @@ class DashboardWindow(QMainWindow):
         for page_id, button in self.nav_buttons.items():
             page = self.store.config.layout.page(page_id)
             if page is not None:
-                button.setText(page.icon if narrow else f"{page.icon}  {page.title}")
-        self.orb_button.setText("●" if narrow else "●  Orbe")
-        self.desktop_button.setText("◫" if narrow else "◫  Desktop")
+                button.setText("" if narrow else page.title)
+        self.orb_button.setText("" if narrow else "Orbe")
+        self.desktop_button.setText("" if narrow else "Desktop")
         self.close_mode_label.setVisible(not narrow)
         self.interfaces_caption.setVisible(not narrow)
         self.page_title.setVisible(not narrow)
         self.title.setVisible(not narrow)
-        self.edit_button.setText("✎" if narrow else "✎ Éditer")
+        self.edit_button.setText("" if narrow else "Éditer")
         onepage = self.store.config.layout.view_mode == "onepage"
         if narrow:
-            self.view_button.setText("▦" if onepage else "▤")
+            self.view_button.setText("")
         else:
-            self.view_button.setText("▦ Pages" if onepage else "▤ OnePage")
+            self.view_button.setText("Pages" if onepage else "OnePage")
         self.status_pill.compact = narrow
         self._update_status()
 

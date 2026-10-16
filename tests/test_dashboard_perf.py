@@ -217,14 +217,20 @@ def test_perf_script_ends_with_the_failed_criteria():
     assert dashboard_perf.echecs(results) == ["event_loop_max_lag_ms=182.4 (seuil 150.0)"]
 
 
-def test_every_theme_names_its_symbol_fonts_explicitly():
-    """Correctif D01 (Windows natif : 3,5 s à froid dans ``rebuild_pages``, des dizaines
-    de polices chargées). Les symboles de la navigation et des cadres sont absents de
-    la police d'interface : chaque chaîne de polices du thème désigne explicitement les
-    polices de symboles, pour que Qt n'ait jamais à parcourir les polices du système."""
+def test_themes_use_one_installed_family_and_a_symbol_font_for_glyphs():
+    """Correctif D01, cause établie sur Windows natif : une police à PLUSIEURS familles
+    (anciennes chaînes « "Segoe UI", "Inter", … ») ou un glyphe absent de la police
+    principale font charger à Qt toutes les polices du système (155 fichiers, 3,5 s à
+    froid). Chaque rôle de police du thème est donc UNE famille installée, et les
+    éléments à glyphe utilisent la police de symboles comme police principale."""
+    from PySide6.QtGui import QFontDatabase
+
     from UI.dashboard import theme as theme_module
     from UI.dashboard.config import AppearancePrefs
 
+    QApplication.instance() or QApplication([])
+    installed = set(QFontDatabase.families())
+    symbol = theme_module.symbol_family()
     for theme_id in theme_module.THEMES:
         prefs = AppearancePrefs()
         prefs.theme = theme_id
@@ -232,9 +238,65 @@ def test_every_theme_names_its_symbol_fonts_explicitly():
         for kind, families in (("ui", resolved.spec.font_ui), ("title", resolved.spec.font_title),
                                ("mono", resolved.spec.font_mono)):
             chain = resolved.font_family(kind)
-            # Les polices du thème restent en tête ; les symboles viennent après.
-            assert chain.startswith(f'"{families[0]}"'), (theme_id, kind, chain)
-            for family in theme_module.SYMBOL_FONT_FALLBACKS:
-                assert f'"{family}"' in chain, (theme_id, kind, chain)
+            assert "," not in chain, (theme_id, kind, chain)
+            name = chain.strip('"')
+            assert name in families
+            assert name in installed or not any(f in installed for f in families), (theme_id, kind, name)
         css = theme_module.stylesheet(resolved)
-        assert '"Segoe UI Symbol"' in css.split("QWidget {", 1)[1].split("}", 1)[0]
+        if symbol:
+            assert f'*[glyph="true"] {{ font-family: "{symbol}"; }}' in css
+
+
+def _symboles(texte: str) -> str:
+    # Pictogrammes (flèches, formes, symboles divers) : jamais confiés à la police d'interface.
+    return "".join(ch for ch in texte if 0x2190 <= ord(ch) <= 0x2BFF)
+
+
+def test_chrome_and_frames_never_render_glyphs_with_the_interface_font(tmp_path):
+    from PySide6.QtWidgets import QAbstractButton, QLabel
+
+    from UI.dashboard.controller import DashboardController
+    from UI.dashboard.widgets.jarvis_widgets import QuickActionsWidget
+
+    app = QApplication.instance() or QApplication([])
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.open()
+            window = controller.window
+            canvases = window.all_canvases()
+            pump(app, 0.2)
+            chrome = [w for root in (window.sidebar, window.findChild(type(window.sidebar), "header"))
+                      for w in root.findChildren(QAbstractButton) + root.findChildren(QLabel)]
+            assert window.nav_buttons and chrome
+            def texte(w):  # méthode Qt non liée (StatusPill masque text() par un attribut)
+                return QAbstractButton.text(w) if isinstance(w, QAbstractButton) else QLabel.text(w)
+
+            fautifs = [(w.objectName() or type(w).__name__, texte(w)) for w in chrome
+                       if _symboles(texte(w)) and not w.property("glyph")]
+            assert not fautifs, fautifs
+            for button in window.nav_buttons.values():
+                assert not button.icon().isNull(), "icône de page peinte avec la police de symboles"
+            # Libellés conservés à côté des icônes (régression vue sur capture).
+            from PySide6.QtCore import Qt
+
+            assert window.edit_button.text() == "Éditer" and window.view_button.text() in ("OnePage", "Pages")
+            for button in (window.view_button, window.edit_button, window.bell):
+                assert button.toolButtonStyle() == Qt.ToolButtonTextBesideIcon
+            frames = [frame for canvas in canvases for frame in canvas.frames.values()]
+            assert frames
+            for frame in frames:
+                assert frame.icon.property("glyph")
+                assert all(b.property("glyph") for b in [*frame.edit_buttons, frame.menu_button])
+            for widget in window.findChildren(QuickActionsWidget):
+                for button, _action in widget._buttons.values():
+                    assert not _symboles(button.text()), button.text()
+            controller.set_view_mode("onepage")
+            onepage = window._onepage
+            onepage.build_all()
+            for _page, header, _canvas in onepage.sections:
+                plain = header.text().replace("&nbsp;", " ")
+                assert not _symboles(plain.split("</span>")[-1]), "glyphe de section hors police de symboles"
+        finally:
+            controller.shutdown()

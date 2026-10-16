@@ -237,7 +237,9 @@ class NotificationsWidget(DashboardWidget):
         theme = self.context.theme
         for item in items:
             stamp = time.strftime("%H:%M", time.localtime(item.created_at))
-            native = " · natif ✓" if item.native_sent else (f" · natif : {item.native_error}" if item.native_requested and item.native_error else "")
+            # Mot plutôt que « ✓ » : un symbole absent de la police d'interface
+            # fait charger toutes les polices du système sous Windows (D01).
+            native = " · natif : envoyée" if item.native_sent else (f" · natif : {item.native_error}" if item.native_requested and item.native_error else "")
             entry = QListWidgetItem(f"{'●' if not item.read else '○'} {stamp}  {item.title}\n{item.message}{native}")
             if item.level == "error":
                 entry.setForeground(theme.danger)

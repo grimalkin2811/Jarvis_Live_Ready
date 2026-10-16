@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .glyphs import mark
 from .painting import paint_panel
 from .widget_api import (
     STATE_ERROR,
@@ -113,7 +114,7 @@ class WidgetFrame(QWidget):
         header = QHBoxLayout()
         header.setContentsMargins(4 if theme.spec.shape != "rounded" else 24, 0, 0, 0)
         header.setSpacing(6)
-        self.icon = QLabel(spec.icon if spec else "?")
+        self.icon = mark(QLabel(spec.icon if spec else "?"))
         self.icon.setProperty("role", "dim")
         from .widgets.common import ElidedLabel
 
@@ -129,7 +130,7 @@ class WidgetFrame(QWidget):
         for text, tip, signal in (("⚙", "Réglages du widget", self.settings_requested),
                                   ("◌", "Masquer (aucune donnée supprimée)", self.hide_requested),
                                   ("✕", "Retirer de la page (aucune donnée supprimée)", self.remove_requested)):
-            button = QToolButton()
+            button = mark(QToolButton())
             button.setText(text)
             button.setToolTip(tip)
             button.setAutoRaise(True)
@@ -138,7 +139,7 @@ class WidgetFrame(QWidget):
             button.setVisible(False)
             header.addWidget(button)
             self.edit_buttons.append(button)
-        self.menu_button = QToolButton()
+        self.menu_button = mark(QToolButton())
         self.menu_button.setText("⋯")
         self.menu_button.setToolTip("Actions")
         self.menu_button.setAutoRaise(True)

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QPlainTextEdit, QTextBrowser, QVBoxLayout
 
 from src.runtime_status import EngineState, EngineUnavailableError
 
+from ..glyphs import mark, span
 from ..widget_api import STATE_EMPTY, STATE_READY, STATE_UNAVAILABLE, DashboardWidget, WidgetAction
 from .common import StatusDot, button, esc, hrow, label
 
@@ -77,7 +78,7 @@ class ConversationWidget(DashboardWidget):
         self.input.textChanged.connect(self._on_text_changed)
         self.send_button = button("Envoyer", "primary", "Entrée pour envoyer, Maj+Entrée pour aller à la ligne")
         self.send_button.clicked.connect(self.send)
-        self.stop_button = button("■", tooltip="Interrompre la réponse vocale en cours")
+        self.stop_button = mark(button("■", tooltip="Interrompre la réponse vocale en cours"))
         self.stop_button.clicked.connect(self._stop)
         layout.addLayout(hrow(self.input, self.send_button, self.stop_button, stretch_last=False))
         self.hint = label("La réponse est aussi prononcée à voix haute (même session que la voix).", "dim", wrap=True)
@@ -307,11 +308,11 @@ class ConversationWidget(DashboardWidget):
             if message.role == "tool":
                 if not show_tools or message.kind != "tool_result":
                     continue
-                rows.append(f"<p style='color:{dim}; margin:2px 0 2px 12px'>⚙ {esc(message.text[:220])}</p>")
+                rows.append(f"<p style='color:{dim}; margin:2px 0 2px 12px'>{span('⚙')} {esc(message.text[:220])}</p>")
                 continue
             body = esc(message.text).replace("\n", "<br>")
             if message.role == "user":
-                failed = (f"<br><span style='color:{t.warning.name()}'>⚠ sans réponse (tour interrompu)</span>"
+                failed = (f"<br><span style='color:{t.warning.name()}'>{span('⚠')} sans réponse (tour interrompu)</span>"
                           if message.failed else "")
                 rows.append(
                     "<table width='100%' cellspacing='0' cellpadding='0'><tr><td width='18%'></td>"

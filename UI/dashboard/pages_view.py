@@ -7,6 +7,7 @@ from collections.abc import Callable
 from PySide6.QtCore import QRect, Qt, QTimer
 from PySide6.QtWidgets import QFrame, QLabel, QScrollArea, QVBoxLayout, QWidget
 
+from .glyphs import rich_title
 from .grid_view import GridCanvas
 from .layout_model import Page
 
@@ -66,7 +67,8 @@ class OnePageView(QScrollArea):
         self._layout.setSpacing(10)
         self.sections: list[tuple[Page, QLabel, GridCanvas]] = []
         for page in onepage_order(pages):
-            header = QLabel(theme_manager.theme.title(f"{page.icon}  {page.title}"))
+            header = QLabel(rich_title(page.icon, theme_manager.theme.title(page.title)))
+            header.setTextFormat(Qt.RichText)
             header.setProperty("role", "title")
             header.setObjectName(f"section-{page.id}")
             # Construction DIFFÉRÉE : une section par tour de boucle Qt, pour
