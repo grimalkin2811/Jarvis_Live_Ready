@@ -82,7 +82,9 @@ serveur ne valide jamais Windows ou Gemini réel.
 ## Contrôles humains (fenêtre finale)
 
 Ces contrôles ne sont pas automatisables ; sans réponse, ils restent « NON TESTÉ » (jamais comptés
-comme réussis). Ils ne sont pas requis pour le verdict, mais une réponse « non » est un ÉCHEC.
+comme réussis) et une réponse « non » est un ÉCHEC. **E14 et E15 sont requis** pour le verdict « prête
+à être proposée à la fusion » ; D18 et D19 sont recommandés (non requis). Terminer la fenêtre sans
+avoir fait E14/E15 demande une confirmation explicite.
 
 * **D18 — captures natives** (vignettes affichées dans la fenêtre finale ; originaux `D*.png` dans
   le dossier de l'exécution) : répondre « oui » seulement si, sur **toutes** les captures :
@@ -95,8 +97,20 @@ comme réussis). Ils ne sont pas requis pour le verdict, mais une réponse « no
   lancement ; une seule notification « Validation Jarvis » est émise pendant D10 ; répondre « oui »
   si elle est apparue (coin de l'écran ou centre de notifications), sinon « non » ; « pas regardé »
   si vous n'étiez pas devant l'écran (NON TESTÉ).
-* **E14/E15 — haut-parleur et micro** : tonalité d'une seconde à entendre ; 3 secondes de micro
-  mesurées en mémoire (niveau seulement, rien n'est enregistré).
+* **E14/E15 — haut-parleur et micro (requis)** :
+  * prérequis : cocher « Test guidé haut-parleur/micro » dans la fenêtre de lancement ; haut-parleurs
+    ou casque allumés, volume audible ; micro branché, non coupé et autorisé (Windows : Paramètres ›
+    Confidentialité et sécurité › Microphone) ;
+  * E14 : « Jouer une tonalité de 1 s » puis répondre « oui » seulement si la tonalité a été entendue ;
+  * E15 : « Tester le micro » puis parler normalement pendant 3 s ; le niveau est mesuré en mémoire,
+    bloc par bloc, et rien n'est enregistré ni envoyé ;
+  * formats : ceux de Jarvis (`AudioIO`) — sortie 24 kHz mono 16 bits par blocs de 1 024 échantillons,
+    entrée 16 kHz mono 16 bits par blocs de 1 280. E13 (inventaire des périphériques) ne remplace
+    jamais E14/E15 : un périphérique présent n'est pas un son entendu ni une voix captée.
+* **B09 — compatibilité de l'installation quotidienne** : demande d'autoriser la « migration de la
+  mémoire sur une copie » dans la fenêtre de lancement (sans quoi B09 reste NON TESTÉ). Trois preuves :
+  base mémoire migrable par la PR (copie), configuration réelle lue sans perte (copie assainie, aucune
+  valeur personnelle ni clé recopiée), mise à jour réversible sans toucher aux données (tests de C01).
 
 ## Lire un échec des scénarios E1–E10
 
@@ -105,7 +119,7 @@ au moment de l'échec (aucune clé, valeurs masquées) :
 
 | Champ | Lecture |
 |---|---|
-| `moteur` | `engine_snapshot()` : session ouverte/prête, `speaking`, `regeneration_pending`, `text_turn_pending`, `turn_open`, nombre de sessions, `stalls_recovered`. |
+| `moteur` | `engine_snapshot()` : session ouverte/prête, `session_id`, `turn_id`, `speaking`, `regeneration_pending`, `text_turn_pending`, `turn_open`, `model_output_seen` (la réponse a-t-elle commencé ?), `pending_response` (ce qui est attendu du serveur), `interrupted_generation_pending`, `seed_reply_pending`, `last_interruption` (classification et origine), `last_server_message_age_s`, nombre de sessions, `stalls_recovered`. |
 | `porte_micro` | Raison pour laquelle le micro n'était pas transmis (`jarvis parle`, `message texte en cours`, `session en preparation`…). |
 | `audio` | Jarvis éveillé, voix en cours, octets de lecture encore en attente. |
 | `erreurs_session` | Dernières erreurs de session : classe, message, `code`/`status` d'API, code WebSocket. |
@@ -113,6 +127,34 @@ au moment de l'échec (aucune clé, valeurs masquées) :
 
 `RESPONSE_STALLED` signale que le serveur s'est tu alors qu'une réponse était due : Jarvis clôt le
 tour en échec (demande conservée) et relance la session après 30 s (`JARVIS_LIVE_STALL_TIMEOUT`).
+
+Interruptions du serveur (`INTERRUPTION`, champs `classification` et `origin`) :
+
+| `classification` | Sens | Effet |
+|---|---|---|
+| `interruption_reponse` | Jarvis parlait, ou un arrêt était demandé | Tour clos, interruption signalée ; le `turn_complete` qui suit clôt ce tour. |
+| `generation_annulee_avant_reponse` | Le modèle n'avait encore rien produit (pause entre deux phrases, ou `clientContent` de Jarvis) | Tour **gardé ouvert** (`TURN_KEPT_OPEN`) : la suite de la parole s'y ajoute, la réponse lui revient ; jamais de relance. |
+| `traine_vide` | Aucun tour en cours | Rien n'est signalé. |
+
+`origin` : `barge_in_local`, `arret_manuel`, `client_content` (un message de Jarvis vient de partir)
+ou `activite_vocale_serveur` (parole détectée par la VAD du serveur). Un `turn_complete` accompagné de
+`interaction_status=IN_PROGRESS` sur un tour encore muet (`EMPTY_TURN_COMPLETE_IN_PROGRESS`) signifie
+que la réponse est encore à venir : aucune relance n'est envoyée. `EMPTY_GENERATION_RETRY` n'est émis
+que pour une vraie génération vide (`IDLE`), précédé d'un `AUDIO_STREAM_END`.
+
+## Verdicts des scripts officiels réels (E11, E12)
+
+`validate_real_gemini.py` et `validate_reconnect_v174_real.py` déclarent chacun de leurs contrôles :
+
+* **PASS** — exercé contre le service réel et vérifié ;
+* **FAIL** — exercé et incorrect, ou sans réponse dans le délai (produit ou harnais), avec le
+  diagnostic du moteur ;
+* **NON TESTABLE** — prérequis absent seulement (clé refusée, quota épuisé, réseau injoignable),
+  avec sa raison.
+
+`validate_real_gemini.py` alimente Jarvis par un micro simulé CONTINU filtré par `can_send()` (comme
+le pont micro de production), attend réellement chaque reconnexion et ne compte les rejeux de
+contexte qu'après elle.
 
 ## Limites assumées
 

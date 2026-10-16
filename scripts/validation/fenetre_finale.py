@@ -112,9 +112,10 @@ def main(argv=None) -> int:
 
     intro = QLabel(
         f"<b>Les contrôles automatiques sont terminés.</b> Verdict provisoire : <b>{contexte.get('verdict', '?')}</b><br>"
-        "Les contrôles ci-dessous demandent un humain : ils comptent pour une validation complète "
-        "(D18, D19, E14, E15). Toute question sans réponse est notée « NON TESTÉ » dans le rapport — jamais "
-        "réussie à votre place. Aucune donnée n'est envoyée ; aucun enregistrement n'est conservé.")
+        "Les contrôles ci-dessous demandent un humain. <b>E14 et E15 (test audio) sont requis</b> pour le "
+        "verdict ; D18 (captures) et D19 (notification) sont recommandés. Toute question sans réponse est notée "
+        "« NON TESTÉ » dans le rapport — jamais réussie à votre place. Aucune donnée n'est envoyée ; aucun "
+        "enregistrement n'est conservé.")
     intro.setWordWrap(True)
     layout.addWidget(intro)
 

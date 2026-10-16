@@ -106,6 +106,51 @@ Limites : rendu logiciel hors écran, sans GPU ni compositeur ; les valeurs
 absolues sur un PC Windows réel seront différentes (à mesurer avec le même
 script, cf. §6).
 
+### 3.1 Première ouverture sous Windows natif (D01, correctif PR #50)
+
+Validation du 2026-10-16 (Pentium Gold G5400) : fenêtre affichée en 1 867 ms
+(seuil 1 500), contenu complet en 1 910 ms — le contenu ne coûtait que ~45 ms,
+tout le temps précédait la première peinture. Hors écran (Linux), la même
+ouverture prend ~45 ms : la cause est propre à Windows natif.
+
+`scripts/dashboard_first_open_profile.py` découpe le MÊME évènement en phases
+(import de la fenêtre, construction, affichage, première peinture, contenu),
+dans des processus neufs répétés, chronomètre chaque étape du constructeur et
+liste les fichiers projetés en mémoire pendant la construction. Exécuté sur un
+runner Windows natif (`.github/workflows/pr-windows-native.yml`) :
+
+| Processus | Première ouverture | dont `rebuild_pages` |
+|---|---|---|
+| 1 (froid) | 3 656 à 4 807 ms | 3 477 ms |
+| 2 | ~560 ms | 552 ms |
+| 3 à 5 | ~105 à 121 ms | ~34 ms |
+
+Pendant `rebuild_pages`, des dizaines de fichiers de police sont chargés
+(Candara, Cascadia, Gabriola, Ink Free, Leelawadee, Nirmala, Sitka, Yu Gothic,
+Arial…) : les boutons de navigation portent des symboles (⌂ ◈ ◎ ☑ ⚙ ✎…)
+absents de la police d'interface, et faute de famille désignée Qt parcourt la
+liste de repli du système en chargeant chaque police jusqu'à trouver le
+glyphe — coûteux à froid (antivirus, cache disque). Correctif : les chaînes de
+polices des thèmes se terminent par des polices de symboles explicites
+(`SYMBOL_FONT_FALLBACKS` : Segoe UI Symbol, Segoe UI Emoji, Apple Symbols,
+Noto Sans Symbols 2, DejaVu Sans). Seuil inchangé ; D01 rapporte désormais la
+part construction / affichage et les polices chargées pendant l'ouverture.
+
+Le runner GitHub n'est pas le PC de validation : ces chiffres sont un repère
+Windows natif ; la mesure qui fait foi reste D01 sur le PC cible.
+
+### 3.2 Latence de la boucle et OnePage (C10)
+
+Le rapport du 2026-10-16 affichait « perf_measures=ÉCHEC (… OnePage : premier
+affichage 179) » : la dernière ligne, indicative, et jamais le critère dépassé.
+`dashboard_perf.py` termine désormais par « Critères en échec : … » et le
+résumé du protocole contient `failed_checks` et les mesures clés, repris par
+C10. Le seul bloc mesuré au-delà de 150 ms sur le PC était le premier
+affichage OnePage (179 ms, une section entière construite d'un bloc) : OnePage
+construit maintenant quelques widgets par tour de boucle (budget de 12 ms,
+au moins un widget), soit 102 → ~64 ms hors écran pour le premier affichage
+et 44 → 27 ms pour le plus gros bloc d'une section.
+
 ## 4. Protocole visuel et ergonomique
 
 `scripts/dashboard_visual_protocol.py` produit 24 captures + `index.json` :
@@ -251,3 +296,23 @@ pour l'exécutable et le launcher, `setup.bat`, `verify-release.yml`) ; le
 workflow de validation Gemini n'installe pas PySide6. NB : les 6.11.x
 exigent Python < 3.15 — sans effet aujourd'hui (onnxruntime n'a aucune roue
 3.15), à reprendre avant toute montée de version de Python.
+
+**État après la validation Windows du 2026-10-16 (PR #50)** :
+
+* l'installation quotidienne du PC de validation embarque bien Qt 6.12.0
+  (`Qt6Core.dll` 6.12.0.0) — construite avant la borne ; sur ce PC, B07 n'a
+  mesuré **aucune dérive** sur 20 000 appels avec PySide6 6.12.0. Indice
+  favorable pour Windows, pas une preuve générale : la borne est conservée
+  (le défaut reste reproduit sous Linux / Python < 3.12, et un seul PC ne
+  couvre pas tous les chemins d'appel) ;
+* B05 ne déclare plus cette installation « en échec » : être hors de la plage
+  validée par la PR n'est pas une incompatibilité démontrée ; c'est une
+  installation antérieure, à mettre à jour après fusion. Restent des échecs
+  stricts : composants Qt de versions différentes, ou build portant le
+  contrôle (`qt_versions.json`, désormais embarqué dans l'application) qui ne
+  correspond pas à ce qu'il embarque ou sort de la plage ;
+* build de validation de la PR sur un runner Windows
+  (`.github/workflows/pr-windows-native.yml`) : versions attendue (contrainte
+  `<6.12`, PySide6 6.11.2), embarquée (`Qt6Core.dll` 6.11.2.0) et chargée
+  (`Jarvis.exe --qt-versions` : PySide6, shiboken6 et Qt 6.11.2) identiques,
+  test de fumée réussi.
