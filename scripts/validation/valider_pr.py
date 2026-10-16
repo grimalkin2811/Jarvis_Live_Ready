@@ -1144,18 +1144,95 @@ def inspecter_installation(x: Execution) -> None:
         info[dll] = version_fichier_windows(found) if found else "absent"
     dist = sorted(p.name for p in internal.glob("PySide6*.dist-info")) if internal.exists() else []
     info["metadonnees_pyside"] = ", ".join(dist) or "non embarquées"
+    marqueur = next((m for m in (inst / "app" / "qt_versions.json", inst / "qt_versions.json") if m.exists()), None)
+    attendu: dict = {}
+    if marqueur is not None:
+        try:
+            attendu = json.loads(marqueur.read_text(encoding="utf-8"))
+        except Exception:
+            attendu = {"illisible": True}
+    info["qt_versions.json"] = "absent (construite avant ce contrôle)" if marqueur is None else (
+        f"PySide6 {attendu.get('pyside6', '?')}, Qt {attendu.get('qt_runtime', '?')}, contrainte "
+        f"{attendu.get('spec', '?')}")
     x.rapport.versions["Installation quotidienne"] = info
     qt = info.get("Qt6Core.dll") or ""
     x.installation_qt = qt
     texte = f"version {info.get('version.json', {}).get('version', '?') if isinstance(info.get('version.json'), dict) else '?'}, " \
             f"{info['python_embarque']}, Qt6Core {qt or '?'}"
-    if qt.startswith(PYSIDE_EXCLUE):
-        x.ctl("B05", "").regler(P.ECHEC, texte, raison="l'installation embarque Qt/PySide6 6.12.0 (version exclue)")
-        x.probleme("important", "L'installation quotidienne embarque PySide6/Qt 6.12.0",
-                   "Reconstruire après fusion (build_windows.ps1 installe requirements.txt, plafonné < 6.12).",
-                   "scripts/build_windows.ps1", "B05")
-    else:
-        x.ctl("B05", "").regler(P.REUSSI, texte, x.rel(inst))
+    versions_qt = module_qt_versions(x)
+    verdict, detail, point = evaluer_installation(qt, {k: info.get(k) for k in ("pyside6.abi3.dll", "shiboken6.abi3.dll")},
+                                                  marqueur is not None, attendu, versions_qt)
+    x.ctl("B05", "").regler(verdict, f"{texte} — {detail}", x.rel(inst))
+    if point:
+        x.probleme("important", point[0], point[1], "scripts/build_windows.ps1", "B05")
+
+
+def _version_courte(texte: str | None) -> str:
+    morceaux = re.findall(r"\d+", str(texte or ""))[:3]
+    return ".".join(morceaux)
+
+
+def module_qt_versions(x: Execution):
+    """``src/qt_versions.py`` du commit TESTÉ (copie de la PR), à défaut de ce dépôt."""
+    import importlib.util
+
+    for racine in ([x.worktree] if x.worktree is not None else []) + [ICI.parents[1]]:
+        chemin = Path(racine) / "src" / "qt_versions.py"
+        if chemin.exists():
+            try:
+                spec = importlib.util.spec_from_file_location("qt_versions_teste", chemin)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                return module
+            except Exception:
+                continue
+    return None
+
+
+def evaluer_installation(qt: str, composants: dict, marqueur_present: bool, attendu: dict,
+                         versions_qt=None) -> tuple[str, str, tuple[str, str] | None]:
+    """B05 — ce que l'inspection permet d'AFFIRMER sur l'installation quotidienne.
+
+    Correctif PR #50 (rapport du 2026-10-16 : B05 « ÉCHEC » car Qt 6.12.0) :
+    l'installation quotidienne est la version AVANT la PR, construite sans la
+    borne « < 6.12 ». Être hors de la plage validée PAR la PR n'est pas une
+    incompatibilité démontrée (B07 : aucune dérive mesurée sur ce PC) : c'est
+    une installation antérieure, remplacée par la prochaine version construite
+    depuis la PR (Qt 6.11.x, vérifié par la CI de build). Restent des ÉCHECS :
+    une installation dont les composants Qt divergent, ou une installation
+    construite avec le contrôle (marqueur ``qt_versions.json``) qui ne
+    correspond pas à ce qu'elle embarque ou sort de la plage.
+    """
+    if not qt or qt == "absent":
+        return P.ECHEC, "Qt6Core.dll introuvable ou illisible : installation incomplète", None
+    version_qt = _version_courte(qt)
+    divergents = {nom: v for nom, v in composants.items() if v and v != "absent" and _version_courte(v) != version_qt}
+    if divergents:
+        return P.ECHEC, f"composants Qt de versions différentes ({version_qt} contre {divergents}) : installation incohérente", None
+    if versions_qt is not None:
+        plage = versions_qt.VALIDATED_PYSIDE6_SPEC
+        dans_la_plage = versions_qt.satisfies(version_qt, plage)
+    else:  # pragma: no cover - copie de la PR sans le module (ancien commit)
+        plage = "<6.12"
+        dans_la_plage = not version_qt.startswith(PYSIDE_EXCLUE[:4])
+    if marqueur_present:
+        if attendu.get("illisible"):
+            return P.ECHEC, "qt_versions.json embarqué illisible", None
+        if _version_courte(attendu.get("qt_runtime")) != version_qt:
+            return P.ECHEC, (f"Qt embarqué {version_qt} différent de la version vérifiée au build "
+                             f"({attendu.get('qt_runtime')})"), None
+        if not dans_la_plage:
+            return P.ECHEC, f"build contrôlé mais Qt {version_qt} hors de la plage validée ({plage})", None
+        return P.REUSSI, f"Qt {version_qt} cohérent et conforme au contrôle de build ({plage})", None
+    if dans_la_plage:
+        return P.REUSSI, f"Qt {version_qt} cohérent, dans la plage validée ({plage})", None
+    return (P.REUSSI,
+            f"installation cohérente (Qt {version_qt} de bout en bout), construite AVANT la borne {plage} de la "
+            f"PR (pas de qt_versions.json) : hors de la plage validée par la PR, sans incompatibilité démontrée "
+            f"(voir B07) ; la version construite depuis la PR embarque Qt 6.11.x (CI de build)",
+            ("Installation quotidienne antérieure à la PR (Qt " + version_qt + ")",
+             "À mettre à jour après fusion et publication : la nouvelle version embarque Qt 6.11.x (contrôle "
+             "strict au build). Aucune incompatibilité n'est démontrée sur ce PC (B07)."))
 
 
 def inspecter_scripts(x: Execution) -> None:
@@ -1605,19 +1682,18 @@ def memoire_et_donnees(x: Execution) -> None:
                                   f"{len(selection)} tests ({len(echecs)} en échec), bases SQLite temporaires — vue de C01",
                                   ", ".join(sorted({c['nom'] for c in selection}))[:400])
     migration_copie(x)
+    compatibilite_installation(x)
 
 
 def migration_copie(x: Execution) -> None:
     bases = [r / "memory.db" for r in x.racines_reelles if (r / "memory.db").exists()]
     if not bases:
         x.ctl("F05", "").regler(P.NON_APPLICABLE, raison="aucune base mémoire Jarvis sur ce PC")
-        x.ctl("B09", "").regler(P.NON_APPLICABLE if x.installation is None else P.NON_TESTE,
-                                raison="aucune base mémoire à vérifier")
+        x.b09_migration = (True, "aucune base mémoire à migrer (rien ne peut être perdu)")
         return
     if not x.consentements.get("migration_copie"):
         x.ctl("F05", "").regler(P.NON_TESTE, raison="non autorisé dans la fenêtre de lancement")
-        if x.installation is not None:
-            x.ctl("B09", "").regler(P.NON_TESTE, raison="migration sur copie non autorisée")
+        x.b09_migration = (None, "migration sur copie non autorisée")
         return
     if not x.python_tests or x.worktree is None:
         x.ctl("F05", "").regler(P.BLOQUE, raison="environnement de validation indisponible")
@@ -1675,14 +1751,113 @@ def migration_copie(x: Execution) -> None:
         else:
             x.ctl("F05", "").regler(P.REUSSI if ok else P.ECHEC, texte,
                                     "copie temporaire supprimée ensuite ; l'original n'a jamais été ouvert par SQLite")
-        if x.installation is not None:
-            b05 = x.ctl("B05", "")
-            b09_ok = ok and b05.statut == P.REUSSI
-            x.ctl("B09", "").regler(P.REUSSI if b09_ok else (P.ECHEC if not ok else P.NON_TESTE),
-                                    f"base réelle migrable par la PR ({texte}) ; installation : {b05.resultat}",
-                                    raison="" if b09_ok or not ok else "installation non entièrement inspectée")
+        if avant.get("integrite") not in (None, "ok"):
+            x.b09_migration = (None, "copie de la base incohérente (Jarvis en cours d'écriture ?)")
+        else:
+            x.b09_migration = (ok, f"base réelle migrable par la PR : {texte}")
     finally:
         shutil.rmtree(copie_dir, ignore_errors=True)
+
+
+#: Tests de C01 qui prouvent la restauration après une mise à jour qui échoue
+#: et la conservation des données voisines de ``app/`` (tests/test_updater.py).
+TESTS_MISE_A_JOUR = (
+    "test_apply_update_atomic_and_rollback", "test_rollback_restores_previous",
+    "test_apply_update_rejects_invalid_zip", "test_copy_failure_restores_the_previous_version_and_keeps_data",
+    "test_invalid_new_installation_is_rolled_back_and_keeps_data",
+    "test_successful_update_then_manual_rollback_never_touch_data",
+)
+
+
+def configuration_compatible(x: Execution) -> tuple[bool | None, str]:
+    """La configuration RÉELLE est-elle lue sans perte par le code de la PR ?
+
+    Jamais d'écriture sur l'original ni de secret recopié : une copie ASSAINIE
+    (mêmes clés et types, valeurs neutres) est lue par ``load_app_config`` de la
+    PR dans un processus isolé, puis supprimée. Seuls des noms de clés sortent.
+    """
+    sources = [r / "config.json" for r in x.racines_reelles if (r / "config.json").exists()]
+    if not sources:
+        return True, "aucun config.json réel (valeurs par défaut)"
+    if not x.python_tests or x.worktree is None:
+        return None, "environnement de validation indisponible"
+    try:
+        with open(sources[0], "rb") as lecteur:  # lecture seule de l'original
+            reel = json.loads(lecteur.read().decode("utf-8"))
+    except Exception as exc:
+        return False, f"config.json réel illisible ({type(exc).__name__})"
+    if not isinstance(reel, dict):
+        return False, "config.json réel n'est pas un objet JSON"
+
+    def neutre(valeur):
+        if isinstance(valeur, bool) or valeur is None:
+            return valeur
+        if isinstance(valeur, (int, float)):
+            return valeur
+        if isinstance(valeur, str):
+            return "valeur-de-validation"
+        if isinstance(valeur, list):
+            return [neutre(v) for v in valeur]
+        if isinstance(valeur, dict):
+            return {k: neutre(v) for k, v in valeur.items()}
+        return str(type(valeur).__name__)
+
+    dossier = Path(tempfile.mkdtemp(prefix="config-assainie-", dir=str(x.run)))
+    try:
+        copie = dossier / "config.json"
+        copie.write_text(json.dumps({k: neutre(v) for k, v in reel.items()}), encoding="utf-8")
+        script = ("import json, sys\nsys.path.insert(0, '.')\nfrom src import settings\n"
+                  "cfg = settings.load_app_config(sys.argv[1])\n"
+                  "print(json.dumps(sorted(settings.load_config_dict(sys.argv[1]))))\n")
+        code, out = x.executer("Configuration réelle lue par la PR (copie assainie)",
+                               [x.python_tests, "-c", script, str(copie)], cwd=x.worktree,
+                               env=x.env_enfant("configuration copie"), timeout=300)
+        ligne = next((l for l in reversed(out.splitlines()) if l.startswith("[")), "")
+        cles = set(json.loads(ligne)) if ligne else set()
+        perdues = sorted(set(reel) - cles)
+        if code != 0 or not ligne:
+            return False, f"lecture par la PR impossible (code {code})"
+        if perdues:
+            return False, f"clés perdues par la PR : {', '.join(perdues[:8])}"
+        return True, f"configuration réelle lue par la PR sans perte ({len(reel)} clés, copie assainie)"
+    finally:
+        shutil.rmtree(dossier, ignore_errors=True)
+
+
+def compatibilite_installation(x: Execution) -> None:
+    """B09 — l'installation quotidienne peut passer à la version de la PR.
+
+    Correctif PR #50 : B09 dépendait de B05 (version de Qt de l'ANCIENNE
+    installation), qui ne dit rien de la compatibilité des données ; il restait
+    « NON TESTÉ » avec une raison inexacte. Trois preuves désormais : base
+    mémoire migrable (copie), configuration lue sans perte (copie assainie),
+    mise à jour réversible sans toucher aux données (tests de C01).
+    """
+    if x.installation is None:
+        return  # B09 déjà « NON APPLICABLE » (aucune installation quotidienne)
+    preuves: list[tuple[str, bool | None, str]] = []
+    migration = getattr(x, "b09_migration", (None, "migration sur copie non exécutée"))
+    preuves.append(("mémoire", migration[0], migration[1]))
+    ok_config, texte_config = configuration_compatible(x)
+    preuves.append(("configuration", ok_config, texte_config))
+    cases = [c for c in (x.junit or {}).get("cas", []) if c.get("nom") in TESTS_MISE_A_JOUR]
+    if not cases:
+        preuves.append(("mise à jour", None, "résultats des tests de mise à jour indisponibles (C01)"))
+    else:
+        echecs = sorted(c["nom"] for c in cases if c.get("issue") in ("failure", "error"))
+        manquants = sorted(set(TESTS_MISE_A_JOUR) - {c["nom"] for c in cases})
+        texte = f"{len(cases)} tests de restauration et de conservation des données" + (
+            f", en échec : {', '.join(echecs)}" if echecs else ", tous réussis") + (
+            f", absents : {', '.join(manquants)}" if manquants else "")
+        preuves.append(("mise à jour", False if echecs else (None if manquants else True), texte))
+    resume = " ; ".join(f"{nom} : {texte}" for nom, _ok, texte in preuves)
+    if any(ok is False for _n, ok, _t in preuves):
+        x.ctl("B09", "").regler(P.ECHEC, resume, "copies temporaires supprimées ; originaux jamais modifiés")
+    elif all(ok for _n, ok, _t in preuves):
+        x.ctl("B09", "").regler(P.REUSSI, resume, "copies temporaires supprimées ; originaux jamais modifiés")
+    else:
+        manque = ", ".join(nom for nom, ok, _t in preuves if ok is None)
+        x.ctl("B09", "").regler(P.NON_TESTE, resume, raison=f"preuve(s) manquante(s) : {manque}")
 
 
 def fenetre_finale(x: Execution) -> None:

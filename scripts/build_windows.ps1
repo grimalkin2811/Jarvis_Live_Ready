@@ -208,6 +208,13 @@ $versionJson = @"
 $versionJson | Out-File -FilePath (Join-Path $appDir "version.json") -Encoding utf8
 Write-Host "  version.json: OK"
 
+# Versions PySide6 / Qt vérifiées avant PyInstaller, embarquées DANS l'app
+# (PR #50) : une installation peut ainsi être comparée à ce qu'elle charge
+# réellement (Qt6Core.dll, Jarvis.exe --qt-versions) ; une installation qui ne
+# porte pas ce fichier a été construite avant ce contrôle.
+Copy-Item -LiteralPath (Join-Path $DistDir "qt_versions.json") -Destination (Join-Path $appDir "qt_versions.json") -Force
+Write-Host "  qt_versions.json: OK"
+
 # --- Archive portable ---
 Write-Host ""
 Write-Host "=== Creating portable ZIP ===" -ForegroundColor Cyan

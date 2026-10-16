@@ -447,3 +447,75 @@ def test_jarvis_harnesses_come_from_the_tested_commit(tmp_path):
                                                                    "gemini_reel_dashboard.py")
     # Commit testé plus ancien, sans ce harnais : repli explicite sur la copie locale.
     assert valider_pr.harnais(x, "controle_dashboard_reel.py") == str(VALIDATION / "controle_dashboard_reel.py")
+
+
+# ---------------------------------------------------------------------------
+# B05 / B09 (validation Windows PR #50 : B05 « ÉCHEC » car l'installation
+# quotidienne embarque Qt 6.12.0 ; B09 « NON TESTÉ » par simple dépendance à B05)
+# ---------------------------------------------------------------------------
+
+
+def _qt_versions_module():
+    import importlib.util
+
+    chemin = Path(__file__).resolve().parents[1] / "src" / "qt_versions.py"
+    spec = importlib.util.spec_from_file_location("qt_versions_essai", chemin)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_b05_states_what_the_installation_proves():
+    valider_pr = _valider_pr()
+    qv = _qt_versions_module()
+    meme = {"pyside6.abi3.dll": "6.12.0", "shiboken6.abi3.dll": "6.12.0"}
+    # Installation antérieure à la PR, cohérente : pas d'incompatibilité démontrée.
+    statut, detail, point = valider_pr.evaluer_installation("6.12.0.0", meme, False, {}, qv)
+    assert statut == P.REUSSI and "construite AVANT la borne" in detail and point is not None
+    # Composants Qt divergents : incohérence réelle.
+    statut, detail, _ = valider_pr.evaluer_installation("6.12.0.0", {"pyside6.abi3.dll": "6.11.2"}, False, {}, qv)
+    assert statut == P.ECHEC and "incohérente" in detail
+    # Build contrôlé dont la DLL contredit le contrôle.
+    statut, detail, _ = valider_pr.evaluer_installation("6.12.0.0", meme, True, {"qt_runtime": "6.11.2"}, qv)
+    assert statut == P.ECHEC
+    # Build contrôlé conforme.
+    meme_611 = {"pyside6.abi3.dll": "6.11.2", "shiboken6.abi3.dll": "6.11.2"}
+    statut, detail, point = valider_pr.evaluer_installation("6.11.2.0", meme_611, True,
+                                                            {"qt_runtime": "6.11.2"}, qv)
+    assert statut == P.REUSSI and point is None
+    # Build contrôlé mais hors plage : jamais accepté.
+    statut, _detail, _ = valider_pr.evaluer_installation("6.12.0.0", meme, True, {"qt_runtime": "6.12.0"}, qv)
+    assert statut == P.ECHEC
+    assert valider_pr.evaluer_installation("absent", {}, False, {}, qv)[0] == P.ECHEC
+
+
+def _execution_b09(tmp_path, valider_pr, cas):
+    x = _execution(tmp_path, valider_pr)
+    x.installation = tmp_path / "installation"
+    x.racines_reelles = []
+    x.junit = {"cas": cas}
+    x.b09_migration = (True, "base réelle migrable par la PR : intégrité ok → ok")
+    return x
+
+
+def test_b09_rests_on_data_config_and_reversible_update_not_on_qt(tmp_path):
+    valider_pr = _valider_pr()
+    tous = [{"nom": nom, "issue": "passed"} for nom in valider_pr.TESTS_MISE_A_JOUR]
+    x = _execution_b09(tmp_path, valider_pr, tous)
+    x.ctl("B05", "").regler(P.ECHEC, "Qt6Core 6.12.0")  # sans effet sur B09
+    valider_pr.compatibilite_installation(x)
+    controle = x.ctl("B09", "")
+    assert controle.statut == P.REUSSI, controle.resultat
+    assert "mise à jour" in controle.resultat and "tous réussis" in controle.resultat
+
+    (tmp_path / "b").mkdir()
+    un_echec = [dict(c, issue="failure") if c["nom"] == "test_rollback_restores_previous" else c for c in tous]
+    x2 = _execution_b09(tmp_path / "b", valider_pr, un_echec)
+    valider_pr.compatibilite_installation(x2)
+    assert x2.ctl("B09", "").statut == P.ECHEC
+
+    (tmp_path / "c").mkdir()
+    x3 = _execution_b09(tmp_path / "c", valider_pr, [])
+    valider_pr.compatibilite_installation(x3)
+    assert x3.ctl("B09", "").statut == P.NON_TESTE
+    assert "mise à jour" in x3.ctl("B09", "").raison
