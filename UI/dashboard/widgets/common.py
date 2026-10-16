@@ -6,9 +6,10 @@ import html
 import time
 
 from PySide6.QtCore import QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QPainter, QPalette, QPen, QRadialGradient
+from PySide6.QtGui import QColor, QFont, QPainter, QPalette, QPen, QRadialGradient
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
+from ..glyphs import needs_symbol_font, symbol_font
 from ..painting import draw_ring, draw_sparkline
 
 
@@ -141,12 +142,21 @@ class Ring(QWidget):
         track.setAlpha(50)
         draw_ring(p, QRectF(self.rect()), self.fraction or 0.0, color, track, width=7.0)
         p.setPen(QPen(theme.text))
-        font = p.font()
+        text = self.text or ("—" if self.fraction is None else "")
+        p.setFont(self.text_font(p.font(), text))
+        p.drawText(QRectF(self.rect()), Qt.AlignCenter, text)
+        p.end()
+
+    def text_font(self, base: QFont, text: str) -> QFont:
+        """Police du texte central : un glyphe (« ✕ ») est dessiné avec la police de symboles.
+
+        Correctif D01 : dessiné avec la police d'interface qui ne le contient
+        pas, il faisait charger toutes les polices du système (cf. glyphs.py).
+        """
+        font = symbol_font(base) if needs_symbol_font(text) else QFont(base)
         font.setPointSizeF(max(8.0, self.height() / 7.0))
         font.setBold(True)
-        p.setFont(font)
-        p.drawText(QRectF(self.rect()), Qt.AlignCenter, self.text or ("—" if self.fraction is None else ""))
-        p.end()
+        return font
 
 
 class Sparkline(QWidget):

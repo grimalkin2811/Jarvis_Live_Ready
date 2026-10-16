@@ -4,6 +4,8 @@ persistée (écriture différée atomique) et appliquée à chaud."""
 
 from __future__ import annotations
 
+import html
+
 from PySide6.QtCore import QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
@@ -29,6 +31,7 @@ from ..config import (
     INTERACTIVE_OPTIONS,
     NOTIFICATION_CATEGORIES,
 )
+from ..glyphs import glyph_icon, span, symbol_font
 from ..presets import PRESET_DESCRIPTIONS, PRESET_LABELS, available_presets
 from ..security import LEVEL_LABELS
 from ..theme import THEMES, resolve
@@ -73,6 +76,7 @@ class ThemeCard(QWidget):
         p.drawText(rect.adjusted(12, 28, -8, -8), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, spec.tagline)
         if self.selected:
             p.setPen(theme.accent)
+            p.setFont(symbol_font(p.font()))
             p.drawText(rect.adjusted(8, 8, -12, -8), Qt.AlignRight | Qt.AlignBottom, "✓")
         p.end()
 
@@ -227,6 +231,15 @@ class LayoutSettingsWidget(DashboardWidget):
     def refresh(self) -> None:
         self._load()
 
+    def on_theme_changed(self, theme) -> None:
+        # Icônes des pages peintes à la couleur du texte du thème : repeintes.
+        for index in range(self.pages.count()):
+            item = self.pages.item(index)
+            page = self.context.hub.store.config.layout.page(item.data(Qt.UserRole))
+            if page is not None and page.icon:
+                item.setIcon(glyph_icon(page.icon, theme.text, 16))
+        super().on_theme_changed(theme)
+
     def _load(self) -> None:
         self._updating = True
         layout = self.context.hub.store.config.layout
@@ -239,7 +252,9 @@ class LayoutSettingsWidget(DashboardWidget):
         for page in layout.pages:
             if page.extras.get("_hidden_overflow"):
                 continue
-            item = QListWidgetItem(f"{page.icon}  {page.title}" + ("" if page.builtin else "  (personnalisée)"))
+            item = QListWidgetItem(page.title + ("" if page.builtin else "  (personnalisée)"))
+            if page.icon:
+                item.setIcon(glyph_icon(page.icon, self.context.theme.text, 16))
             item.setData(Qt.UserRole, page.id)
             self.pages.addItem(item)
             if page.id == selected:
@@ -509,7 +524,9 @@ class SecuritySettingsWidget(DashboardWidget):
             self._boxes[policy.action_id] = box
             row += 1
         for policy in sorted(security.locked_policies(), key=lambda p: (-p.level, p.label)):
-            self.grid.addWidget(label(f"⊘ {policy.label}", wrap=True), row, 0)
+            locked = label(f"{span('⊘')} {html.escape(policy.label)}", wrap=True)
+            locked.setTextFormat(Qt.RichText)
+            self.grid.addWidget(locked, row, 0)
             self.grid.addWidget(label(LEVEL_LABELS[policy.level].split(" — ")[0] + " — verrouillé", "dim"), row, 1)
             row += 1
         self._loading = False

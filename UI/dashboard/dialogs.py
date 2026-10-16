@@ -4,6 +4,7 @@ de widgets, réglages d'instance, confirmation d'arrêt."""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .glyphs import glyph_icon
 from .security import LEVEL_CONFIRM, LEVEL_DESTRUCTIVE
 from .widget_api import CAPABILITIES, CATEGORIES, DEPENDENCIES, WidgetSpec
 
@@ -79,9 +81,11 @@ def ask_confirmation(policy, effective_level: int, summary: str, details: str = 
 class WidgetLibraryDialog(QDialog):
     """Bibliothèque : description, catégorie, dépendances, disponibilité sur la page."""
 
-    def __init__(self, registry, page, parent=None) -> None:
+    def __init__(self, registry, page, parent=None, icon_color=None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Ajouter un widget")
+        # Icônes des widgets peintes avec la police de symboles (correctif D01).
+        self.icon_color = QColor(icon_color) if icon_color is not None else self.palette().color(QPalette.WindowText)
         self.resize(640, 520)
         self.selected: str | None = None
         layout = QVBoxLayout(self)
@@ -117,7 +121,9 @@ class WidgetLibraryDialog(QDialog):
                 continue
             allowed = self.registry.instances_allowed(spec.type_id, self.page)
             suffix = "" if allowed else "  (déjà présent sur cette page)"
-            item = QListWidgetItem(f"{spec.icon}  {spec.title}{suffix}\n{CATEGORIES.get(spec.category)}")
+            item = QListWidgetItem(f"{spec.title}{suffix}\n{CATEGORIES.get(spec.category)}")
+            if spec.icon:
+                item.setIcon(glyph_icon(spec.icon, self.icon_color, 18))
             item.setData(Qt.UserRole, spec.type_id)
             if not allowed:
                 item.setFlags(item.flags() & ~Qt.ItemIsEnabled)

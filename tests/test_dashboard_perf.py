@@ -300,3 +300,154 @@ def test_chrome_and_frames_never_render_glyphs_with_the_interface_font(tmp_path)
                 assert not _symboles(plain.split("</span>")[-1]), "glyphe de section hors police de symboles"
         finally:
             controller.shutdown()
+
+
+def _texte_hors_police_de_symboles(texte: str) -> str:
+    """Texte rendu avec la police d'interface : un texte riche perd ses ``span`` de symboles."""
+    import re
+
+    if "<" in texte and ">" in texte:
+        texte = re.sub(r"<span style=\"font-family:'[^']+'\">.*?</span>", "", texte)
+        texte = re.sub(r"<[^>]+>", "", texte)
+    return texte.replace("&nbsp;", " ")
+
+
+def test_no_dashboard_text_leaves_a_glyph_to_the_interface_font(tmp_path):
+    """Toutes les pages, le journal (ligne d'erreur) et le catalogue : aucun symbole absent
+    de la police d'interface dans un texte qu'elle rend (sinon : polices du système
+    rechargées au premier rendu sous Windows, correctif D01)."""
+    import logging
+
+    from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QListWidget
+
+    from UI.dashboard.controller import DashboardController
+    from UI.dashboard.dialogs import WidgetLibraryDialog
+    from UI.dashboard.glyphs import needs_symbol_font
+
+    app = QApplication.instance() or QApplication([])
+    with isolated_jarvis():
+        controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
+                                         dialog_executor=lambda d: True)
+        try:
+            controller.open()
+            window = controller.window
+            controller.set_view_mode("onepage")
+            window._onepage.build_all()
+            window.hub.logs.record_event("échec simulé pour le test", level=logging.ERROR, source="test")
+            # Contenus dynamiques de TOUS les widgets (activés d'ordinaire à leur entrée à l'écran).
+            from UI.dashboard.widget_api import DashboardWidget
+
+            widgets = window.findChildren(DashboardWidget)
+            assert len(widgets) >= 20, len(widgets)
+            for widget in widgets:
+                widget.activate()
+            pump(app, 0.6)
+            page = window.store.config.layout.page("accueil")
+            dialog = WidgetLibraryDialog(window.registry, page, window, icon_color=window.theme_manager.theme.text)
+            fautifs = []
+            for racine in (window, dialog):
+                for w in racine.findChildren(QLabel):
+                    if not w.property("glyph") and needs_symbol_font(_texte_hors_police_de_symboles(QLabel.text(w))):
+                        fautifs.append((type(w).__name__, QLabel.text(w)[:80]))
+                for w in racine.findChildren(QAbstractButton):
+                    if not w.property("glyph") and needs_symbol_font(QAbstractButton.text(w)):
+                        fautifs.append((type(w).__name__, QAbstractButton.text(w)))
+                for liste in racine.findChildren(QListWidget):
+                    textes = [liste.item(i).text() for i in range(liste.count())]
+                    fautifs += [("QListWidgetItem", t[:80]) for t in textes if needs_symbol_font(t)]
+                for combo in racine.findChildren(QComboBox):
+                    textes = [combo.itemText(i) for i in range(combo.count())]
+                    fautifs += [("QComboBox", t) for t in textes if needs_symbol_font(t)]
+            assert not fautifs, fautifs
+            # La ligne d'erreur est bien affichée (et son repère est dans la police d'interface).
+            from UI.dashboard.widgets.system_widgets import ActivityWidget
+
+            lignes = [w.list.item(i).text() for w in window.findChildren(ActivityWidget) for i in range(w.list.count())]
+            assert any(t.startswith("×") and "échec simulé" in t for t in lignes), lignes[:5]
+            # Icônes peintes (police de symboles) dans le catalogue et la liste des pages.
+            assert dialog.list.count() and all(not dialog.list.item(i).icon().isNull() for i in range(dialog.list.count()))
+            from UI.dashboard.widgets.settings_widgets import LayoutSettingsWidget
+
+            for widget in window.findChildren(LayoutSettingsWidget):
+                assert widget.pages.count()
+                assert all(not widget.pages.item(i).icon().isNull() for i in range(widget.pages.count()))
+            dialog.deleteLater()
+        finally:
+            controller.shutdown()
+
+
+def test_painted_glyphs_use_the_symbol_font(monkeypatch):
+    """Anneau d'état (« ✕ » : Jarvis indisponible, cas d'un démarrage hors ligne) et carte
+    du thème sélectionné (« ✓ ») : dessinés avec la police de symboles."""
+    from PySide6.QtGui import QFont, QPixmap
+
+    from UI.dashboard.glyphs import symbol_family
+    from UI.dashboard.widgets import settings_widgets
+    from UI.dashboard.widgets.common import Ring
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    with isolated_jarvis():
+        from types import SimpleNamespace
+
+        from UI.dashboard.config import AppearancePrefs
+        from UI.dashboard.theme import resolve
+
+        ring = Ring(SimpleNamespace(theme=resolve(AppearancePrefs(), reduced_motion=True)))
+        base = QFont("Interface de test")
+        symbole = symbol_family()
+        assert symbole, "aucune police de symboles installée : test sans objet"
+        assert ring.text_font(base, "✕").families()[0] == symbole
+        assert ring.text_font(base, "OK").families()[0] == "Interface de test"
+        ring.set_value(0.15, "error", "✕")
+        ring.render(QPixmap(ring.size()))  # dessin réel, sans erreur
+
+        appels = []
+        original = settings_widgets.symbol_font
+
+        def espion(font):
+            appels.append(font)
+            return original(font)
+
+        monkeypatch.setattr(settings_widgets, "symbol_font", espion)
+        carte = settings_widgets.ThemeCard(next(iter(settings_widgets.THEMES)))
+        carte.resize(160, 90)
+        carte.render(QPixmap(carte.size()))
+        assert not appels, "carte non sélectionnée : aucun glyphe"
+        carte.selected = True
+        carte.render(QPixmap(carte.size()))
+        assert len(appels) == 1
+
+
+def test_memory_importance_is_drawn_with_interface_font_characters():
+    from UI.dashboard.glyphs import needs_symbol_font
+    from UI.dashboard.widgets.memory_widget import importance_marks
+
+    assert importance_marks(3) == "●●●○○"
+    assert importance_marks(5) == "●●●●●" and importance_marks(None) == "○○○○○"
+    assert importance_marks(9) == "●●●●●" and importance_marks("x") == "○○○○○"
+    assert not needs_symbol_font("".join(importance_marks(n) for n in range(6)))
+
+
+def test_symbol_inventory_is_checked_against_real_fonts_on_native_windows():
+    """L'inventaire couvre les symboles réellement affichés et le workflow natif ÉCHOUE si
+    l'une des deux prémisses du correctif n'est pas vérifiée par les polices de Windows."""
+    import importlib.util
+    from pathlib import Path
+
+    from UI.dashboard.glyphs import INTERFACE_FONT_SYMBOLS, needs_symbol_font
+
+    racine = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location("profil_d01", racine / "scripts" / "dashboard_first_open_profile.py")
+    profil = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(profil)
+    inventaire = profil.symboles_du_dashboard()
+    assert set("⌂⚙✎☑◈◎⤢✉⋯✕⊘✓") <= set(inventaire), inventaire
+    assert not set("★✖▲") & set(inventaire), "symboles retirés du texte"
+    assert needs_symbol_font("⌂⚙✕⊘") == "⌂⚙✕⊘" and not needs_symbol_font("".join(INTERFACE_FONT_SYMBOLS))
+    flux = (racine / ".github" / "workflows" / "pr-windows-native.yml").read_text(encoding="utf-8")
+    etape = flux.split("- name: Couverture des symboles du Dashboard (correctif D01)", 1)[1]
+    assert "if: always()" in etape.split("run:", 1)[0]
+    assert "continue-on-error" not in etape.split("run:", 1)[0]
+    assert "interface_non_couverts" in etape and "symboles_non_couverts" in etape
+    assert "sys.exit(1 if echecs else 0)" in etape

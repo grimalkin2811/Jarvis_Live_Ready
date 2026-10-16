@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QComboBox, QGridLayout, QPushButton, QSizePolicy, 
 from src.runtime_status import ENGINE_LABELS, HEALTH_LABELS, EngineState
 
 from ..actions import ActionHost, build_actions, mic_toggle, voice_stop
-from ..glyphs import glyph_icon
+from ..glyphs import glyph_icon, span
 from ..widget_api import STATE_EMPTY, STATE_READY, DashboardWidget, WidgetAction
 from .common import Ring, StatusDot, button, clock, hrow, label
 
@@ -287,7 +287,9 @@ class ModelsWidget(DashboardWidget):
         self.selector = QComboBox()
         self.selector.setEnabled(False)
         self.selector.setToolTip("Sélection manuelle verrouillée : le routage automatique reste actif.")
-        self.lock = label("⊘ Sélection manuelle verrouillée — le routage automatique reste actif.", "dim", wrap=True)
+        self.lock = label(f"{span('⊘')} Sélection manuelle verrouillée — le routage automatique reste actif.",
+                          "dim", wrap=True)
+        self.lock.setTextFormat(Qt.RichText)
         layout.addWidget(self.selector)
         layout.addWidget(self.lock)
         layout.addStretch(1)

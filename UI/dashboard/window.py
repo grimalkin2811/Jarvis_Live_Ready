@@ -804,7 +804,7 @@ class DashboardWindow(QMainWindow):
         page = self.store.config.layout.page(self._current_page)
         if page is None:
             return
-        dialog = WidgetLibraryDialog(self.registry, page, self)
+        dialog = WidgetLibraryDialog(self.registry, page, self, icon_color=self.theme_manager.theme.text)
         if dialog.exec() and dialog.selected:
             placement = self.add_widget(dialog.selected)
             if placement is None:

@@ -24,7 +24,9 @@ from ..widget_api import STATE_EMPTY, STATE_READY, STATE_UNAVAILABLE, DashboardW
 from .common import ElidedLabel, Sparkline, button, hrow, label, set_role
 
 LEVELS = {"debug": logging.DEBUG, "info": logging.INFO, "warning": logging.WARNING, "error": logging.ERROR}
-LEVEL_GLYPH = {"DEBUG": "·", "INFO": "•", "WARNING": "▲", "ERROR": "✖", "CRITICAL": "✖"}
+# Caractères de la police d'interface (« ▲ » et « ✖ » n'y sont pas : une ligne
+# d'erreur faisait charger toutes les polices du système sous Windows, D01).
+LEVEL_GLYPH = {"DEBUG": "·", "INFO": "•", "WARNING": "!", "ERROR": "×", "CRITICAL": "×"}
 
 
 class ActivityWidget(DashboardWidget):

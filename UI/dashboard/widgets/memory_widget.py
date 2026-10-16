@@ -32,6 +32,21 @@ from ..memory_service import CATEGORY_LABELS, describe_changes, text_diff, valid
 from ..widget_api import STATE_READY, STATE_UNAVAILABLE, DashboardWidget, WidgetAction
 from .common import button, esc, hrow, iso_short, label
 
+IMPORTANCE_MAX = 5
+
+
+def importance_marks(value) -> str:
+    """Importance (1 à 5) en « ●●●○○ » : caractères de la police d'interface.
+
+    « ★ » n'y est pas : sous Windows, chaque liste de souvenirs faisait charger
+    toutes les polices du système à son premier affichage (correctif D01).
+    """
+    try:
+        level = max(0, min(IMPORTANCE_MAX, int(value or 0)))
+    except (TypeError, ValueError):
+        level = 0
+    return "●" * level + "○" * (IMPORTANCE_MAX - level)
+
 
 class MemoryWidget(DashboardWidget):
     def __init__(self, context, settings=None) -> None:
@@ -201,7 +216,7 @@ class MemoryWidget(DashboardWidget):
         self.list.blockSignals(True)
         self.list.clear()
         for record in self._records:
-            stars = "★" * int(record.get("importance") or 0)
+            stars = importance_marks(record.get("importance"))
             excerpt = " ".join(str(record.get("content") or "").split())
             excerpt = excerpt[:90] + ("…" if len(excerpt) > 90 else "")
             item = QListWidgetItem(f"{excerpt}\n{CATEGORY_LABELS.get(record.get('category'), record.get('category'))}"

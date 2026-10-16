@@ -195,7 +195,7 @@ class CustomPanelWidget(DashboardWidget):
         note = str(self.settings.get("note") or "").strip()
         if not self._rows:
             note = (note + "\n\n" if note else "") + (
-                "Aucun indicateur sélectionné : ouvre « Réglages du widget » (menu ⋯) pour composer ce panneau."
+                "Aucun indicateur sélectionné : ouvre « Réglages du widget » (menu … du cadre) pour composer ce panneau."
             )
         self.note.setText(note)
         self.note.setVisible(bool(note))
