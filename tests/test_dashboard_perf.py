@@ -546,3 +546,26 @@ def test_start_page_is_not_built_while_the_window_is_hidden(tmp_path, monkeypatc
             assert not window.content_pending(), "reprise à la réouverture"
         finally:
             controller.shutdown()
+
+
+def test_first_open_probe_reports_sane_phases(tmp_path):
+    """La sonde de profil D01 (scripts/dashboard_first_open_profile.py) doit horodater la vraie
+    première peinture : elle enveloppe le point d'entrée que la fenêtre appelle après sa peinture
+    (_complete_initial_build_incrementally). Le jour où ce point changea sans la sonde, la mesure
+    native a rapporté « première peinture 14 993 ms, contenu 0 ms » — artefact, pas produit."""
+    import json
+    import subprocess
+
+    script = ROOT + "/scripts/dashboard_first_open_profile.py"
+    out = subprocess.run([sys.executable, script, "--enfant", "ouverture", "--reouvertures", "0"],
+                        cwd=ROOT, capture_output=True, text=True, timeout=180,
+                        env=dict(os.environ, QT_QPA_PLATFORM="offscreen",
+                                 LD_LIBRARY_PATH=os.environ.get("LD_LIBRARY_PATH", "")))
+    ligne = next((l for l in reversed(out.stdout.splitlines()) if l.startswith("{")), "")
+    assert ligne, out.stdout[-800:] + out.stderr[-800:]
+    data = json.loads(ligne)
+    phases = data["phases_ms"]
+    assert 0.0 < phases["premiere_peinture"] < 1500.0, phases
+    assert 0.0 < phases["contenu"] < 5000.0, phases
+    assert data["premiere_ouverture_ms"] < 2500.0, data["premiere_ouverture_ms"]
+    assert 0.0 < data["contenu_complet_ms"] < 8000.0
