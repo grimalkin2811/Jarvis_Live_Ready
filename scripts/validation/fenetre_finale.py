@@ -100,7 +100,7 @@ def main(argv=None) -> int:
 
     app = QApplication.instance() or QApplication(sys.argv)
     window = QWidget()
-    window.setWindowTitle(f"Validation de la PR #{contexte.get('pr', '?')} — confirmations finales (facultatives)")
+    window.setWindowTitle(f"Validation de la PR #{contexte.get('pr', '?')} — confirmations humaines")
     window.resize(1100, 860)
     outer = QVBoxLayout(window)
     scroll = QScrollArea()
@@ -112,8 +112,9 @@ def main(argv=None) -> int:
 
     intro = QLabel(
         f"<b>Les contrôles automatiques sont terminés.</b> Verdict provisoire : <b>{contexte.get('verdict', '?')}</b><br>"
-        "Les questions ci-dessous sont facultatives. Toute question sans réponse sera notée « NON TESTÉ » "
-        "dans le rapport. Aucune donnée n'est envoyée ; aucun enregistrement n'est conservé.")
+        "Les contrôles ci-dessous demandent un humain : ils comptent pour une validation complète "
+        "(D18, D19, E14, E15). Toute question sans réponse est notée « NON TESTÉ » dans le rapport — jamais "
+        "réussie à votre place. Aucune donnée n'est envoyée ; aucun enregistrement n'est conservé.")
     intro.setWordWrap(True)
     layout.addWidget(intro)
 
@@ -149,7 +150,7 @@ def main(argv=None) -> int:
         layout.addWidget(question("Pendant le test du Dashboard, avez-vous vu la notification Windows "
                                   "« Validation Jarvis » ?", "notification_vue", ["oui", "non", "pas regardé"]))
 
-    audio = QGroupBox("Test audio guidé (facultatif)")
+    audio = QGroupBox("Test audio guidé — E14 (haut-parleur) et E15 (micro), requis pour une validation complète")
     audio_layout = QVBoxLayout(audio)
     python = contexte.get("python_audio") or sys.executable
     inventaire = contexte.get("audio") or {}
@@ -169,12 +170,34 @@ def main(argv=None) -> int:
         "Parlez normalement pendant le décompte.")
     avertissement.setWordWrap(True)
     audio_layout.addWidget(avertissement)
+    prerequis = QLabel(
+        "<b>Prérequis :</b> haut-parleurs ou casque allumés, volume audible ; micro branché, non coupé et autorisé "
+        "(Windows : Paramètres › Confidentialité et sécurité › Microphone). Formats testés : ceux de Jarvis "
+        "(sortie 24 kHz mono, entrée 16 kHz mono, 16 bits).")
+    prerequis.setWordWrap(True)
+    audio_layout.addWidget(prerequis)
+    etat_audio = QLabel()
+    etat_audio.setWordWrap(True)
+    audio_layout.addWidget(etat_audio)
+
+    def maj_etat_audio() -> None:
+        entendu = reponses.get("_entendu")
+        hp = ("à faire" if not reponses["haut_parleur"]["teste"]
+              else f"tonalité jouée — entendue : {entendu or 'répondre ci-dessous'}")
+        mic = reponses.get("micro") or {}
+        micro = ("à faire" if not mic.get("teste") else
+                 f"{mic.get('rms_dbfs')} dBFS — voix détectée : {'oui' if mic.get('signal_detecte') else 'non'}")
+        etat_audio.setText(f"<b>E14 :</b> {hp} &nbsp;·&nbsp; <b>E15 :</b> {micro}")
+
+    maj_etat_audio()
     speaker_button = QPushButton("Jouer une tonalité de 1 s sur le haut-parleur")
     mic_button = QPushButton("Tester le micro (3 s, rien n'est conservé)")
     status = QLabel("")
     status.setWordWrap(True)
     heard = question("Avez-vous entendu la tonalité ?", "_entendu", ["oui", "non"])
     heard.setEnabled(False)
+    for radio in heard.findChildren(QRadioButton):
+        radio.toggled.connect(lambda _checked: maj_etat_audio())
     buttons = QHBoxLayout()
     buttons.addWidget(speaker_button)
     buttons.addWidget(mic_button)
@@ -195,6 +218,7 @@ def main(argv=None) -> int:
         reponses["haut_parleur"]["teste"] = not result.get("erreur")
         status.setText("Tonalité jouée." if not result.get("erreur") else f"Lecture impossible : {result['erreur']}")
         heard.setEnabled(not result.get("erreur"))
+        maj_etat_audio()
 
     def tester_micro() -> None:
         if QMessageBox.question(window, "Test du micro", "Le micro va capter 3 secondes EN MÉMOIRE (rien n'est "
@@ -210,6 +234,7 @@ def main(argv=None) -> int:
         reponses["micro"] = {"teste": True, **{k: result.get(k) for k in ("rms_dbfs", "crete", "signal_detecte", "conserve")}}
         status.setText(f"Niveau mesuré : {result.get('rms_dbfs')} dBFS — "
                        + ("voix détectée." if result.get("signal_detecte") else "signal trop faible (micro coupé ?)."))
+        maj_etat_audio()
 
     speaker_button.clicked.connect(tester_haut_parleur)
     mic_button.clicked.connect(tester_micro)
@@ -229,7 +254,20 @@ def main(argv=None) -> int:
     timer.setInterval(INACTIVITE_MS)
     state = {"ferme_par": "fenêtre fermée"}
 
+    def audio_incomplet() -> bool:
+        if not (speaker_button.isEnabled() or mic_button.isEnabled()):
+            return False  # non autorisé ou périphérique inutilisable : raison déjà affichée
+        hp_ok = reponses["haut_parleur"]["teste"] and reponses.get("_entendu") in ("oui", "non")
+        return not hp_ok or not (reponses.get("micro") or {}).get("teste")
+
     def terminer(ferme_par: str) -> None:
+        if ferme_par == "bouton Terminer" and not args.fermer_apres and audio_incomplet():
+            choix = QMessageBox.question(
+                window, "Tests audio non effectués",
+                "E14 (tonalité entendue) et/ou E15 (niveau du micro) n'ont pas été effectués : ils resteront "
+                "« NON TESTÉ » dans le rapport et la validation ne sera pas complète.\n\nTerminer quand même ?")
+            if choix != QMessageBox.Yes:
+                return
         state["ferme_par"] = ferme_par
         window.close()
 

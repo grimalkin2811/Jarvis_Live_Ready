@@ -82,37 +82,52 @@ def inventaire() -> dict:
     return out
 
 
+#: Formats RÉELS de Jarvis (``src/audio.py``, ``AudioIO``) : la sortie et
+#: l'entrée sont testées avec les mêmes flux bruts, fréquences, canaux, format
+#: d'échantillon et tailles de bloc que la production (correctif PR #50).
+SORTIE_HZ, SORTIE_BLOC = 24000, 1024
+ENTREE_HZ, ENTREE_BLOC = 16000, 1280
+
+
 def test_haut_parleur() -> dict:
     import numpy as np
     import sounddevice as sd
 
-    rate = 24000
-    t = np.arange(int(rate * 1.0)) / rate
+    t = np.arange(int(SORTIE_HZ * 1.0)) / SORTIE_HZ
     envelope = np.minimum(1.0, np.minimum(t / 0.05, (1.0 - t) / 0.05))
-    tone = (0.25 * np.sin(2 * math.pi * 440 * t) * envelope * 32767).astype("int16")
-    sd.play(tone, rate, blocking=True)
-    return {"joue": True, "duree_s": 1.0, "frequence_hz": 440}
+    tone = (0.25 * np.sin(2 * math.pi * 440 * t) * envelope * 32767).astype("int16").tobytes()
+    with sd.RawOutputStream(samplerate=SORTIE_HZ, channels=1, dtype="int16", blocksize=SORTIE_BLOC) as stream:
+        stream.write(tone)
+    return {"joue": True, "duree_s": 1.0, "frequence_hz": 440,
+            "format": f"{SORTIE_HZ} Hz mono int16, blocs de {SORTIE_BLOC} (format de sortie de Jarvis)"}
 
 
 def test_micro(secondes: float) -> dict:
     import numpy as np
     import sounddevice as sd
 
-    rate = 16000
-    buffer = sd.rec(int(secondes * rate), samplerate=rate, channels=1, dtype="int16")
-    sd.wait()
-    samples = buffer.astype("float64").ravel()
-    rms = float(np.sqrt(np.mean(samples ** 2))) if samples.size else 0.0
-    peak = float(np.max(np.abs(samples))) if samples.size else 0.0
-    # Le tampon est effacé immédiatement : aucun enregistrement n'est conservé.
-    buffer[:] = 0
-    del buffer, samples
+    blocs = max(1, int(secondes * ENTREE_HZ / ENTREE_BLOC))
+    rms_blocs: list[float] = []
+    peak = 0.0
+    with sd.RawInputStream(samplerate=ENTREE_HZ, channels=1, dtype="int16", blocksize=ENTREE_BLOC) as stream:
+        for _ in range(blocs):
+            data, _overflow = stream.read(ENTREE_BLOC)
+            samples = np.frombuffer(bytes(data), dtype=np.int16).astype("float64")
+            if samples.size:
+                rms_blocs.append(float(np.sqrt(np.mean(samples ** 2))))
+                peak = max(peak, float(np.max(np.abs(samples))))
+            # Chaque bloc est jeté aussitôt mesuré : aucun enregistrement conservé.
+            del samples, data
+    rms = float(np.sqrt(np.mean(np.square(rms_blocs)))) if rms_blocs else 0.0
+    blocs_voix = sum(1 for value in rms_blocs if value > 150.0)
     return {
         "duree_s": secondes,
         "rms": round(rms, 1),
         "crete": round(peak, 1),
         "rms_dbfs": round(20 * math.log10(max(rms, 1.0) / 32768.0), 1),
+        "blocs_avec_voix": blocs_voix,
         "signal_detecte": rms > 150.0,
+        "format": f"{ENTREE_HZ} Hz mono int16, blocs de {ENTREE_BLOC} (format d'entrée de Jarvis)",
         "conserve": False,
     }
 
