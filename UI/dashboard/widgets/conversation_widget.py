@@ -98,7 +98,11 @@ class ConversationWidget(DashboardWidget):
         self.listen(hub.voice_event, self._on_voice_event)
         self.listen(hub.presence_changed, lambda _state: self._update_status())
         self._update_availability()
-        self.render(force=True)
+        # ``render()`` (non forcé) : la signature couvre messages, filtre,
+        # thème et réglages. Revenir sur une page déjà construite ne doit pas
+        # réanalyser tout l'historique dans QTextBrowser (C10 : activation
+        # mesurée à 100 ms sous charge pour 200 messages, à chaque retour).
+        self.render()
 
     def on_deactivate(self) -> None:
         self._render_timer.stop()

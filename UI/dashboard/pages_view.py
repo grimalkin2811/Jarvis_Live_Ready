@@ -56,11 +56,20 @@ class PageView(QScrollArea):
         self._active = False
         self._build_timer = QTimer(self)
         self._build_timer.setSingleShot(True)
-        self._build_timer.setInterval(0)
+        # Intervalle NON nul : un minuteur à 0 ms est toujours « dû », si bien
+        # qu'un seul processEvents() (ou un tour de boucle chargé) enchaînait
+        # TOUS les lots de construction — et donc toutes les activations de
+        # widgets — dans le même tour. Mesuré sous charge : rafale de 400 ms
+        # (C10, phase « pages »). 5 ms laissent la boucle Qt respirer entre
+        # deux lots ; la construction reste rapide (lots de 12 ms).
+        self._build_timer.setInterval(5)
         self._build_timer.timeout.connect(self._build_next)
 
     def fully_built(self) -> bool:
         return self.canvas.built
+
+    def activation_pending(self) -> bool:
+        return self.canvas.activation_pending()
 
     def _build_next(self) -> None:
         # Vue masquée ou désactivée : aucune construction (reprise à l'activation).
@@ -74,6 +83,7 @@ class PageView(QScrollArea):
         self._build_timer.stop()
         if not self.canvas.built:
             self.canvas.rebuild()
+        self.canvas.flush_activations()
 
     def canvases(self) -> list[GridCanvas]:
         return [self.canvas]
@@ -129,7 +139,9 @@ class OnePageView(QScrollArea):
         self.verticalScrollBar().valueChanged.connect(lambda _v: self._schedule())
         self._build_timer = QTimer(self)
         self._build_timer.setSingleShot(True)
-        self._build_timer.setInterval(0)
+        # Voir PageView : éviter la rafale de lots (et d'activations) dans un
+        # même tour de boucle Qt.
+        self._build_timer.setInterval(5)
         self._build_timer.timeout.connect(self._build_next)
         self._build_timer.start()
 
@@ -154,9 +166,14 @@ class OnePageView(QScrollArea):
             self._pending.pop(0).rebuild()
         if self._active:
             self._update_visibility()
+        for canvas in self.canvases():
+            canvas.flush_activations()
 
     def fully_built(self) -> bool:
         return not self._pending
+
+    def activation_pending(self) -> bool:
+        return any(canvas.activation_pending() for canvas in self.canvases())
 
     def canvases(self) -> list[GridCanvas]:
         return [canvas for _page, _header, canvas in self.sections]

@@ -643,8 +643,23 @@ class DashboardWindow(QMainWindow):
             view.build_all()
 
     def content_pending(self) -> bool:
-        """Contenu de la première ouverture pas encore entièrement construit (mesures D01)."""
-        return self._initial_build_pending or any(not v.fully_built() for v in self._page_views.values())
+        """Contenu de la première ouverture pas encore entièrement construit (mesures D01).
+
+        Inclut la vue OnePage : dans ce mode, ``_page_views`` peut être vide
+        alors que les sections sont encore en cours de construction. Sans ce
+        terme, ``content_pending()`` répondait False pendant toute la
+        construction OnePage (mesure D01 faussée, tests dépendants du délai).
+        """
+        if self._initial_build_pending:
+            return True
+        if self._onepage is not None and (
+            not self._onepage.fully_built() or self._onepage.activation_pending()
+        ):
+            return True
+        return any(
+            not v.fully_built() or v.activation_pending()
+            for v in self._page_views.values()
+        )
 
     def _build_views(self, pages, onepage: bool, incremental: bool = False) -> None:
         if onepage:
@@ -676,7 +691,16 @@ class DashboardWindow(QMainWindow):
         canvas.hide_requested.connect(lambda p, c=canvas: self._hide_widget(c, p))
         canvas.remove_requested.connect(lambda p, c=canvas: self._remove_widget(c, p))
 
-    def _view_for(self, page_id: str, build: bool = True) -> PageView | None:
+    def _view_for(self, page_id: str, build: bool = False) -> PageView | None:
+        """Vue d'une page ; ``build=True`` termine la construction sur place.
+
+        Depuis le correctif C10 (validation Windows : 189 ms de latence de
+        boucle pendant la phase « pages »), la navigation NE construit plus
+        une page entière d'un bloc : la vue est créée vide puis activée, et
+        ``PageView`` la remplit par petits lots (``BUILD_BUDGET_MS``). Un
+        appelant qui a besoin de tous les cadres immédiatement (mode édition,
+        capture, inspection) demande explicitement ``build_all()``.
+        """
         self._complete_initial_build()
         view = self._page_views.get(page_id)
         if view is None:
@@ -684,19 +708,27 @@ class DashboardWindow(QMainWindow):
             if page is None:
                 return None
             view = PageView(page, self.registry, self.theme_manager, self.context_factory(page_id), self.stack,
-                            build=build)
+                            build=False)
             self._wire_canvas(view.canvas)
             view.canvas.set_edit_mode(self.edit_mode)
             self.stack.addWidget(view)
             self._page_views[page_id] = view
-        elif build:
-            view.build_all()  # page demandée : complète (construction différée en cours)
+        if build:
+            view.build_all()
         return view
 
     def current_page(self) -> str:
         return self._current_page
 
-    def open_page(self, page_id: str, animate: bool = True, _incremental: bool = False) -> bool:
+    def open_page(self, page_id: str, animate: bool = True, _incremental: bool = False,
+                  complete: bool = False) -> bool:
+        """Affiche une page.
+
+        Par défaut la construction reste INCRÉMENTALE (C10 : la navigation ne
+        doit jamais construire une page entière dans le thread UI). Un
+        appelant qui a besoin de tous les cadres immédiatement (accès
+        programmatique, capture, test) passe ``complete=True``.
+        """
         self._complete_initial_build()
         layout = self.store.config.layout
         page = layout.page(page_id)
@@ -709,13 +741,18 @@ class DashboardWindow(QMainWindow):
         if self._onepage is not None:
             self._onepage.scroll_to_page(page_id)
             return True
-        view = self._view_for(page_id, build=not _incremental)
+        # Toujours incrémental : même lors d'une navigation explicite, la
+        # construction complète d'une page (200 ms mesurées sous Windows) ne
+        # doit pas figer la boucle Qt. ``set_active`` démarre la construction.
+        view = self._view_for(page_id, build=False)
         previous = self.stack.currentWidget()
         for other in self._page_views.values():
             if other is not view:
                 other.set_active(False)
         self.stack.setCurrentWidget(view)
         view.set_active(self.isVisible())
+        if complete:
+            view.build_all()
         button = self.nav_buttons.get(page_id)
         if button is not None:
             button.setChecked(True)

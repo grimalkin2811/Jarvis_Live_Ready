@@ -534,7 +534,10 @@ def test_programmatic_access_gets_a_complete_start_page(tmp_path, monkeypatch):
                 if acces == "all_canvases":
                     window.all_canvases()
                 else:
-                    window.open_page(window.current_page())
+                    # Accès programmatique explicite : ``complete=True`` est
+                    # le contrat pour obtenir TOUS les cadres immédiatement.
+                    # La navigation normale, elle, reste incrémentale (C10).
+                    window.open_page(window.current_page(), complete=True)
                 assert not window.content_pending(), acces
                 view = window._page_views[window.current_page()]
                 assert sorted(view.canvas.frames) == sorted(p.id for p in view.page.widgets if not p.hidden)

@@ -6,7 +6,7 @@ import time
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, QRect, Signal
+from PySide6.QtCore import QPoint, QRect, QTimer, Signal
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from .frame import WidgetFrame
@@ -31,6 +31,13 @@ class GridCanvas(QWidget):
     hide_requested = Signal(object)
     remove_requested = Signal(object)
 
+    #: Intervalle entre deux activations de widgets (ms). L'activation exécute
+    #: le premier rafraîchissement du widget ; activer toute une page d'un bloc
+    #: gelait la boucle Qt (C10, phase « pages » : retour sur une page déjà
+    #: construite = 7 activations mesurées à 139 ms sous charge). Une seule
+    #: activation par tour de boucle borne la latence au coût d'un widget.
+    ACTIVATION_TICK_MS = 5
+
     def __init__(self, page: Page, registry, theme_manager, context_factory: Callable[[Placement], object],
                  parent: QWidget | None = None, *, build: bool = True) -> None:
         super().__init__(parent)
@@ -46,6 +53,16 @@ class GridCanvas(QWidget):
         self._drag_origin: tuple[QPoint, Placement] | None = None
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.built = False
+        # Activation DIFFÉRÉE (C10) : file d'attente traitée un widget par
+        # tour de boucle. ``_wanted`` = widgets qui DOIVENT être actifs
+        # (page visible, ou zone visible en OnePage).
+        self._wanted: set = set()
+        self._activation_queue: list = []
+        self._visibility_filtered = False
+        self._activation_timer = QTimer(self)
+        self._activation_timer.setSingleShot(True)
+        self._activation_timer.setInterval(self.ACTIVATION_TICK_MS)
+        self._activation_timer.timeout.connect(self._activate_next)
         if build:
             self.rebuild()
         else:
@@ -104,7 +121,14 @@ class GridCanvas(QWidget):
         spec = self.registry.spec(placement.type)
         widget = None
         if spec is not None:
-            placement.settings = spec.validate_settings(placement.settings)
+            # Ne JAMAIS normaliser ``placement.settings`` ici : la construction
+            # d'une vue ne doit pas modifier la configuration persistée. Le
+            # registre valide déjà les réglages pour la fabrique du widget
+            # (copie), et les points d'écriture légitimes (ajout, dialogue de
+            # réglages, rechargement) les valident eux-mêmes. Cette mutation
+            # tardive rendait l'instantané « Annuler » du mode édition
+            # dépendant du moment où la construction différée s'exécutait
+            # (échec Windows : {} avant, valeurs par défaut après).
             widget = self.registry.create(placement, self.context_factory(placement))
         frame = WidgetFrame(placement, spec, widget, self.theme_manager, self)
         frame.set_edit_mode(self.edit_mode)
@@ -118,8 +142,8 @@ class GridCanvas(QWidget):
         frame.hide_requested.connect(lambda f: self.hide_requested.emit(f.placement))
         frame.remove_requested.connect(lambda f: self.remove_requested.emit(f.placement))
         frame.show()
-        if self._active and widget is not None:
-            widget.activate()
+        if self._active and widget is not None and not self._visibility_filtered:
+            self._want(widget)
         return frame
 
     def _destroy_frame(self, instance_id: str) -> None:
@@ -127,26 +151,71 @@ class GridCanvas(QWidget):
         if frame is None:
             return
         if frame.widget is not None:
+            self._wanted.discard(frame.widget)
+            self._activation_queue = [w for w in self._activation_queue if w is not frame.widget]
             frame.widget.dispose()
         frame.hide()
         frame.setParent(None)
         frame.deleteLater()
 
     def dispose(self) -> None:
+        self._activation_timer.stop()
+        self._activation_queue.clear()
+        self._wanted.clear()
         for instance_id in list(self.frames):
             self._destroy_frame(instance_id)
 
     # -- activation ----------------------------------------------------------------
 
+    def _want(self, widget) -> None:
+        """Demande l'activation d'un widget, sans bloquer le tour courant."""
+        if widget is None or widget.is_active:
+            return
+        self._wanted.add(widget)
+        if widget not in self._activation_queue:
+            self._activation_queue.append(widget)
+        if not self._activation_timer.isActive():
+            self._activation_timer.start()
+
+    def _activate_next(self) -> None:
+        while self._activation_queue:
+            widget = self._activation_queue.pop(0)
+            if widget in self._wanted and not widget.is_active:
+                widget.activate()
+                break
+        if self._activation_queue:
+            self._activation_timer.start()
+
+    def activation_pending(self) -> bool:
+        """Reste-t-il des widgets à activer (contenu réellement « prêt ») ?"""
+        return bool(self._activation_queue)
+
+    def flush_activations(self) -> None:
+        """Active immédiatement les widgets demandés (accès programmatique complet).
+
+        Le chemin normal reste incrémental (C10) ; ``build_all()`` est le
+        contrat explicite « tout, tout de suite » (tests, capture, inspection).
+        """
+        self._activation_timer.stop()
+        pending = [w for w in self._activation_queue if w in self._wanted and not w.is_active]
+        self._activation_queue.clear()
+        for widget in pending:
+            widget.activate()
+
     def set_active(self, active: bool) -> None:
         self._active = bool(active)
-        for frame in self.frames.values():
-            if frame.widget is None:
-                continue
-            if self._active:
-                frame.widget.activate()
-            else:
-                frame.widget.deactivate()
+        widgets = [f.widget for f in self.frames.values() if f.widget is not None]
+        if self._active:
+            self._visibility_filtered = False
+            for widget in widgets:
+                self._want(widget)
+        else:
+            self._visibility_filtered = False
+            self._wanted.clear()
+            self._activation_queue.clear()
+            self._activation_timer.stop()
+            for widget in widgets:
+                widget.deactivate()
 
     def update_visibility(self, visible: QRect | None) -> None:
         """OnePage : seuls les widgets dans (ou près de) la zone visible sont actifs."""
@@ -154,15 +223,22 @@ class GridCanvas(QWidget):
             self.set_active(False)
             return
         self._active = True
+        self._visibility_filtered = True
         margin = 200
         zone = visible.adjusted(0, -margin, 0, margin)
+        self._wanted = set()
         for frame in self.frames.values():
-            if frame.widget is None:
+            widget = frame.widget
+            if widget is None:
                 continue
             if frame.geometry().intersects(zone):
-                frame.widget.activate()
+                self._wanted.add(widget)
             else:
-                frame.widget.deactivate()
+                widget.deactivate()
+        # Un widget sorti de la zone visible ne doit pas être activé ensuite.
+        self._activation_queue = [w for w in self._activation_queue if w in self._wanted]
+        for widget in list(self._wanted):
+            self._want(widget)
 
     def active_widget_count(self) -> int:
         return sum(1 for f in self.frames.values() if f.widget is not None and f.widget.is_active)

@@ -248,12 +248,44 @@ def test_responsive_states(app, make_controller, width, size_class, sidebar):
     assert canvas.columns == {"narrow": 4, "normal": 8, "wide": 12}[size_class]
 
 
+def _wait_built(app, window, timeout: float = 15.0) -> None:
+    """Attend la FIN de la construction incrémentale (C10), sans délai fixe.
+
+    La construction est volontairement répartie sur plusieurs tours de boucle
+    Qt : une attente fixe de 0,3 s suffisait sur une machine rapide mais pas
+    sur le PC de validation Windows (Pentium G5400), où le test échouait alors
+    que le produit était correct. On attend l'état réel, puis on laisse le
+    minuteur de visibilité (80 ms) s'exécuter.
+    """
+    assert wait_until(app, lambda: not window.content_pending(), timeout), (
+        "la construction du Dashboard n'est pas terminée dans le délai"
+    )
+    pump(app, 0.2)
+
+
+def test_building_views_does_not_mutate_the_layout(app, make_controller):
+    """La construction d'une vue ne doit jamais modifier la configuration.
+
+    Régression Windows démontrée : ``GridCanvas._create_frame`` normalisait
+    ``placement.settings`` pendant la construction différée. L'instantané du
+    mode édition (pris à l'entrée) et l'état « avant » du test différaient
+    alors selon le moment où la construction s'exécutait, et « Annuler »
+    restaurait des réglages différents de ceux d'origine.
+    """
+    controller = make_controller()
+    before = [w.to_dict() for page in controller.store.config.layout.pages for w in page.widgets]
+    controller.open()
+    _wait_built(app, controller.window)
+    after = [w.to_dict() for page in controller.store.config.layout.pages for w in page.widgets]
+    assert after == before
+
+
 def test_onepage_puts_diagnostics_last_and_activates_visible_widgets_only(app, make_controller):
     controller = make_controller()
     controller.open()
     controller.window.resize(1500, 900)
     controller.set_view_mode("onepage")
-    pump(app, 0.3)
+    _wait_built(app, controller.window)
     order = controller.window.onepage_order()
     assert order[-1] == "systeme" and order[-2] == "parametres"
     stats = controller.window.widget_stats()
@@ -271,7 +303,7 @@ def test_edit_mode_add_move_hide_remove_cancel_and_save(app, make_controller, tm
     controller.open()
     window = controller.window
     window.resize(1600, 950)
-    pump(app, 0.1)
+    _wait_built(app, window)
     page = controller.store.config.layout.page("accueil")
     before = [w.to_dict() for w in page.widgets]
     window.set_edit_mode(True)
@@ -294,6 +326,43 @@ def test_edit_mode_add_move_hide_remove_cancel_and_save(app, make_controller, tm
     controller.shutdown()
     again = make_controller()
     assert any(w.id == added.id for w in again.store.config.layout.page("accueil").widgets)
+
+
+def test_opening_a_page_does_not_build_it_synchronously(app, make_controller, monkeypatch):
+    """Correctif C10 : la navigation ne construit plus une page d'un bloc.
+
+    Régression Windows : la phase « pages » mesurait 188,9 ms de latence Qt
+    (seuil 150) parce que ``open_page`` construisait la page entière avant de
+    rendre la main. On injecte un coût artificiel par cadre : si la
+    construction restait synchrone, ``open_page`` créerait plusieurs cadres et
+    dépasserait largement le budget ; avec la construction incrémentale, il
+    n'en crée AUCUN et rend la main immédiatement.
+    """
+    import time
+
+    from UI.dashboard.grid_view import GridCanvas
+
+    controller = make_controller()
+    controller.open()
+    _wait_built(app, controller.window)
+    target = next(p.id for p in controller.store.config.layout.pages if p.id != controller.window.current_page())
+    created: list[str] = []
+    original = GridCanvas._create_frame
+
+    def slow_create(self, placement):
+        created.append(placement.id)
+        time.sleep(0.01)
+        return original(self, placement)
+
+    monkeypatch.setattr(GridCanvas, "_create_frame", slow_create)
+    start = time.perf_counter()
+    assert controller.window.open_page(target, animate=False)
+    elapsed = time.perf_counter() - start
+    assert created == [], "la navigation a construit des cadres de façon synchrone"
+    assert elapsed < 0.05, f"open_page a bloqué {elapsed * 1000:.1f} ms"
+    view = controller.window._page_views[target]
+    assert wait_until(app, view.fully_built, 15.0), "la construction incrémentale ne progresse pas"
+    assert created, "aucun cadre n'a été construit après activation"
 
 
 def test_widget_hidden_or_removed_never_deletes_business_data(app, make_controller):
@@ -530,3 +599,63 @@ def test_voice_open_dashboard_reports_the_page_really_shown(app, make_controller
         assert make_controller.quits == [], "fermer par la voix ne quitte jamais Jarvis"
     finally:
         DASHBOARD.set_handler(None)
+
+
+def test_returning_to_a_built_page_activates_widgets_progressively(app, make_controller):
+    """C10 (validation Windows : 188,9 ms de latence) : revenir sur une page
+    déjà construite ne doit pas activer tous ses widgets dans le même tour de
+    boucle Qt. L'activation est répartie (une par tour), puis converge."""
+    controller = make_controller()
+    controller.open()
+    window = controller.window
+    window.resize(1600, 950)
+    _wait_built(app, window)
+    first = window.current_page()
+    other = next(p.id for p in controller.store.config.layout.pages if p.id != first)
+    window.open_page(other, animate=False)
+    _wait_built(app, window)
+    view = window._page_views[first]
+    assert view.canvas.frames, "la page de départ doit avoir été construite"
+    assert view.canvas.active_widget_count() == 0, "page quittée : widgets désactivés"
+
+    window.open_page(first, animate=False)
+    assert view.activation_pending(), "activation différée, pas synchrone"
+    assert view.canvas.active_widget_count() == 0, (
+        "aucun widget activé dans le tour de la navigation (C10)"
+    )
+    assert wait_until(
+        app, lambda: view.canvas.active_widget_count() == len(view.canvas.frames), 5.0
+    ), "les widgets finissent par s'activer sans intervention"
+
+
+def test_conversation_widget_does_not_reparse_history_on_reactivation(app, make_controller):
+    """C10 : la signature (messages, réglages, thème) doit éviter de réanalyser
+    tout l'historique dans QTextBrowser à chaque retour sur la page (100 ms
+    mesurés sous charge pour 200 messages)."""
+    from UI.dashboard.widgets.conversation_widget import ConversationWidget
+
+    controller = make_controller()
+    controller.open()
+    window = controller.window
+    _wait_built(app, window)
+    widgets = [w for w in window.findChildren(ConversationWidget) if w.is_active]
+    if not widgets:
+        window.all_canvases()
+        pump(app, 0.1)
+        widgets = window.findChildren(ConversationWidget)
+    assert widgets, "le Dashboard de test doit contenir un widget de conversation"
+    widget = widgets[0]
+    appels: list[int] = []
+    original = widget._html
+
+    def compter(*args, **kwargs):
+        appels.append(1)
+        return original(*args, **kwargs)
+
+    widget._html = compter
+    widget.deactivate()
+    widget.activate()
+    assert appels == [], "réactivation à contenu inchangé : aucun re-rendu complet"
+    widget._live_user = "texte en cours"
+    widget.render()
+    assert appels, "un contenu réellement modifié doit être rendu"
