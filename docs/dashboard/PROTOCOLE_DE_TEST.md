@@ -149,8 +149,9 @@ tous les autres en chargent 1. La tuile utilise désormais « ▷ » et l'étape
 native « Couverture des symboles du Dashboard » échoue si un glyphe coûte plus
 de 5 fichiers (garde générale, mesure refaite à chaque exécution).
 
-Après corrections : construction de la fenêtre 13 fichiers (Segoe UI +
-Segoe UI Symbol), contenu 14 — au lieu de 155.
+Après corrections (mesure refaite sur un runner Windows natif) : construction
+de la fenêtre, ouverture et contenu **13 fichiers de police en tout** (Segoe UI
+et Segoe UI Symbol) au lieu de 155 ; sonde « coût des glyphes » : aucun.
 
 Le runner GitHub n'est pas le PC de validation : ces chiffres sont un repère
 Windows natif ; la mesure qui fait foi reste D01 sur le PC cible.
