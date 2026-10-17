@@ -150,7 +150,15 @@ def first_installed(families) -> str:
 
 
 def symbol_family() -> str:
-    """Police de symboles installée, ou « » si aucune (le repli de Qt s'applique)."""
+    """Police de symboles installée, ou « » si aucune (le repli de Qt s'applique).
+
+    « Aucune » arrive quand la base de polices n'est pas lisible : plateforme Qt
+    sans registre de polices (par exemple ``offscreen`` sous Windows, où
+    ``QFontDatabase.families()`` est vide) — c'est le cas des tests de la CI
+    Windows. L'interface dégrade alors comme avant le correctif D01 : les
+    glyphes sont rendus par la police d'interface, sans règle de style dédiée.
+    Sur une plateforme réelle (``windows``), la famille est toujours trouvée.
+    """
     installed = installed_families()
     return next((name for name in SYMBOL_FAMILIES if name in installed), "")
 

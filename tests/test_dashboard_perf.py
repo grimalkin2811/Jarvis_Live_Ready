@@ -241,10 +241,30 @@ def test_themes_use_one_installed_family_and_a_symbol_font_for_glyphs():
             assert "," not in chain, (theme_id, kind, chain)
             name = chain.strip('"')
             assert name in families
-            assert name in installed or not any(f in installed for f in families), (theme_id, kind, name)
+            assert (not installed or name in installed
+                    or not any(f in installed for f in families)), (theme_id, kind, name)
         css = theme_module.stylesheet(resolved)
         if symbol:
             assert f'*[glyph="true"] {{ font-family: "{symbol}"; }}' in css
+
+
+def _police_symboles_ou_sans_objet():
+    """Police de symboles de l'environnement, ou test déclaré sans objet.
+
+    ``QFontDatabase.families()`` est vide sous la plateforme ``offscreen`` de
+    Windows (celle de la CI) : aucune famille de symboles n'est alors
+    désignable et l'interface dégrade comme avant le correctif D01 (glyphes
+    rendus par la police d'interface, sans règle dédiée). Ces vérifications
+    portent sur le rendu : elles n'ont de sens qu'avec un registre de polices.
+    """
+    import pytest
+
+    from UI.dashboard.theme import symbol_family
+
+    famille = symbol_family()
+    if not famille:
+        pytest.skip("plateforme sans registre de polices (aucune police de symboles désignable)")
+    return famille
 
 
 def _symboles(texte: str) -> str:
@@ -253,6 +273,7 @@ def _symboles(texte: str) -> str:
 
 
 def test_chrome_and_frames_never_render_glyphs_with_the_interface_font(tmp_path):
+    _police_symboles_ou_sans_objet()
     from PySide6.QtWidgets import QAbstractButton, QLabel
 
     from UI.dashboard.controller import DashboardController
@@ -316,6 +337,7 @@ def test_no_dashboard_text_leaves_a_glyph_to_the_interface_font(tmp_path):
     """Toutes les pages, le journal (ligne d'erreur) et le catalogue : aucun symbole absent
     de la police d'interface dans un texte qu'elle rend (sinon : polices du système
     rechargées au premier rendu sous Windows, correctif D01)."""
+    _police_symboles_ou_sans_objet()
     import logging
 
     from PySide6.QtWidgets import QAbstractButton, QComboBox, QLabel, QListWidget
@@ -385,6 +407,7 @@ def test_painted_glyphs_use_the_symbol_font(monkeypatch):
     from UI.dashboard.widgets import settings_widgets
     from UI.dashboard.widgets.common import Ring
 
+    symbole = _police_symboles_ou_sans_objet()
     app = QApplication.instance() or QApplication([])
     assert app is not None
     with isolated_jarvis():
@@ -395,8 +418,7 @@ def test_painted_glyphs_use_the_symbol_font(monkeypatch):
 
         ring = Ring(SimpleNamespace(theme=resolve(AppearancePrefs(), reduced_motion=True)))
         base = QFont("Interface de test")
-        symbole = symbol_family()
-        assert symbole, "aucune police de symboles installée : test sans objet"
+        assert symbol_family() == symbole
         assert ring.text_font(base, "✕").families()[0] == symbole
         assert ring.text_font(base, "OK").families()[0] == "Interface de test"
         ring.set_value(0.15, "error", "✕")
