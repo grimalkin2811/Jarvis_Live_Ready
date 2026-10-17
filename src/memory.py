@@ -25,12 +25,75 @@ DEFAULT_MEMORY_DB = os.environ.get("JARVIS_MEMORY_DATABASE_PATH", str(paths.memo
 #: Version courante du schéma de la base mémoire. Toute modification de
 #: structure doit incrémenter ce numéro et ajouter la migration listée dans
 #: ``_MIGRATIONS`` (les données utilisateur sont conservées).
-MEMORY_SCHEMA_VERSION = 1
+MEMORY_SCHEMA_VERSION = 2
+
+#: Nombre maximal de versions ANTÉRIEURES conservées par souvenir (v2).
+MEMORY_REVISIONS_KEPT = 20
+
+
+def _migrate_v2_revisions(conn) -> None:
+    """v1 -> v2 : historique des versions de chaque souvenir (Dashboard 1.9).
+
+    Purement additif : une table ``memory_revisions`` et deux déclencheurs.
+    Chaque modification RÉELLE du contenu, de la catégorie, de l'importance
+    ou de l'archivage — quelle qu'en soit l'origine (outil vocal, extraction
+    automatique, Dashboard) — enregistre l'état PRÉCÉDENT. L'historique est
+    borné (``MEMORY_REVISIONS_KEPT`` versions par souvenir) et disparaît avec
+    le souvenir s'il est un jour supprimé physiquement. Aucune donnée
+    existante n'est modifiée ; une version antérieure de Jarvis ouvrant une
+    base v2 continue de fonctionner (elle ignore la table, les déclencheurs
+    restent actifs).
+    """
+    conn.executescript(
+        f"""
+        BEGIN;
+        CREATE TABLE IF NOT EXISTS memory_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            memory_id INTEGER NOT NULL,
+            recorded_at TEXT NOT NULL,
+            valid_from TEXT,
+            content TEXT NOT NULL,
+            category TEXT NOT NULL,
+            importance INTEGER NOT NULL,
+            archived INTEGER NOT NULL DEFAULT 0,
+            source TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_memory_revisions_memory
+            ON memory_revisions(memory_id, id);
+        CREATE TRIGGER IF NOT EXISTS memories_revision_au
+        AFTER UPDATE OF content, category, importance, archived ON memories
+        WHEN old.content IS NOT new.content
+          OR old.category IS NOT new.category
+          OR old.importance IS NOT new.importance
+          OR old.archived IS NOT new.archived
+        BEGIN
+            INSERT INTO memory_revisions
+                (memory_id, recorded_at, valid_from, content, category, importance, archived, source)
+            VALUES
+                (old.id, strftime('%Y-%m-%dT%H:%M:%S+00:00', 'now'), old.updated_at,
+                 old.content, old.category, old.importance, old.archived, old.source);
+            DELETE FROM memory_revisions
+            WHERE memory_id = old.id AND id NOT IN (
+                SELECT id FROM memory_revisions WHERE memory_id = old.id
+                ORDER BY id DESC LIMIT {int(MEMORY_REVISIONS_KEPT)}
+            );
+        END;
+        CREATE TRIGGER IF NOT EXISTS memories_revision_ad AFTER DELETE ON memories
+        BEGIN
+            DELETE FROM memory_revisions WHERE memory_id = old.id;
+        END;
+        COMMIT;
+        """
+    )
+
 
 #: Migrations de schéma, indexées par version cible. Chaque fonction reçoit la
 #: connexion SQLite et doit faire passer la base à la version suivante. Les
 #: données existantes ne sont jamais supprimées.
-_MIGRATIONS: dict[int, callable] = {}
+_MIGRATIONS: dict[int, callable] = {2: _migrate_v2_revisions}
+
+#: Champs éditables d'un souvenir (ceux que l'historique versionne).
+EDITABLE_FIELDS = ("content", "category", "importance")
 
 
 def _migrate(conn) -> None:
@@ -688,6 +751,351 @@ class MemoryManager:
         for memory in memories:
             lines.append(f"- [{memory['category']}, importance {memory['importance']}/5] {memory['content']}")
         return "\n".join(lines)
+
+
+    # ------------------------------------------------------------------
+    # Administration (Dashboard v1.9) : transactions, concurrence, versions
+    # ------------------------------------------------------------------
+    #
+    # Ces méthodes ne marquent JAMAIS la mémoire « indisponible » pour une
+    # erreur attendue (conflit, contrainte, base verrouillée, disque plein) :
+    # la transaction est annulée (``with conn``), aucune donnée n'est écrite
+    # à moitié, et l'appelant reçoit une erreur explicite.
+
+    @staticmethod
+    def _record_dict(row) -> dict:
+        record = {key: row[key] for key in row.keys()}
+        record["id"] = int(record["id"])
+        record["importance"] = int(record.get("importance") or 3)
+        record["archived"] = bool(record.get("archived"))
+        record["access_count"] = int(record.get("access_count") or 0)
+        return record
+
+    @staticmethod
+    def _expected_matches(record: dict, expected: dict | None) -> bool:
+        if not expected:
+            return True
+        for key in (*EDITABLE_FIELDS, "updated_at"):
+            if key in expected and record.get(key) != expected.get(key):
+                return False
+        return True
+
+    def get_memory_record(self, memory_id: int, include_archived: bool = False) -> dict:
+        """Enregistrement complet (toutes colonnes, y compris inconnues)."""
+        if not self._ready():
+            return self._disabled_result()
+        try:
+            with self._connect() as conn:
+                row = conn.execute("SELECT * FROM memories WHERE id = ?", (int(memory_id),)).fetchone()
+        except (sqlite3.Error, ValueError, TypeError) as exc:
+            return {"success": False, "error": f"Lecture impossible : {exc}"}
+        if row is None or (row["archived"] and not include_archived):
+            return {"success": False, "not_found": True, "error": "Souvenir introuvable (supprimé entre-temps ?)."}
+        return {"success": True, "memory": self._record_dict(row)}
+
+    def browse_memories(self, query: str = "", category: str | None = None, limit: int = 200,
+                        offset: int = 0) -> dict:
+        """Parcours/recherche SANS effet de bord (n'incrémente pas l'accès)."""
+        if not self._ready():
+            return self._disabled_result(memories=[], count=0, total=0)
+        limit = max(1, min(500, int(limit or 200)))
+        offset = max(0, int(offset or 0))
+        where = ["archived = 0"]
+        params: list = []
+        if category:
+            where.append("category = ?")
+            params.append(_safe_category(category))
+        text = normalize_text(query)
+        terms = [t for t in text.split() if t][:8]
+        for term in terms:
+            where.append("(lower(content) LIKE ? OR lower(category) LIKE ? OR lower(coalesce(subject_key,'')) LIKE ?)")
+            like = f"%{term}%"
+            params.extend([like, like, like])
+        clause = " AND ".join(where)
+        try:
+            with self._connect() as conn:
+                total = int(conn.execute(f"SELECT COUNT(*) FROM memories WHERE {clause}", params).fetchone()[0])
+                rows = conn.execute(
+                    f"SELECT * FROM memories WHERE {clause} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                    [*params, limit, offset],
+                ).fetchall()
+        except sqlite3.Error as exc:
+            return {"success": False, "error": f"Lecture impossible : {exc}", "memories": [], "count": 0, "total": 0}
+        if terms and not rows:
+            # Les accents sont normalisés côté requête : second essai sur le
+            # texte normalisé en Python (petites bases, coût négligeable).
+            try:
+                with self._connect() as conn:
+                    candidates = conn.execute(
+                        "SELECT * FROM memories WHERE archived = 0" + (" AND category = ?" if category else "")
+                        + " ORDER BY updated_at DESC, id DESC LIMIT 2000",
+                        [_safe_category(category)] if category else [],
+                    ).fetchall()
+            except sqlite3.Error:
+                candidates = []
+            matched = [row for row in candidates
+                       if all(term in normalize_text(row["content"]) for term in terms)]
+            total = len(matched)
+            rows = matched[offset:offset + limit]
+        memories = [self._record_dict(row) for row in rows]
+        return {"success": True, "memories": memories, "count": len(memories), "total": total}
+
+    def find_subject_conflict(self, content: str, category: str | None = None) -> dict | None:
+        """Souvenir ACTIF qui serait remplacé par ``add_memory`` (même sujet)."""
+        if not self._ready():
+            return None
+        category = _safe_category(category or infer_category(content))
+        key = infer_subject_key(content, category)
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM memories WHERE archived = 0 AND subject_key = ?", (key,)
+                ).fetchone()
+        except sqlite3.Error:
+            return None
+        return self._record_dict(row) if row is not None else None
+
+    def create_memory_entry(self, content: str, category: str | None = None, importance: int = 3,
+                            source: str = "dashboard", distinct: bool = False) -> dict:
+        """Crée un souvenir sans JAMAIS écraser un souvenir existant en silence.
+
+        ``distinct=False`` : si un souvenir actif porte déjà le même sujet
+        (clé déduite), rien n'est écrit et le conflit est retourné.
+        ``distinct=True`` : le souvenir est créé à part (sans clé de sujet).
+        """
+        text = str(content or "").strip()
+        if not text:
+            return {"success": False, "error": "Le contenu du souvenir est vide."}
+        if len(text) > 4000:
+            return {"success": False, "error": "Souvenir trop long (4000 caractères maximum)."}
+        if not self._ready():
+            return self._disabled_result()
+        category = _safe_category(category or infer_category(text))
+        importance = _safe_importance(importance)
+        subject_key = None if distinct else infer_subject_key(text, category)
+        now = utc_now()
+        with self._lock:
+            try:
+                with self._connect() as conn:
+                    if subject_key is not None:
+                        existing = conn.execute(
+                            "SELECT * FROM memories WHERE archived = 0 AND subject_key = ?", (subject_key,)
+                        ).fetchone()
+                        if existing is not None:
+                            return {"success": False, "conflict": True,
+                                    "existing": self._record_dict(existing),
+                                    "error": "Un souvenir porte déjà ce sujet."}
+                    cur = conn.execute(
+                        """
+                        INSERT INTO memories
+                        (content, category, importance, created_at, updated_at, source, subject_key)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (text, category, importance, now, now, str(source or "dashboard")[:40], subject_key),
+                    )
+                    memory_id = int(cur.lastrowid)
+            except sqlite3.IntegrityError as exc:
+                return {"success": False, "conflict": True, "error": f"Contrainte d'unicité : {exc}"}
+            except sqlite3.Error as exc:
+                return {"success": False, "error": f"Écriture impossible (rien n'a été modifié) : {exc}"}
+        record = self.get_memory_record(memory_id)
+        return {"success": True, "action": "created", "id": memory_id, "memory": record.get("memory")}
+
+    def update_memory_checked(self, memory_id: int, expected: dict | None, content: str | None = None,
+                              category: str | None = None, importance: int | None = None) -> dict:
+        """Modification avec contrôle de concurrence optimiste.
+
+        ``expected`` : la version que l'utilisateur a modifiée (champs
+        éditables + ``updated_at``). Si le souvenir a changé entre-temps
+        (voix, autre fenêtre…), RIEN n'est écrit et la version actuelle est
+        retournée (``conflict=True``) pour arbitrage.
+        """
+        if not self._ready():
+            return self._disabled_result()
+        updates: list[str] = []
+        params: list = []
+        if content is not None:
+            text = str(content).strip()
+            if not text:
+                return {"success": False, "error": "Le contenu du souvenir est vide."}
+            if len(text) > 4000:
+                return {"success": False, "error": "Souvenir trop long (4000 caractères maximum)."}
+            updates.append("content = ?")
+            params.append(text)
+        if category is not None:
+            if normalize_text(category) not in CATEGORIES:
+                return {"success": False, "error": f"Catégorie inconnue : {category}."}
+            updates.append("category = ?")
+            params.append(_safe_category(category))
+        if importance is not None:
+            try:
+                value = int(importance)
+            except (TypeError, ValueError):
+                return {"success": False, "error": "Importance invalide (1 à 5)."}
+            if not 1 <= value <= 5:
+                return {"success": False, "error": "Importance invalide (1 à 5)."}
+            updates.append("importance = ?")
+            params.append(value)
+        if not updates:
+            return {"success": False, "error": "Aucune modification demandée."}
+        with self._lock:
+            try:
+                with self._connect() as conn:
+                    row = conn.execute("SELECT * FROM memories WHERE id = ?", (int(memory_id),)).fetchone()
+                    if row is None or row["archived"]:
+                        return {"success": False, "not_found": True,
+                                "error": "Souvenir introuvable (supprimé entre-temps ?)."}
+                    current = self._record_dict(row)
+                    if not self._expected_matches(current, expected):
+                        return {"success": False, "conflict": True, "current": current,
+                                "error": "Le souvenir a été modifié entre-temps."}
+                    now = utc_now()
+                    try:
+                        previous = dt.datetime.fromisoformat(str(current.get("updated_at")))
+                        if dt.datetime.fromisoformat(now) <= previous:
+                            # Résolution à la seconde : une nouvelle version ne
+                            # partage jamais (ni ne précède) l'horodatage de
+                            # la précédente — le contrôle de version reste fiable.
+                            now = (previous + dt.timedelta(seconds=1)).isoformat(timespec="seconds")
+                    except (TypeError, ValueError):
+                        pass
+                    conn.execute(
+                        f"UPDATE memories SET {', '.join(updates)}, updated_at = ? WHERE id = ? AND archived = 0",
+                        [*params, now, int(memory_id)],
+                    )
+            except sqlite3.IntegrityError as exc:
+                return {"success": False, "error": f"Contrainte d'unicité : {exc}"}
+            except sqlite3.Error as exc:
+                return {"success": False, "error": f"Écriture impossible (rien n'a été modifié) : {exc}"}
+        record = self.get_memory_record(memory_id)
+        return {"success": True, "action": "updated", "memory": record.get("memory")}
+
+    def delete_memory_checked(self, memory_id: int, expected: dict | None) -> dict:
+        """Suppression (archivage, comme ``delete_memory``) avec contrôle de version."""
+        if not self._ready():
+            return self._disabled_result()
+        with self._lock:
+            try:
+                with self._connect() as conn:
+                    row = conn.execute("SELECT * FROM memories WHERE id = ?", (int(memory_id),)).fetchone()
+                    if row is None or row["archived"]:
+                        return {"success": False, "not_found": True,
+                                "error": "Souvenir introuvable (déjà supprimé ?)."}
+                    current = self._record_dict(row)
+                    if not self._expected_matches(current, expected):
+                        return {"success": False, "conflict": True, "current": current,
+                                "error": "Le souvenir a été modifié entre-temps : vérifie avant de supprimer."}
+                    conn.execute(
+                        "UPDATE memories SET archived = 1, updated_at = ? WHERE id = ? AND archived = 0",
+                        (utc_now(), int(memory_id)),
+                    )
+            except sqlite3.Error as exc:
+                return {"success": False, "error": f"Suppression impossible (rien n'a été modifié) : {exc}"}
+        return {"success": True, "deleted": int(memory_id)}
+
+    def list_memory_revisions(self, memory_id: int, limit: int = MEMORY_REVISIONS_KEPT) -> dict:
+        """Versions ANTÉRIEURES d'un souvenir, de la plus récente à la plus ancienne."""
+        if not self._ready():
+            return self._disabled_result(revisions=[])
+        limit = max(1, min(100, int(limit or MEMORY_REVISIONS_KEPT)))
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM memory_revisions WHERE memory_id = ? ORDER BY id DESC LIMIT ?",
+                    (int(memory_id), limit),
+                ).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc):
+                return {"success": True, "revisions": [], "available": False}
+            return {"success": False, "error": f"Historique illisible : {exc}", "revisions": []}
+        except sqlite3.Error as exc:
+            return {"success": False, "error": f"Historique illisible : {exc}", "revisions": []}
+        revisions = []
+        for row in rows:
+            item = {key: row[key] for key in row.keys()}
+            item["archived"] = bool(item.get("archived"))
+            item["importance"] = int(item.get("importance") or 3)
+            revisions.append(item)
+        return {"success": True, "revisions": revisions, "available": True}
+
+    def restore_memory_revision(self, memory_id: int, revision_id: int, expected: dict | None) -> dict:
+        """Restaure une version antérieure (la version actuelle rejoint l'historique)."""
+        if not self._ready():
+            return self._disabled_result()
+        try:
+            with self._connect() as conn:
+                revision = conn.execute(
+                    "SELECT * FROM memory_revisions WHERE id = ? AND memory_id = ?",
+                    (int(revision_id), int(memory_id)),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            return {"success": False, "error": f"Historique illisible : {exc}"}
+        if revision is None:
+            return {"success": False, "not_found": True, "error": "Version introuvable."}
+        current = self.get_memory_record(memory_id).get("memory")
+        if (
+            current is not None
+            and self._expected_matches(current, expected)
+            and all(current.get(key) == revision[key] for key in EDITABLE_FIELDS)
+        ):
+            # Rien à restaurer : ne jamais annoncer « restaurée » ni réécrire
+            # (l'horodatage changerait sans aucune modification réelle).
+            return {"success": False, "unchanged": True,
+                    "error": "Cette version est identique à la version actuelle."}
+        result = self.update_memory_checked(
+            memory_id, expected,
+            content=revision["content"], category=revision["category"], importance=revision["importance"],
+        )
+        if result.get("success"):
+            result["action"] = "restored"
+            result["revision_id"] = int(revision_id)
+        elif result.get("error") == "Aucune modification demandée.":
+            result = {"success": False, "error": "Cette version est identique à la version actuelle."}
+        return result
+
+    def memory_stats(self) -> dict:
+        """Statistiques non sensibles (comptes, schéma, taille) pour le diagnostic."""
+        if not self._ready():
+            return self._disabled_result()
+        try:
+            with self._connect() as conn:
+                total = int(conn.execute("SELECT COUNT(*) FROM memories WHERE archived = 0").fetchone()[0])
+                archived = int(conn.execute("SELECT COUNT(*) FROM memories WHERE archived = 1").fetchone()[0])
+                by_category = {
+                    row[0]: int(row[1])
+                    for row in conn.execute(
+                        "SELECT category, COUNT(*) FROM memories WHERE archived = 0 GROUP BY category"
+                    ).fetchall()
+                }
+                version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+                try:
+                    revisions = int(conn.execute("SELECT COUNT(*) FROM memory_revisions").fetchone()[0])
+                except sqlite3.Error:
+                    revisions = None
+                last = conn.execute("SELECT MAX(updated_at) FROM memories WHERE archived = 0").fetchone()[0]
+        except sqlite3.Error as exc:
+            return {"success": False, "error": f"Statistiques indisponibles : {exc}"}
+        try:
+            size = os.path.getsize(self.database_path)
+        except OSError:
+            size = None
+        return {
+            "success": True, "total": total, "archived": archived, "by_category": by_category,
+            "schema_version": version, "revisions": revisions, "last_updated": last,
+            "size_bytes": size, "path": self.database_path,
+        }
+
+    def check_integrity(self) -> dict:
+        """``PRAGMA quick_check`` (lecture seule)."""
+        if not self._ready():
+            return self._disabled_result()
+        try:
+            with self._connect() as conn:
+                rows = conn.execute("PRAGMA quick_check").fetchall()
+        except sqlite3.Error as exc:
+            return {"success": False, "error": f"Vérification impossible : {exc}"}
+        messages = [str(row[0]) for row in rows]
+        return {"success": True, "ok": messages == ["ok"], "messages": messages[:20]}
 
 
 _DEFAULT_MANAGER: MemoryManager | None = None

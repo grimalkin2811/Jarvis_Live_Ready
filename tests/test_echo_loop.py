@@ -372,6 +372,17 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
         _ = during_playback, speaking_start
 
         # Après la réouverture : seul le bruit de fond (sous le seuil VAD).
+        # La trace « porte ouverte » précède l'arrivée du premier bloc au
+        # serveur (transmission via run_coroutine_threadsafe vers la boucle
+        # asyncio, prochain tick ADC à 80 ms) : lire le journal à l'instant
+        # même de la trace était une course, perdue sur un runner Windows
+        # chargé (CI PR #50, commit 2a62b94 — test réussi à la relance dans le
+        # même job). Attente BORNÉE du premier bloc : si le micro ne reprend
+        # pas, l'échec reste explicite.
+        try:
+            lab.wait_until(lambda: bool(lab.audio_in(since=reopen_ts)), 2.0, "reprise du micro après la réponse")
+        except TimeoutError:
+            pass
         after = lab.audio_in(since=reopen_ts)
         self.assertTrue(after, "le micro doit reprendre après la réponse")
         self.assertLess(max(rms for _, rms in after), lab.server.threshold_rms)
@@ -412,7 +423,9 @@ class TestD_Interrupt(_EchoTestCase):
 
         # Après l'interruption : silence total, aucun timer résiduel.
         silence_start = self.settle_response(lab, min_turns=2)
-        lab.wait(min(SILENCE_SECONDS, 12.0))
+        # Mode rapide : SILENCE_SECONDS vaut 6 s, moins que la fenêtre de
+        # suivi (8 s) — l'assertion « retour en veille » exige de la dépasser.
+        lab.wait(max(9.0, min(SILENCE_SECONDS, 12.0)))
 
         self.assertEqual(len(lab.ghost_turns(since=silence_start)), 0)
         self.assertEqual(len(lab.resets(since=silence_start)), 0)
@@ -510,7 +523,8 @@ class TestG_SessionChurn(_EchoTestCase):
         lab.wait(2.0)
 
         silence_start = time.monotonic()
-        lab.wait(min(SILENCE_SECONDS, 12.0))
+        # Idem : doit dépasser la fenêtre de 8 s, même en mode rapide.
+        lab.wait(max(9.0, min(SILENCE_SECONDS, 12.0)))
 
         self.assertEqual(len(lab.ghost_turns(since=silence_start)), 0)
         self.assertEqual(len(lab.resets(since=silence_start)), 0)

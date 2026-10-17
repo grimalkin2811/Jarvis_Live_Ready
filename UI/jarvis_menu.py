@@ -1275,6 +1275,18 @@ class MorphingOrbWidget(QWidget):
                     event.accept()
                     return
 
+        # Ctrl+D : ouvre le Dashboard (troisième interface, v1.9) sans
+        # quitter l'orbe ni toucher à la session vocale.
+        if event.key() == Qt.Key_D and event.modifiers() & Qt.ControlModifier:
+            try:
+                from . import dashboard_bridge
+
+                opened = dashboard_bridge.DASHBOARD.request_open()
+            except Exception:
+                opened = False
+            self._flash("Dashboard" if opened else "Dashboard indisponible")
+            return
+
         # toggle debug printing
         if event.key() == Qt.Key_D:
             self.debug_mode = not getattr(self, 'debug_mode', False)

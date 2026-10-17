@@ -327,6 +327,22 @@ class InterfaceModeController(QObject):
             self._overlay.close()
 
 
+def _manual_stop(audio, gemini) -> None:
+    """Interruption MANUELLE de la réponse en cours (menu radial, touche S,
+    bouton Stop du Dashboard).
+
+    La sortie est vidée tout de suite (``audio.stop_speaking`` -> barge-in
+    « manuelle »), puis la session est prévenue que l'arrêt est volontaire :
+    l'audio restant de ce tour ne doit pas reprendre à l'expiration de la
+    fenêtre d'interruption, prévue pour les fausses détections vocales
+    (correctif PR #50, cf. ``GeminiLive.request_interrupt``).
+    """
+    if audio is not None:
+        audio.stop_speaking()
+    if gemini is not None:
+        gemini.request_interrupt(manual=True)
+
+
 def _on_speaking(audio, presence_hook) -> None:
     """Jarvis commence à parler : on le marque comme 'speaking' dans AudioIO
     (pour suspendre le timeout) et on informe l'UI le cas échéant."""
@@ -359,6 +375,10 @@ def _run_voice_loop(
     """
     import asyncio
 
+    # v1.9 : faits publiés pour le Dashboard (état réel, jamais supposé).
+    from .runtime_status import RUNTIME, EngineState, redact_secrets
+
+    RUNTIME.set_engine_state(EngineState.STARTING, "chargement des composants")
     try:
         from .audio import AudioIO
         from .conversation import get_default_conversation_context
@@ -367,6 +387,7 @@ def _run_voice_loop(
         from .scheduler import start_default_scheduler
     except Exception as exc:
         print(f"[Jarvis] Backend vocal indisponible : {exc}")
+        RUNTIME.set_engine_state(EngineState.FAILED, f"backend vocal indisponible : {exc}")
         return
 
     loop = asyncio.new_event_loop()
@@ -401,9 +422,8 @@ def _run_voice_loop(
             gemini.request_interrupt()
 
     def stop_speaking() -> None:
-        """Interruption manuelle (bouton du menu radial / touche S)."""
-        if audio is not None:
-            audio.stop_speaking()
+        """Interruption manuelle (bouton du menu radial / touche S / Dashboard)."""
+        _manual_stop(audio, gemini)
 
     def desktop(event: str, **payload) -> None:
         """Publie un évènement Desktop (no-op si le mode n'est pas actif)."""
@@ -436,6 +456,12 @@ def _run_voice_loop(
             min_importance=config.memory_min_importance,
         )
         set_default_memory_manager(memory_manager)
+        RUNTIME.update(
+            memory_state=(
+                "disabled" if not memory_manager.enabled
+                else "ok" if memory_manager.available else "failed"
+            )
+        )
 
         # Contexte conversationnel partagé par Blob Mode et Desktop Mode : il
         # appartient au backend vocal, pas à l'interface. Basculer d'un mode à
@@ -454,8 +480,10 @@ def _run_voice_loop(
             from .background_tasks import configure_default_task_manager
 
             task_manager = configure_default_task_manager(config.api_key)
+            RUNTIME.update(tasks_state="ok", tasks_detail="")
         except Exception as exc:
             print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
+            RUNTIME.update(tasks_state="failed", tasks_detail=str(exc))
 
         audio = AudioIO(
             mic,
@@ -474,6 +502,10 @@ def _run_voice_loop(
         # cours ; le pont est retiré à l'arrêt pour ne pas garder de
         # référence morte.
         menu_state.LIVE.set_stop_speaking_handler(stop_speaking)
+        RUNTIME.update(
+            wake_word="loaded" if getattr(audio, "wake_model", None) is not None else "unavailable",
+            wake_word_detail=getattr(audio, "wake_framework", "") or "",
+        )
         gemini = GeminiLive(
             config.api_key,
             config.model,
@@ -498,23 +530,47 @@ def _run_voice_loop(
             conversation=conversation,
             **menu_state.voice_backend_kwargs(),
         )
+        # Pause prolongée de la porte anti-écho : clore le flux côté Gemini
+        # (audioStreamEnd) pour que sa VAD ne reste pas au milieu d'une parole.
+        audio.mic_pause_hook = gemini.notify_mic_paused
+
+        # Le Dashboard peut converser par écrit avec CETTE session (même
+        # contexte, même moteur) : point d'entrée thread-safe enregistré
+        # pour la durée de vie de la boucle vocale.
+        RUNTIME.register_text_handler(gemini.submit_text_threadsafe)
+        RUNTIME.update(model=str(config.model or ""))
 
         print(f"Jarvis Live - Bonjour {config.user}")
-        audio.start()
+        try:
+            audio.start()
+        except Exception as exc:
+            RUNTIME.update(audio_state="failed", audio_detail=f"démarrage audio impossible : {exc}")
+            RUNTIME.set_engine_state(EngineState.FAILED, "pipeline audio indisponible")
+            raise
+        RUNTIME.update(audio_state="ok", audio_detail="flux micro et haut-parleurs démarrés")
         print("Pret. Parle dans le micro.")
 
         while not stop_event.is_set():
             gemini.reconnect_requested = False
             try:
+                RUNTIME.set_engine_state(EngineState.CONNECTING, "ouverture de la session Live")
                 await gemini.connect()
+                RUNTIME.set_engine_state(
+                    EngineState.READY,
+                    "",
+                    model=str(gemini.model or ""),
+                    session_generation=int(getattr(gemini, "session_generation", 0) or 0),
+                )
                 await gemini.receive_loop()
             except asyncio.CancelledError:
                 break
             except AuthError as exc:
                 print(f"\n[Jarvis] {exc}")
                 print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
+                RUNTIME.record_error(str(exc))
+                RUNTIME.set_engine_state(EngineState.AUTH_ERROR, "clé Gemini API refusée")
                 break
-            except Exception:
+            except Exception as exc:
                 if gemini.reconnect_requested:
                     # Fermeture volontaire (changement de voix) : on
                     # reconnexionne immédiatement, en silence.
@@ -522,6 +578,9 @@ def _run_voice_loop(
                 else:
                     print("\n[Jarvis] Connexion perdue ou erreur:")
                     traceback.print_exc()
+                    RUNTIME.record_error(redact_secrets(f"{exc.__class__.__name__}: {exc}", limit=300))
+                    RUNTIME.note_reconnect_attempt()
+                    RUNTIME.set_engine_state(EngineState.RECONNECTING, "nouvelle tentative dans 5 s")
                     audio.awake = False
                     # Le Desktop Mode a un état ERROR explicite : l'utilisateur
                     # voit qu'il s'est passé quelque chose, sans pop-up.
@@ -549,6 +608,12 @@ def _run_voice_loop(
     finally:
         try:
             menu_state.LIVE.set_stop_speaking_handler(None)
+        except Exception:
+            pass
+        try:
+            RUNTIME.unregister_text_handler()
+            if RUNTIME.snapshot().get("engine_state") not in (EngineState.AUTH_ERROR, EngineState.FAILED):
+                RUNTIME.set_engine_state(EngineState.STOPPED, "boucle vocale terminée")
         except Exception:
             pass
         try:
@@ -605,6 +670,7 @@ def _build_tray_icon(
     *,
     mode_getter=None,
     on_mode_change=None,
+    on_dashboard=None,
 ):
     """Icône de zone de notification : moyen visible et fiable de quitter
     Jarvis, indispensable en mode --desktop où aucune fenêtre ne réagit à
@@ -641,6 +707,19 @@ def _build_tray_icon(
             hide_action.triggered.connect(on_hide)
         else:
             hide_action.setEnabled(False)
+
+        # v1.9 : troisième interface, accessible quel que soit le mode actif
+        # (orbe ou Desktop) — ouvrir le Dashboard ne change PAS de mode.
+        if on_dashboard is not None:
+            try:
+                from UI.dashboard import DASHBOARD_NAME
+            except Exception:  # pragma: no cover - paquet absent
+                DASHBOARD_NAME = "Dashboard"
+            dashboard_action = menu.addAction(f"Ouvrir le {DASHBOARD_NAME}")
+            dashboard_action.triggered.connect(lambda _checked=False: on_dashboard())
+            tray_dashboard_action = dashboard_action
+        else:
+            tray_dashboard_action = None
 
         # Accès rapide disponible dans les DEUX modes, y compris Desktop où
         # le menu radial est volontairement caché.
@@ -764,13 +843,44 @@ def _build_tray_icon(
         # l'accès aux interrupteurs aussi en mode overlay, sans fenêtre.
         tray._jarvis_menu = menu
         tray._interface_mode_actions = mode_actions
+        tray._dashboard_action = tray_dashboard_action
         tray.show()
         return tray
     except Exception:
         return None
 
 
-def run_ui(mode: str | None = None) -> int:
+def _fanout(primary, secondary):
+    """Un même fait réel vers deux consommateurs ; le second ne peut jamais
+    faire échouer le premier (ni la boucle vocale)."""
+    if secondary is None:
+        return primary
+
+    def _call(*args, **kwargs):
+        try:
+            return primary(*args, **kwargs)
+        finally:
+            try:
+                secondary(*args, **kwargs)
+            except Exception:
+                pass
+
+    return _call
+
+
+def _create_dashboard(interface_controller, quit_callback):
+    """Crée le contrôleur Dashboard ; toute erreur laisse Jarvis intact."""
+    try:
+        from UI.dashboard.controller import DashboardController
+
+        return DashboardController(interface_controller=interface_controller, quit_callback=quit_callback)
+    except Exception as exc:
+        print(f"[Dashboard] Indisponible : {exc}")
+        traceback.print_exc()
+        return None
+
+
+def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
     # Réutilise un QApplication déjà créé (assistant de premier lancement).
     app = QApplication.instance() or QApplication(sys.argv)
 
@@ -836,6 +946,10 @@ def run_ui(mode: str | None = None) -> int:
 
     INTERFACE_MODE.set_handler(controller.request_mode)
 
+    # v1.9 : Dashboard (troisième interface). Léger tant qu'il n'est pas
+    # ouvert ; il coexiste avec l'orbe et le Desktop sans les remplacer.
+    dashboard = _create_dashboard(controller, _quit)
+
     # L'éditeur d'apparence applique ses changements à l'overlay en cours.
     from UI import desktop_appearance_dialog
 
@@ -848,7 +962,10 @@ def run_ui(mode: str | None = None) -> int:
         visibility=visibility,
         mode_getter=controller.current_mode,
         on_mode_change=controller.set_mode,
+        on_dashboard=dashboard.open if dashboard is not None else None,
     )
+    if dashboard is not None:
+        dashboard.tray = tray
     if tray is None and active_mode == settings.DESKTOP_MODE:
         print("[Jarvis] Aucune icône de notification disponible : "
               "utilise Ctrl+C dans cette console pour quitter.")
@@ -875,17 +992,22 @@ def run_ui(mode: str | None = None) -> int:
     # Brancher les notifications AVANT de démarrer le planificateur vocal :
     # les rappels échus au lancement sont visibles même si l'orbe est en veille.
     notification_bridge = NotificationBridge(tray)
+    if dashboard is not None:
+        dashboard.attach_notification_bridge(notification_bridge)
     # Le pont Desktop reste ouvert quel que soit le mode : c'est le
     # contrôleur qui ignore les évènements quand le Blob est actif.
     from UI.desktop.events import DESKTOP_EVENTS
 
-    DESKTOP_EVENTS.set_handler(controller.handle_desktop_event)
+    presence_hook = _fanout(controller.handle_presence, dashboard.handle_presence if dashboard else None)
+    energy_hook = _fanout(controller.handle_voice_energy, dashboard.handle_voice_energy if dashboard else None)
+    desktop_hook = _fanout(controller.handle_desktop_event, dashboard.handle_desktop_event if dashboard else None)
+    DESKTOP_EVENTS.set_handler(desktop_hook)
     voice_thread = _start_voice(
         config,
-        controller.handle_presence,
-        controller.handle_voice_energy,
+        presence_hook,
+        energy_hook,
         stop_event,
-        controller.handle_desktop_event,
+        desktop_hook,
     )
     shutdown_done = False
 
@@ -900,6 +1022,11 @@ def run_ui(mode: str | None = None) -> int:
         INTERFACE_MODE.set_handler(None)
         DESKTOP_EVENTS.set_handler(None)
         desktop_appearance_dialog.unregister_apply_hook(controller.refresh_overlay_appearance)
+        if dashboard is not None:
+            try:
+                dashboard.shutdown()
+            except Exception:
+                pass
         controller.close()
         if protocol_presenter is not None:
             try:
@@ -908,6 +1035,12 @@ def run_ui(mode: str | None = None) -> int:
                 pass
 
     app.aboutToQuit.connect(_shutdown)
+
+    if dashboard is not None:
+        if open_dashboard:
+            dashboard.open()
+        else:
+            dashboard.maybe_open_on_launch()
 
     if active_mode == settings.BLOB_MODE:
         print("[Jarvis] Blob Mode démarré. Échap pour quitter, "

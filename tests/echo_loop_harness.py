@@ -592,6 +592,9 @@ class EchoLab:
         # src/main.py / src/ui.py / tests/real_gemini_harness.py.
         gemini.on_turn_open = audio.note_turn_open
         gemini.on_turn_resolved = audio.note_turn_resolved
+        # Câblage identique à src/ui.py / src/main.py : une pause prolongée
+        # de la porte anti-écho clôt le flux micro côté Live API.
+        audio.mic_pause_hook = gemini.notify_mic_paused
 
     # -- cycle de vie -----------------------------------------------------------
 
