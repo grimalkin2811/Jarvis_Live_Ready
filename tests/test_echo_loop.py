@@ -423,7 +423,9 @@ class TestD_Interrupt(_EchoTestCase):
 
         # Après l'interruption : silence total, aucun timer résiduel.
         silence_start = self.settle_response(lab, min_turns=2)
-        lab.wait(min(SILENCE_SECONDS, 12.0))
+        # Mode rapide : SILENCE_SECONDS vaut 6 s, moins que la fenêtre de
+        # suivi (8 s) — l'assertion « retour en veille » exige de la dépasser.
+        lab.wait(max(9.0, min(SILENCE_SECONDS, 12.0)))
 
         self.assertEqual(len(lab.ghost_turns(since=silence_start)), 0)
         self.assertEqual(len(lab.resets(since=silence_start)), 0)
@@ -521,7 +523,8 @@ class TestG_SessionChurn(_EchoTestCase):
         lab.wait(2.0)
 
         silence_start = time.monotonic()
-        lab.wait(min(SILENCE_SECONDS, 12.0))
+        # Idem : doit dépasser la fenêtre de 8 s, même en mode rapide.
+        lab.wait(max(9.0, min(SILENCE_SECONDS, 12.0)))
 
         self.assertEqual(len(lab.ghost_turns(since=silence_start)), 0)
         self.assertEqual(len(lab.resets(since=silence_start)), 0)

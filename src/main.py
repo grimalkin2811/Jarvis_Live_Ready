@@ -329,6 +329,8 @@ async def run_headless() -> None:
             conversation=conversation,
             **voice_kwargs,
         )
+        # Pause prolongée du micro (porte anti-écho) : prévenir la Live API.
+        audio.mic_pause_hook = gemini.notify_mic_paused
 
         print(f"Jarvis Live - Bonjour {config.user}")
         audio.start()

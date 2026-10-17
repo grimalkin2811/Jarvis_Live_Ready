@@ -567,7 +567,20 @@ class ScenarioRunner:
         if wake:
             self.lab.wake()
         since = len(self.lab.turns)
+        # L'énoncé doit être émis pendant que la capture est RÉELLEMENT
+        # active (pas pendant la traîne audio du tour précédent / du rejeu).
+        self.lab.wait_mic_capturing()
+        sent_before = self.lab._mic_sent
         self.lab.speak_pcm(self.prompt_cache[prompt])
+        deadline = time.monotonic() + 5.0
+        while self.lab._mic_sent <= sent_before and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if self.lab._mic_sent <= sent_before:
+            raise RuntimeError(
+                "aucun bloc micro transmis après l'énoncé (micro/porte anti-écho) : "
+                f"can_send={self.lab.gemini.can_send()} "
+                f"gate={self.lab.audio._mic_gate_open()}"
+            )
         turn = self.lab.wait_for_new_turn(since, timeout)
         if turn is None:
             raise TimeoutError(f"aucune réponse reçue pour : {prompt!r}")

@@ -171,6 +171,50 @@ class RealBargeInTests(_SessionTest):
         self.assertEqual(interruption["origin"], "barge_in_local")
 
 
+class ServerInterruptionBeforeAudioTests(_SessionTest):
+    """E01 réel : le serveur interrompt une génération sans audio exploitable.
+
+    Trace : ``TTS_START`` puis ``INTERRUPTION``, tour clos, aucune réponse.
+    ``model_output_seen`` peut être vrai (la transcription arrive avant
+    l'audio), mais aucun octet n'a été remis au lecteur. Si aucune nouvelle
+    parole ne suit, la demande est restée sans réponse : Jarvis doit la
+    relancer UNE fois après le ``turn_complete`` de la génération annulée.
+    """
+
+    async def test_server_interruption_before_audio_retries_the_request(self) -> None:
+        demande = "Bonjour Jarvie, je m'appelle Adam."
+        self.session.push(fake.user(demande))
+        await self.settle()
+        # Transcription du modèle (donc ``model_output_seen=True``), AUCUN audio.
+        self.session.push(fake.model_text("Bonjour Adam"), fake.interrupted(),
+                          fake.turn_complete(fake.IDLE))
+        await _until(lambda: "client_content" in self.session.kinds())
+        self.assertEqual(self.session.client_texts(), [demande])
+        self.assertIn("INTERRUPTION_RETRY", self.lab.kinds())
+        last = self.lab.gemini.engine_snapshot()["last_interruption"]
+        self.assertEqual(last["classification"], "interruption_reponse")
+        self.assertEqual(last["audio_bytes"], 0)
+        # La relance reçoit enfin une réponse réellement audible.
+        self.session.push(*fake.answer("Bonjour Adam, je vous écoute."))
+        await _until(lambda: "complete" in self.lab.events)
+        await self.settle()
+        self.assertEqual(self.lab.turns[-1]["assistant"], "Bonjour Adam, je vous écoute.")
+        self.assertEqual(self.session.kinds().count("client_content"), 1,
+                         "la demande ne doit être relancée qu'une seule fois")
+
+    async def test_server_interruption_after_audio_does_not_retry(self) -> None:
+        """Une réponse déjà audible peut être interrompue : pas de relance."""
+        self.session.push(fake.user("Raconte une histoire."))
+        await self.settle()
+        self.session.push(fake.model_text("Il était une fois"), fake.model_audio())
+        await _until(lambda: self.lab.gemini.speaking)
+        self.session.push(fake.interrupted(), fake.turn_complete(fake.IDLE))
+        await self.settle()
+        self.assertNotIn("client_content", self.session.kinds())
+        self.assertEqual(self.lab.events.count("interrupted"), 1)
+        self.assertFalse(self.lab.gemini.engine_snapshot()["turn_open"])
+
+
 class EmptyTurnCompleteTests(_SessionTest):
     async def test_in_progress_means_more_output_follows(self) -> None:
         self.session.push(fake.user("Combien font deux et deux ?"), fake.turn_complete(fake.IN_PROGRESS))
@@ -241,6 +285,30 @@ class TextTurnTests(_SessionTest):
         self.assertTrue(gemini.engine_snapshot()["text_turn_pending"], "le second message a été clos à tort")
         self.assertNotIn("RESPONSE_STALLED", self.lab.kinds())
         self.assertNotIn("TEXT_TURN_TIMEOUT", self.lab.kinds())
+
+
+class MicStreamPauseTests(_SessionTest):
+    async def test_prolonged_mic_pause_closes_the_live_audio_stream(self) -> None:
+        """E01 : la porte anti-écho retient le micro pendant la réponse.
+
+        Au-delà d'une seconde, la Live API doit recevoir ``audioStreamEnd``
+        (cache audio vidé, activité VAD close) AVANT que le micro ne reprenne.
+        Sans cet évènement, la VAD serveur peut interrompre la génération en
+        cours au moment où le flux reprend.
+        """
+        await self.lab.gemini.send_audio(b"\x00\x00" * 1280)
+        self.assertEqual(self.session.kinds()[-1], "audio")
+        self.lab.gemini.notify_mic_paused()
+        await _until(lambda: "audio_stream_end" in self.session.kinds())
+        kinds = self.session.kinds()
+        self.assertLess(kinds.index("audio"), kinds.index("audio_stream_end"))
+        # Idempotent : un second appel ne renvoie rien tant que le flux est clos.
+        self.lab.gemini.notify_mic_paused()
+        await self.settle()
+        self.assertEqual(kinds.count("audio_stream_end"), 1)
+        # Le micro qui reprend rouvre le flux implicitement (nouvel envoi).
+        await self.lab.gemini.send_audio(b"\x00\x00" * 1280)
+        self.assertEqual(self.session.kinds().count("audio_stream_end"), 1)
 
 
 class TurnStateAfterSessionLossTests(_SessionTest):

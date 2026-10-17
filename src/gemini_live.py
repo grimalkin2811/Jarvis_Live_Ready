@@ -328,6 +328,13 @@ class GeminiLive:
         self._text_turn_pending = False
         self.tool_active = False
         self.resumption_handle = None
+        #: Nombre de messages locaux au moment où le handle de reprise a été
+        #: reçu (None = inconnu, on fait confiance au serveur). Si l'historique
+        #: local a grandi depuis, le point de reprise peut être ANTÉRIEUR au
+        #: dernier tour : reprendre sans rejouer perdrait ce tour (échec réel
+        #: E12 « contexte après reconnexion »). On rejoue alors le contexte.
+        self._resumption_handle_message_count: int | None = None
+        self._resumption_handle_received_this_turn = False
         # Traçabilité de session (instrumentation du contexte conversationnel) :
         # ``session_generation`` distingue chaque session Gemini successive,
         # ``session_id`` est l'identifiant serveur (setupComplete), et
@@ -403,6 +410,18 @@ class GeminiLive:
         # génération totalement vide pour un vrai tour utilisateur (cf.
         # EMPTY_GENERATION_MAX_RETRIES ci-dessus), jamais à autre chose.
         self._turn_model_content_seen = False
+        #: Octets audio du modèle réellement remis au lecteur pour CE tour
+        #: (0 = rien d'audible). Sert à distinguer une interruption réelle
+        #: (l'utilisateur a entendu et coupe) d'une annulation serveur avant
+        #: toute réponse exploitable (E01 : TTS_START puis INTERRUPTION, mais
+        #: aucune réponse audible).
+        self._turn_audio_bytes = 0
+        self._interruption_retry_pending = False
+        self._interruption_retry_text = ""
+        #: Une seule relance par tour : une seconde interruption serveur
+        #: avant audio suit le chemin historique (clôture) pour ne jamais
+        #: boucler sur un serveur qui annule systématiquement.
+        self._interruption_retry_used = False
         # Vrai quand le tour courant est clos côté contexte : la prochaine
         # transcription entrante ouvre un nouveau tour (et ne recopie pas la
         # demande précédente, cf. interruption suivie de turn_complete).
@@ -643,6 +662,10 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_model_content_seen = False
+        self._turn_audio_bytes = 0
+        self._interruption_retry_pending = False
+        self._interruption_retry_text = ""
+        self._interruption_retry_used = False
         self.turn_counter += 1
         log.debug(
             "TURN START gen=%s conversation=%s",
@@ -660,6 +683,11 @@ class GeminiLive:
         """
         self._commit_user_text()
         self._commit_assistant_text()
+        if self._resumption_handle_received_this_turn:
+            # Le handle reçu pendant CE tour couvre la réponse qui vient
+            # d'être committée localement (le serveur l'a produite).
+            self._resumption_handle_message_count = len(self.conversation.get_messages())
+            self._resumption_handle_received_this_turn = False
         self.conversation.close_turn("fin de tour")
         already_closed = self._turn_closed
         self._turn_closed = True
@@ -748,13 +776,32 @@ class GeminiLive:
         if self.session is None:
             return False
         if self.resumption_handle:
-            # Le serveur a restauré la conversation lui-même : rejouer
-            # créerait un doublon. C'est le chemin nominal de reconnexion.
-            log.debug(
-                "SESSION RESUMED gen=%s handle=present conversation=%s (pas de rejeu)",
-                self.session_generation, self.conversation.conversation_id,
+            local_messages = len(self.conversation.get_messages())
+            checkpoint = self._resumption_handle_message_count
+            if checkpoint is None or local_messages <= checkpoint:
+                # Le serveur a restauré la conversation lui-même et le point
+                # de reprise couvre tout l'historique local : rejouer
+                # créerait un doublon. C'est le chemin nominal de reconnexion.
+                log.debug(
+                    "SESSION RESUMED gen=%s handle=present conversation=%s (pas de rejeu)",
+                    self.session_generation, self.conversation.conversation_id,
+                )
+                return False
+            # Le handle a été délivré AVANT la fin du dernier tour : le point
+            # de reprise ne peut pas contenir les messages apparus depuis.
+            # Reprendre tel quel perdrait le contexte le plus récent — c'est
+            # exactement le symptôme E12 (reconnexion OK, contexte FAIL).
+            self._record_trace(
+                "SESSION_RESUME_STALE_CHECKPOINT",
+                checkpoint=checkpoint,
+                local_messages=local_messages,
             )
-            return False
+            log.warning(
+                "gen=%s : handle de reprise antérieur au dernier tour "
+                "(checkpoint=%s, local=%s) — rejeu du contexte pour ne pas "
+                "perdre la conversation récente",
+                self.session_generation, checkpoint, local_messages,
+            )
         if SEED_MODE == "off":
             return False
         messages = self.conversation.get_messages()
@@ -1470,6 +1517,27 @@ class GeminiLive:
         )
         self._mic_stream_open = True
 
+    def notify_mic_paused(self) -> None:
+        """La porte anti-écho retient le micro depuis plus d'une seconde.
+
+        Thread-safe (appelé depuis le worker audio). On clôt le flux côté
+        Gemini avec ``audioStreamEnd`` : c'est l'exigence documentée de la
+        Live API quand le flux audio est mis en pause, et cela empêche la VAD
+        serveur de rester suspendue au milieu d'une activité (cause probable
+        de l'interruption tardive observée en validation réelle E01). Le
+        flux se rouvre automatiquement au prochain bloc réellement envoyé.
+        Aucun effet si aucun audio n'a été envoyé depuis la dernière clôture.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._end_mic_stream("mic_pause"), loop
+            )
+        except RuntimeError:  # pragma: no cover - boucle arrêtée entre-temps
+            pass
+
     async def _end_mic_stream(self, reason: str) -> None:
         """Clôt proprement le flux micro avant un ``clientContent`` de Jarvis.
 
@@ -1737,6 +1805,8 @@ class GeminiLive:
             "session_id": self.session_id,
             "turn_id": self.turn_id,
             "model_output_seen": bool(self._turn_model_content_seen),
+            "turn_audio_bytes": self._turn_audio_bytes,
+            "interruption_retry_pending": bool(self._interruption_retry_pending),
             "pending_response": self._pending_response_reason(),
             "interrupted_generation_pending": bool(self._interrupted_generation_pending),
             "seed_reply_pending": bool(self._seed_reply_pending),
@@ -1921,7 +1991,7 @@ class GeminiLive:
     # Fin de tour : génération annulée / sortie encore attendue (PR #50)
     # ------------------------------------------------------------------
 
-    def _absorb_interrupted_turn_complete(self, live_diag: dict) -> None:
+    async def _absorb_interrupted_turn_complete(self, live_diag: dict) -> None:
         """Traite le ``turn_complete`` d'une génération que le serveur a annulée.
 
         Référence Live API (``generationComplete``) : une génération interrompue
@@ -1943,6 +2013,50 @@ class GeminiLive:
             turn_open=turn_open,
             **live_diag,
         )
+        if turn_open and self._interruption_retry_pending:
+            current = " ".join(self._turn_user_text).strip()
+            retry_text = self._interruption_retry_text
+            self._interruption_retry_pending = False
+            self._interruption_retry_text = ""
+            if retry_text and current == retry_text and not self.interrupt_active():
+                # La génération annulée n'a jamais rien produit d'audible et
+                # aucune nouvelle parole n'est arrivée : la demande est
+                # toujours sans réponse. On la relance UNE fois, flux micro
+                # clos AVANT (la VAD serveur ne doit pas rester en activité).
+                self._record_trace(
+                    "INTERRUPTION_RETRY",
+                    text_chars=len(retry_text),
+                )
+                self._regeneration_pending = True
+                self._clear_interrupt()
+                self._interrupt_was_active = False
+                try:
+                    await self._end_mic_stream("interruption_retry")
+                    self._last_client_content_at = time.monotonic()
+                    await self.session.send_client_content(
+                        turns=[{"role": "user", "parts": [{"text": retry_text}]}],
+                        turn_complete=True,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "gen=%s : relance après interruption serveur impossible (%s) "
+                        "— le tour sera clos sans réponse", self.session_generation, exc,
+                    )
+                    self._regeneration_pending = False
+                    self._finish_turn()
+                    if self.on_interrupted:
+                        self._notify(self.on_interrupted)
+                    return
+                self._last_exchange = time.monotonic()
+                # Nouvel appel à receive() (le précédent est terminé sur ce
+                # turn_complete) : borné par le même mécanisme que la relance
+                # de génération vide, sans en consommer le quota.
+                await self._receive_one_turn_cycle(0)
+                return
+            self._record_trace(
+                "INTERRUPTION_RETRY_CANCELLED",
+                reason="nouvelle parole ou interruption locale",
+            )
         if turn_open:
             # Tour gardé ouvert (génération annulée avant toute réponse) ou tour
             # plus récent (sa transcription est déjà arrivée) : sa demande, sa
@@ -2096,6 +2210,10 @@ class GeminiLive:
             if sru is not None:
                 if sru.new_handle:
                     self.resumption_handle = sru.new_handle
+                    self._resumption_handle_message_count = len(
+                        self.conversation.get_messages()
+                    )
+                    self._resumption_handle_received_this_turn = not self._turn_closed
                 elif getattr(sru, "resumable", None) is False:
                     # Le serveur indique que la session n'est PAS reprenable à
                     # cet instant (exécution d'outil en cours, génération…).
@@ -2158,6 +2276,13 @@ class GeminiLive:
                     transcript = getattr(server_content, "input_transcription", None)
                     text = getattr(transcript, "text", None) if transcript else None
                     if text:
+                        if self._interruption_retry_pending:
+                            # Une vraie parole a suivi l'interruption : c'est
+                            # un barge-in, pas une annulation fantôme. La
+                            # relance ne doit pas parler par-dessus.
+                            self._interruption_retry_pending = False
+                            self._interruption_retry_text = ""
+                            self._record_trace("INTERRUPTION_RETRY_CANCELLED", reason="nouvelle transcription")
                         self._begin_turn_if_needed()
                         self._turn_user_text.append(str(text))
                         self._record_trace("GEMINI_USER_TRANSCRIPT", text=str(text))
@@ -2286,6 +2411,7 @@ class GeminiLive:
                         ):
 
                             self._turn_model_content_seen = True
+                            self._turn_audio_bytes += len(part.inline_data.data)
                             self.on_audio(
                                 part.inline_data.data
                             )
@@ -2347,13 +2473,55 @@ class GeminiLive:
                     "classification": classification,
                     "origin": origin,
                     "turn_id": self.turn_id,
+                    "audio_bytes": self._turn_audio_bytes,
                     "at": time.monotonic(),
                 }
                 self._record_trace(
                     "INTERRUPTION", source="serveur", origin=origin,
                     classification=classification, **live_diag,
                 )
-                if classification == "generation_annulee_avant_reponse":
+                # Interruption serveur AVANT toute réponse audible : sur les
+                # modèles audio natifs, la VAD peut annuler une génération
+                # naissante (pause entre deux phrases, écho, activité
+                # résiduelle). Fermer le tour ici laisse l'utilisateur sans
+                # réponse (E01 réel : transcription reçue, réponse vide,
+                # ``audio_bytes=0``). On garde le tour ouvert et on relance
+                # UNE fois la même demande après le ``turn_complete`` de la
+                # génération annulée. Une vraie interruption (barge-in local,
+                # arrêt manuel, ou au moins un octet audio déjà produit) suit
+                # le chemin historique.
+                spurious_before_audio = (
+                    classification == "interruption_reponse"
+                    and origin == "activite_vocale_serveur"
+                    and not had_local_interrupt
+                    and not manual_stop
+                    and has_user_text
+                    and self._turn_audio_bytes == 0
+                    and not self._interruption_retry_used
+                )
+                if spurious_before_audio:
+                    self._interruption_retry_pending = True
+                    self._interruption_retry_text = " ".join(self._turn_user_text).strip()
+                    self._interruption_retry_used = True
+                    # La transcription partielle appartient à la génération
+                    # ANNULÉE : elle a déjà été affichée à l'utilisateur, donc
+                    # on la verse à l'historique comme réponse interrompue.
+                    # On vide ensuite le tampon LIVE pour que la relance ne
+                    # s'y concatène pas (« Bonjour Adam » + « Bonjour Adam,
+                    # … »), avec un risque d'exactitude sur les tours
+                    # suivants (E09). Sans texte partiel, rien n'est versé.
+                    self._commit_assistant_text()
+                    self._turn_model_content_seen = False
+                    self._record_trace(
+                        "TURN_KEPT_OPEN",
+                        reason="interruption serveur avant toute réponse audible",
+                        text_turn=bool(self._text_turn_pending),
+                    )
+                    self._record_trace(
+                        "INTERRUPTION_RETRY_ARMED",
+                        text_chars=len(self._interruption_retry_text),
+                    )
+                elif classification == "generation_annulee_avant_reponse":
                     self._record_trace(
                         "TURN_KEPT_OPEN",
                         reason="génération annulée avant toute réponse",
@@ -2395,7 +2563,7 @@ class GeminiLive:
                 # Correctif PR #50 : « interrupted > turn_complete » — ce
                 # ``turn_complete`` clôt la génération ANNULÉE. Ni relance, ni
                 # fermeture du tour en cours (gardé ouvert, ou plus récent).
-                self._absorb_interrupted_turn_complete(live_diag)
+                await self._absorb_interrupted_turn_complete(live_diag)
             elif (
                 server_content
                 and server_content.turn_complete

@@ -96,6 +96,16 @@ class AudioIO:
     # pas : la sortie est vidée, la porte s'ouvre immédiatement.
     MIC_ECHO_GUARD_SECONDS = 0.25
 
+    #: Durée de pause du flux micro au-delà de laquelle la Live API doit être
+    #: prévenue (``send_realtime_input(audio_stream_end=True)``). Référence
+    #: Gemini Live : « When the audio stream is paused for more than a second
+    #: … an audioStreamEnd event should be sent to flush any cached audio. »
+    #: Sans cela, la VAD automatique du serveur peut rester au milieu d'une
+    #: activité et interpréter la reprise du micro comme un barge-in — signature
+    #: E01 : ``TTS_START`` puis ``INTERRUPTION`` en fin de génération. Ce délai
+    #: évite d'envoyer l'évènement pour les micro-pauses entre deux rafales.
+    MIC_STREAM_PAUSE_SECONDS = 1.0
+
     def __init__(self, on_input, presence_hook=None, voice_hook=None,
                  mic_enabled=None, wake_threshold=None,
                  volume_provider=None, listen_mode_provider=None,
@@ -156,6 +166,11 @@ class AudioIO:
         # était encore en file de sortie, et dernier état de la porte.
         self._output_last_pending_ts = 0.0
         self._mic_gate_state: bool | None = None
+        #: Appelé UNE fois quand le flux micro est resté fermé assez longtemps
+        #: pour que la Live API doive être prévenue (``audioStreamEnd``).
+        self.mic_pause_hook = None
+        self._mic_stream_paused_at = 0.0
+        self._mic_stream_pause_notified = False
         # Dernier bloc micro observé (RMS/peak int16) : contexte audio des
         # événements déclenchés ailleurs que par un bloc micro.
         self._last_mic_rms = 0.0
@@ -465,7 +480,39 @@ class AudioIO:
         ) >= self.MIC_ECHO_GUARD_SECONDS
 
     def _trace_mic_gate(self, open_now: bool) -> None:
-        """Journalise les transitions de la porte micro (état initial exclu)."""
+        """Journalise les transitions de la porte micro et signale les pauses.
+
+        La porte fermée n'est pas seulement un filtre local : côté serveur,
+        l'absence de blocs audio est une pause du flux. Au-delà de
+        ``MIC_STREAM_PAUSE_SECONDS``, la Live API exige ``audioStreamEnd``
+        pour vider son cache audio et clore l'activité VAD en cours. On
+        appelle ``mic_pause_hook`` UNE fois par fermeture (réarmé à la
+        réouverture), sans bloquer le thread audio.
+        """
+        now = time.monotonic()
+        if open_now:
+            self._mic_stream_paused_at = 0.0
+            self._mic_stream_pause_notified = False
+        else:
+            if self._mic_stream_paused_at <= 0.0:
+                self._mic_stream_paused_at = now
+            if (
+                not self._mic_stream_pause_notified
+                and now - self._mic_stream_paused_at >= self.MIC_STREAM_PAUSE_SECONDS
+            ):
+                self._mic_stream_pause_notified = True
+                hook = self.mic_pause_hook
+                if hook is not None:
+                    try:
+                        hook()
+                    except Exception as exc:  # pragma: no cover - défensif
+                        self._record_trace(
+                            "MIC_PAUSE_HOOK_FAILED", error=type(exc).__name__
+                        )
+                self._record_trace(
+                    "mic_stream_paused",
+                    seconds=round(now - self._mic_stream_paused_at, 2),
+                )
         if open_now == self._mic_gate_state:
             return
         self._mic_gate_state = open_now

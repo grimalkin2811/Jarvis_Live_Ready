@@ -695,15 +695,33 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
                 f"   [câble] reprise avec handle : session reprise={resumed}, {len(reseed)} clientContent "
                 "(0 attendu : le serveur restaure l'historique lui-même)"
             )
+            stale = [
+                e for e in runner.gemini.trace_events()
+                if e.get("kind") == "SESSION_RESUME_STALE_CHECKPOINT"
+                and e.get("session_generation", 0) > generation
+            ]
             turn = await runner.ask("Où est-ce que j'habite déjà ?", mode, client, tts_model)
             answer = (turn.get("assistant") or "").lower()
-            ok = "tours" in answer and len(reseed) == 0 and resumed
+            # Un rejeu après reprise n'est légitime QUE si le handle précède le
+            # dernier tour (checkpoint périmé) : c'est alors la seule façon de
+            # ne pas perdre le contexte (correctif E12). Sans checkpoint
+            # périmé, zéro rejeu est exigé (pas de doublon).
+            replay_ok = (len(reseed) == 0 and not stale) or (len(reseed) >= 1 and stale)
+            ok = "tours" in answer and resumed and replay_ok
             verdicts["SESSION RESUMPTION RÉELLE"] = "PASS" if ok else "FAIL"
+            safe_print(
+                f"   [contexte] checkpoint périmé={bool(stale)}, rejeux={len(reseed)}, "
+                f"réponse exploitable={'tours' in answer}"
+            )
             if "tours" not in answer:
                 notes.append("S3 : le rappel après reprise par handle a échoué — diagnostic : "
                              + runner.diagnostic())
-            if reseed:
-                notes.append("S3 : un rejeu a été envoyé malgré le handle (doublon potentiel).")
+            if stale and len(reseed) >= 1:
+                notes.append("S3 : checkpoint périmé détecté — rejeu volontaire pour préserver "
+                             "le contexte récent (attendu, ce n'est pas un doublon accidentel).")
+            elif reseed:
+                notes.append("S3 : un rejeu a été envoyé alors que le checkpoint couvrait "
+                             "l'historique (doublon potentiel).")
             if not resumed:
                 notes.append("S3 : la nouvelle session n'a pas été ouverte en reprise (handle refusé ?).")
     except Exception as exc:

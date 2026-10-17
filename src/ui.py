@@ -530,6 +530,9 @@ def _run_voice_loop(
             conversation=conversation,
             **menu_state.voice_backend_kwargs(),
         )
+        # Pause prolongée de la porte anti-écho : clore le flux côté Gemini
+        # (audioStreamEnd) pour que sa VAD ne reste pas au milieu d'une parole.
+        audio.mic_pause_hook = gemini.notify_mic_paused
 
         # Le Dashboard peut converser par écrit avec CETTE session (même
         # contexte, même moteur) : point d'entrée thread-safe enregistré
