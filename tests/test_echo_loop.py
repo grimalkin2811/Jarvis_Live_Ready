@@ -391,14 +391,24 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
         # si la boucle asyncio est retardée (observé sur le runner Windows).
         # Vérifier la porte à la source, au moment où le pont planifie l'envoi,
         # puis garder le contrôle acoustique sur les blocs effectivement reçus.
+        barge_ins_while_closed = [
+            e for e in lab.trace()
+            if e["kind"] == "barge_in" and gate_closed_ts <= e["ts"] <= reopen_ts
+        ]
+        self.assertEqual(
+            barge_ins_while_closed,
+            [],
+            f"interruption détectée sans nouvelle parole pendant la réponse: {barge_ins_while_closed}",
+        )
         submitted_while_closed = [
-            t for t in lab.mic_submit_times()
-            if gate_closed_ts <= t <= reopen_ts
+            event for event in lab.mic_submit_events()
+            if gate_closed_ts <= event["ts"] <= reopen_ts
         ]
         self.assertEqual(
             submitted_while_closed,
             [],
-            f"blocs micro soumis alors que la porte est fermée: {submitted_while_closed}",
+            f"blocs micro soumis alors que la porte est fermée: {submitted_while_closed}; "
+            f"événements porte/interruption: {[(e['ts'], e['kind'], e.get('state'), e.get('mic_rms')) for e in lab.trace() if e['kind'] in ('mic_gate', 'barge_in')]}",
         )
         for t, rms in forwarded:
             self.assertLess(
