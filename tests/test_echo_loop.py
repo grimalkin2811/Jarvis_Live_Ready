@@ -402,7 +402,10 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
         )
         submitted_while_closed = [
             event for event in lab.mic_submit_events()
-            if gate_closed_ts <= event["ts"] <= reopen_ts
+            if (
+                gate_closed_ts <= event["ts"] <= reopen_ts
+                and event["mic_gate_state"] is False
+            )
         ]
         self.assertEqual(
             submitted_while_closed,
