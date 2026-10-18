@@ -33,6 +33,7 @@ import sys
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
@@ -144,6 +145,37 @@ class MicGateUnitTests(unittest.TestCase):
             time.monotonic() - AudioIO.MIC_ECHO_GUARD_SECONDS - 0.05
         )
         self.assertTrue(self.audio._mic_gate_open())
+
+    def test_guard_starts_after_final_buffer_has_finished_playing(self) -> None:
+        """Le dernier buffer remis au pilote n'est pas encore audible en entier.
+
+        Avant le correctif, ``_queued_bytes`` passait à zéro dans ``_out`` et
+        la porte pouvait donc démarrer sa garde avant la fin de ce buffer.
+        """
+        frames = 1024
+        bytes_per_second = (
+            AudioIO.OUTPUT_RATE * AudioIO.CHANNELS * AudioIO.SAMPLE_WIDTH
+        )
+        played_bytes = frames * AudioIO.SAMPLE_WIDTH
+        self.audio.audio_started = True
+        self.audio.buffer = bytearray(b"\x01\x00" * frames)
+        self.audio._queued_bytes = played_bytes
+
+        with patch("src.audio.time.monotonic", return_value=100.0):
+            self.audio._out(bytearray(played_bytes), frames, None, None)
+
+        self.assertEqual(self.audio.output_pending_bytes(), 0)
+        playback_end = 100.0 + played_bytes / bytes_per_second
+        with patch(
+            "src.audio.time.monotonic",
+            return_value=playback_end + AudioIO.MIC_ECHO_GUARD_SECONDS - 0.001,
+        ):
+            self.assertFalse(self.audio._mic_gate_open())
+        with patch(
+            "src.audio.time.monotonic",
+            return_value=playback_end + AudioIO.MIC_ECHO_GUARD_SECONDS + 0.001,
+        ):
+            self.assertTrue(self.audio._mic_gate_open())
 
     def test_clear_output_opens_the_gate_immediately(self) -> None:
         self.audio.play(_tone(0.3, 4000, AudioIO.OUTPUT_RATE))

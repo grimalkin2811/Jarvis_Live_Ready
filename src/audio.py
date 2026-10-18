@@ -162,8 +162,11 @@ class AudioIO:
         self._trace_lock = threading.Lock()
         self._follow_up_epoch = 0
         self._last_follow_up_arm = 0.0
-        # Porte micro anti-écho : dernier instant où de la voix de Jarvis
-        # était encore en file de sortie, et dernier état de la porte.
+        # Porte micro anti-écho : fin du dernier bloc de voix remis à la
+        # carte son (donc encore susceptible d'être entendu), et dernier
+        # état de la porte.  Cette borne peut être légèrement dans le futur :
+        # ``_out`` remet un tampon au pilote avant que celui-ci ne soit
+        # effectivement restitué.
         self._output_last_pending_ts = 0.0
         self._mic_gate_state: bool | None = None
         #: Appelé UNE fois quand le flux micro est resté fermé assez longtemps
@@ -470,8 +473,12 @@ class AudioIO:
         """
         if self.output_pending_bytes() > 0:
             # Mémorise le dernier instant où de la voix était encore à
-            # jouer : la garde acoustique court à partir de là.
-            self._output_last_pending_ts = time.monotonic()
+            # jouer : la garde acoustique court à partir de là.  Ne pas
+            # écraser une échéance plus tardive posée par ``_out`` pour un
+            # tampon déjà remis au pilote.
+            self._output_last_pending_ts = max(
+                self._output_last_pending_ts, time.monotonic()
+            )
             return False
         if self._output_last_pending_ts <= 0.0:
             return True
@@ -1208,6 +1215,8 @@ class AudioIO:
 
         needed = len(outdata)
 
+        played_bytes = 0
+
         with self.lock:
 
             # Remplir le buffer avec les chunks Gemini.
@@ -1251,6 +1260,7 @@ class AudioIO:
 
                 self._queued_bytes -= available
                 self.buffer.clear()
+                played_bytes = available
 
             # Données suffisantes
             else:
@@ -1259,9 +1269,24 @@ class AudioIO:
 
                 self._queued_bytes -= needed
                 del self.buffer[:needed]
+                played_bytes = needed
 
         if self._queued_bytes < 0:
             self._queued_bytes = 0
+
+        if played_bytes:
+            # ``_queued_bytes`` devient nul dès que le callback a remis le
+            # dernier échantillon au pilote. Ce n'est pas encore la fin de
+            # sa restitution : le tampon dure ``played_bytes / débit``.
+            # Prolonger la référence de la garde anti-écho jusqu'à cette fin
+            # planifiée évite qu'un tick micro n'envoie le dernier écho au
+            # VAD entre la vidange logicielle et le dernier son audible.
+            playback_ends_at = time.monotonic() + (
+                played_bytes / float(self.OUTPUT_RATE * self.CHANNELS * self.SAMPLE_WIDTH)
+            )
+            self._output_last_pending_ts = max(
+                self._output_last_pending_ts, playback_ends_at
+            )
 
     # =========================================================
     # AUDIO REÇU DE GEMINI
