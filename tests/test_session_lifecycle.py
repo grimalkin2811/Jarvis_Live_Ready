@@ -249,6 +249,11 @@ class TestRealFollowUpStillHandledOnSameSession(_LifecycleTestCase):
 
         # 2. VRAIE deuxième phrase, prononcée AVANT l'expiration de la
         # fenêtre de 8 s (le test tourne bien plus vite que 8 s réelles).
+        # Même attente contractuelle que le test de reconnexion : parler
+        # pendant la traîne de lecture perd l'énoncé sur une machine lente
+        # (échec Windows « 2 != 0 » : tours fantômes d'écho pendant que la
+        # vraie phrase était retenue par la porte).
+        self.wait_mic_capturing(lab)
         lab.user_speaks(1.5)
         lab.wait_until(lambda: len(lab.user_turns()) >= 2, 8.0,
                        "deuxième tour utilisateur")

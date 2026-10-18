@@ -163,8 +163,13 @@ def symbol_family() -> str:
     return next((name for name in SYMBOL_FAMILIES if name in installed), "")
 
 
-EMBLEM_FPS = {"leger": 0, "normal": 15, "pousse": 30}
-BACKGROUND_FPS = {"leger": 0, "normal": 0, "pousse": 8}
+# Cadences « poussé » bornées par le budget CPU au repos (C10, mesuré à
+# 29,3 % d'un cœur sur Pentium Gold G5400 pour un seuil de 20 %) : le fond
+# animé repeint TOUTE la fenêtre et l'emblème tournait à 30 i/s. 20/5 i/s
+# restent visiblement plus riches que « normal » (15/0) en divisant par
+# ~1,6 le nombre de repeints au repos, sans toucher aux seuils.
+EMBLEM_FPS = {"leger": 0, "normal": 15, "pousse": 20}
+BACKGROUND_FPS = {"leger": 0, "normal": 0, "pousse": 5}
 TRANSITION_MS = {"leger": 0, "normal": 200, "pousse": 300}
 
 
