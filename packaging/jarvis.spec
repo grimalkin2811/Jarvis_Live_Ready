@@ -57,6 +57,10 @@ hiddenimports += [
     "UI.desktop_appearance_dialog",
     "UI.screen_halo_overlay",
 ]
+# Dashboard (v1.9) — widgets enregistrés explicitement mais importés à la
+# demande (registre, contrôleur créé dans run_ui) : on embarque tout le paquet.
+hiddenimports += collect_submodules("UI.dashboard")
+hiddenimports += ["UI.dashboard_bridge", "src.runtime_status"]
 # Musique Deezer (v1.5.2) — sous-modules chargés à la demande par tools.py
 hiddenimports += [
     "src.music",

@@ -33,6 +33,7 @@ import sys
 import time
 import types
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
@@ -144,6 +145,37 @@ class MicGateUnitTests(unittest.TestCase):
             time.monotonic() - AudioIO.MIC_ECHO_GUARD_SECONDS - 0.05
         )
         self.assertTrue(self.audio._mic_gate_open())
+
+    def test_guard_starts_after_final_buffer_has_finished_playing(self) -> None:
+        """Le dernier buffer remis au pilote n'est pas encore audible en entier.
+
+        Avant le correctif, ``_queued_bytes`` passait à zéro dans ``_out`` et
+        la porte pouvait donc démarrer sa garde avant la fin de ce buffer.
+        """
+        frames = 1024
+        bytes_per_second = (
+            AudioIO.OUTPUT_RATE * AudioIO.CHANNELS * AudioIO.SAMPLE_WIDTH
+        )
+        played_bytes = frames * AudioIO.SAMPLE_WIDTH
+        self.audio.audio_started = True
+        self.audio.buffer = bytearray(b"\x01\x00" * frames)
+        self.audio._queued_bytes = played_bytes
+
+        with patch("src.audio.time.monotonic", return_value=100.0):
+            self.audio._out(bytearray(played_bytes), frames, None, None)
+
+        self.assertEqual(self.audio.output_pending_bytes(), 0)
+        playback_end = 100.0 + played_bytes / bytes_per_second
+        with patch(
+            "src.audio.time.monotonic",
+            return_value=playback_end + AudioIO.MIC_ECHO_GUARD_SECONDS - 0.001,
+        ):
+            self.assertFalse(self.audio._mic_gate_open())
+        with patch(
+            "src.audio.time.monotonic",
+            return_value=playback_end + AudioIO.MIC_ECHO_GUARD_SECONDS + 0.001,
+        ):
+            self.assertTrue(self.audio._mic_gate_open())
 
     def test_clear_output_opens_the_gate_immediately(self) -> None:
         self.audio.play(_tone(0.3, 4000, AudioIO.OUTPUT_RATE))
@@ -307,9 +339,9 @@ class TestB_TwoPhrases(_EchoTestCase):
 class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
     """C : la sortie TTS ne doit jamais devenir une requête utilisateur.
 
-    Concrètement : pendant la lecture de la réponse (et jusqu'à la traîne
-    acoustique), le serveur ne reçoit AUCUN bloc micro — pas seulement des
-    blocs silencieux : la porte coupe le flux.
+    Pendant la lecture et la traîne acoustique, la porte ne soumet aucun
+    nouveau bloc micro ; les envois déjà planifiés peuvent arriver en retard,
+    mais aucun ne doit contenir l'écho de la réponse.
     """
 
     def test_no_mic_audio_reaches_server_while_speaking(self) -> None:
@@ -353,16 +385,33 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
             (t, rms) for t, rms in lab.audio_in()
             if gate_closed_ts <= t <= reopen_ts
         ]
-        # Un unique « traînard d'ordonnancement » est possible : un bloc
-        # capturé AVANT la mise en file de la réponse (le pont micro le
-        # programme via run_coroutine_threadsafe, sa coroutine peut
-        # atterrir après la fermeture tracée). Ce bloc ne peut contenir
-        # AUCUN écho : rien ne jouait encore au moment de sa capture.
-        # La propriété de sûreté est donc : au plus un bloc, et aucun bloc
-        # porteur d'écho (>= seuil VAD serveur) pendant la fenêtre fermée.
-        self.assertLessEqual(
-            len(forwarded), 1,
-            f"blocs micro transmis pendant la lecture de la réponse: {forwarded}"
+        # L'horodatage de ``audio_in`` est celui de l'arrivée sur le faux
+        # serveur, pas celui de la capture : ``run_coroutine_threadsafe`` peut
+        # donc livrer plusieurs blocs déjà soumis après la trace de fermeture
+        # si la boucle asyncio est retardée (observé sur le runner Windows).
+        # Vérifier la porte à la source, au moment où le pont planifie l'envoi,
+        # puis garder le contrôle acoustique sur les blocs effectivement reçus.
+        barge_ins_while_closed = [
+            e for e in lab.trace()
+            if e["kind"] == "barge_in" and gate_closed_ts <= e["ts"] <= reopen_ts
+        ]
+        self.assertEqual(
+            barge_ins_while_closed,
+            [],
+            f"interruption détectée sans nouvelle parole pendant la réponse: {barge_ins_while_closed}",
+        )
+        submitted_while_closed = [
+            event for event in lab.mic_submit_events()
+            if (
+                gate_closed_ts <= event["ts"] <= reopen_ts
+                and event["mic_gate_state"] is False
+            )
+        ]
+        self.assertEqual(
+            submitted_while_closed,
+            [],
+            f"blocs micro soumis alors que la porte est fermée: {submitted_while_closed}; "
+            f"événements porte/interruption: {[(e['ts'], e['kind'], e.get('state'), e.get('mic_rms')) for e in lab.trace() if e['kind'] in ('mic_gate', 'barge_in')]}",
         )
         for t, rms in forwarded:
             self.assertLess(
@@ -372,6 +421,17 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
         _ = during_playback, speaking_start
 
         # Après la réouverture : seul le bruit de fond (sous le seuil VAD).
+        # La trace « porte ouverte » précède l'arrivée du premier bloc au
+        # serveur (transmission via run_coroutine_threadsafe vers la boucle
+        # asyncio, prochain tick ADC à 80 ms) : lire le journal à l'instant
+        # même de la trace était une course, perdue sur un runner Windows
+        # chargé (CI PR #50, commit 2a62b94 — test réussi à la relance dans le
+        # même job). Attente BORNÉE du premier bloc : si le micro ne reprend
+        # pas, l'échec reste explicite.
+        try:
+            lab.wait_until(lambda: bool(lab.audio_in(since=reopen_ts)), 2.0, "reprise du micro après la réponse")
+        except TimeoutError:
+            pass
         after = lab.audio_in(since=reopen_ts)
         self.assertTrue(after, "le micro doit reprendre après la réponse")
         self.assertLess(max(rms for _, rms in after), lab.server.threshold_rms)
@@ -412,7 +472,9 @@ class TestD_Interrupt(_EchoTestCase):
 
         # Après l'interruption : silence total, aucun timer résiduel.
         silence_start = self.settle_response(lab, min_turns=2)
-        lab.wait(min(SILENCE_SECONDS, 12.0))
+        # Mode rapide : SILENCE_SECONDS vaut 6 s, moins que la fenêtre de
+        # suivi (8 s) — l'assertion « retour en veille » exige de la dépasser.
+        lab.wait(max(9.0, min(SILENCE_SECONDS, 12.0)))
 
         self.assertEqual(len(lab.ghost_turns(since=silence_start)), 0)
         self.assertEqual(len(lab.resets(since=silence_start)), 0)
@@ -510,7 +572,8 @@ class TestG_SessionChurn(_EchoTestCase):
         lab.wait(2.0)
 
         silence_start = time.monotonic()
-        lab.wait(min(SILENCE_SECONDS, 12.0))
+        # Idem : doit dépasser la fenêtre de 8 s, même en mode rapide.
+        lab.wait(max(9.0, min(SILENCE_SECONDS, 12.0)))
 
         self.assertEqual(len(lab.ghost_turns(since=silence_start)), 0)
         self.assertEqual(len(lab.resets(since=silence_start)), 0)

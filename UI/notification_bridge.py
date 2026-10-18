@@ -19,6 +19,11 @@ class NotificationBridge(QObject):
         self.pending = deque(maxlen=32)
         self.popup = None
         self._closed = False
+        # Filtres d'affichage natif (v1.9, Dashboard) : ``filtre(titre, message)``
+        # renvoie False pour NE PAS afficher une notification que le centre du
+        # Dashboard prend déjà en charge (anti-doublon). La publication reste
+        # « livrée » côté backend : seul l'affichage en double est évité.
+        self._filters: list = []
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._show_next)
@@ -26,9 +31,28 @@ class NotificationBridge(QObject):
         self._hook = self.received.emit
         notifications.add_hook(self._hook)
 
+    def add_filter(self, predicate) -> None:
+        if predicate not in self._filters:
+            self._filters.append(predicate)
+
+    def remove_filter(self, predicate) -> None:
+        if predicate in self._filters:
+            self._filters.remove(predicate)
+
+    def _allowed(self, title: str, message: str) -> bool:
+        for predicate in list(self._filters):
+            try:
+                if predicate(title, message) is False:
+                    return False
+            except Exception:
+                continue
+        return True
+
     @Slot(str, str)
     def _receive(self, title: str, message: str) -> None:
         if self._closed:
+            return
+        if not self._allowed(title, message):
             return
         self.pending.append((title, message))
         if not self._timer.isActive():
@@ -75,7 +99,7 @@ class NotificationBridge(QObject):
             self.popup.show()
             # Une fin de tâche reste volontairement silencieuse : elle ne doit
             # ni couvrir Gemini Native Audio ni prendre le contrôle du micro.
-            if title != "Tâche terminée":
+            if not title.endswith("Tâche terminée"):
                 QApplication.beep()
         # Sérialiser : deux routines à la même heure ne s'écrasent pas.
         self._timer.start(8500)

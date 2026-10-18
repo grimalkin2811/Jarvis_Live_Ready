@@ -59,6 +59,7 @@ import threading
 import time
 import unicodedata
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Sequence
 
@@ -440,6 +441,10 @@ class ConversationContext:
         self._epoch = 0
         self._trimmed = 0
         self._session_handler: Callable[[dict[str, Any]], None] | None = None
+        # Écouteurs de changement (v1.9, Dashboard) : appelés HORS verrou,
+        # après chaque mutation, depuis le thread qui a muté le contexte.
+        self._listeners: list[Callable[[dict[str, Any]], None]] = []
+        self._notify_local = threading.local()
 
         log.debug(
             "contexte créé id=%s provider=%s max_turns=%s max_tokens=%s enabled=%s",
@@ -501,7 +506,8 @@ class ConversationContext:
             self._messages.append(message)
             self._trim_locked()
             self._log_state("user", message)
-            return message
+        self._changed("user_message")
+        return message
 
     def extend_user_message(self, text: str) -> Message | None:
         """Complète la demande en cours (transcription vocale incrémentale).
@@ -514,19 +520,21 @@ class ConversationContext:
         cleaned = _clean_text(text)
         if not cleaned or not self.enabled:
             return None
-        with self._lock:
-            for index in range(len(self._messages) - 1, -1, -1):
-                message = self._messages[index]
-                if message.role != ROLE_USER or message.kind != KIND_TEXT:
-                    continue
-                if message.turn != self._turn:
-                    break
-                merged = _clean_text(f"{message.text} {cleaned}")
-                updated = replace(message, text=merged, tokens=estimate_tokens(merged) + 2)
-                self._messages[index] = updated
-                self._trim_locked()
-                return updated
-            return self.add_user_message(cleaned)
+        with self._batch():
+            with self._lock:
+                for index in range(len(self._messages) - 1, -1, -1):
+                    message = self._messages[index]
+                    if message.role != ROLE_USER or message.kind != KIND_TEXT:
+                        continue
+                    if message.turn != self._turn:
+                        break
+                    merged = _clean_text(f"{message.text} {cleaned}")
+                    updated = replace(message, text=merged, tokens=estimate_tokens(merged) + 2)
+                    self._messages[index] = updated
+                    self._trim_locked()
+                    self._changed("user_message_extended")
+                    return updated
+                return self.add_user_message(cleaned)
 
     def add_assistant_message(self, text: str) -> Message | None:
         """Réponse de Jarvis : clôt le tour en cours."""
@@ -541,7 +549,8 @@ class ConversationContext:
             self._open_turn = False
             self._trim_locked()
             self._log_state("assistant", message)
-            return message
+        self._changed("assistant_message")
+        return message
 
     def add_tool_call(self, name: str, args: Any = None) -> Message | None:
         """Appel d'outil décidé par le modèle, rattaché au tour courant."""
@@ -562,7 +571,8 @@ class ConversationContext:
             self._messages.append(message)
             self._trim_locked()
             self._log_state("tool_call", message)
-            return message
+        self._changed("tool_call")
+        return message
 
     def add_tool_result(self, name: str, result: Any) -> Message | None:
         """Résultat d'outil, compacté (jamais le payload JSON complet)."""
@@ -582,12 +592,14 @@ class ConversationContext:
             self._messages.append(message)
             self._trim_locked()
             self._log_state("tool_result", message)
-            return message
+        self._changed("tool_result")
+        return message
 
     def add_tool_interaction(self, name: str, args: Any, result: Any) -> tuple[Message | None, Message | None]:
         """Raccourci : appel + résultat, dans l'ordre, sans état intermédiaire."""
-        with self._lock:
-            return self.add_tool_call(name, args), self.add_tool_result(name, result)
+        with self._batch():
+            with self._lock:
+                return self.add_tool_call(name, args), self.add_tool_result(name, result)
 
     def close_turn(self, reason: str = "") -> bool:
         """Clôt le tour courant sans réponse texte (tour outil ou audio seul).
@@ -605,7 +617,8 @@ class ConversationContext:
                 "tour clos id=%s turn=%s raison=%s",
                 self._conversation_id, self._turn, reason or "fin de tour",
             )
-            return True
+        self._changed("turn_closed")
+        return True
 
     def fail_open_turn(self, reason: str = "") -> bool:
         """Marque le tour en cours comme échoué (appel LLM ou outil perdu).
@@ -633,7 +646,8 @@ class ConversationContext:
                 "tour échoué id=%s turn=%s marque=%s raison=%s",
                 self._conversation_id, self._turn, marked, reason or "inconnue",
             )
-            return marked
+        self._changed("turn_failed", failure_reason=str(reason or ""))
+        return marked
 
     # -- lecture -------------------------------------------------------------
 
@@ -732,6 +746,7 @@ class ConversationContext:
                 handler(dict(info))
             except Exception as exc:  # pragma: no cover - défensif
                 log.debug("handler de reset en échec : %s", exc)
+        self._changed("conversation_reset", previous_conversation_id=previous_id)
         return info
 
     #: Alias explicites : les appelants utilisent le nom qui leur parle.
@@ -774,6 +789,75 @@ class ConversationContext:
             # la même instance sont égales.
             if handler is None or self._session_handler == handler:
                 self._session_handler = None
+
+    # -- écouteurs de changement (Dashboard) ------------------------------------
+
+    def add_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        """Abonne ``listener(event)`` aux mutations du contexte.
+
+        ``event`` : ``{"reason", "conversation_id", "epoch", ...}``. L'appel a
+        lieu HORS verrou, dans le thread qui a muté le contexte (boucle
+        vocale, outil, interface) : l'écouteur doit être rapide et ne jamais
+        bloquer (typiquement : émettre un signal Qt en file d'attente). Le
+        contenu des messages n'est pas transmis : l'écouteur relit
+        ``get_messages()`` s'il en a besoin (source de vérité unique).
+        """
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners.append(listener)
+
+    def remove_listener(self, listener: Callable[[dict[str, Any]], None]) -> None:
+        with self._lock:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+    def listener_count(self) -> int:
+        with self._lock:
+            return len(self._listeners)
+
+    @contextmanager
+    def _batch(self):
+        """Regroupe les notifications d'une opération composée : elles partent
+        à la sortie du bloc le plus externe (donc après libération du verrou)."""
+        depth = getattr(self._notify_local, "depth", 0)
+        self._notify_local.depth = depth + 1
+        try:
+            yield
+        finally:
+            self._notify_local.depth = depth
+            if depth == 0:
+                pending = getattr(self._notify_local, "pending", None) or []
+                self._notify_local.pending = []
+                for event in pending:
+                    self._dispatch(event)
+
+    def _changed(self, reason: str, **extra: Any) -> None:
+        with self._lock:
+            event = {
+                "reason": reason,
+                "conversation_id": self._conversation_id,
+                "epoch": self._epoch,
+                "open_turn": self._open_turn,
+                "messages": len(self._messages),
+            }
+        event.update(extra)
+        if getattr(self._notify_local, "depth", 0) > 0:
+            pending = getattr(self._notify_local, "pending", None)
+            if pending is None:
+                pending = []
+                self._notify_local.pending = pending
+            pending.append(event)
+            return
+        self._dispatch(event)
+
+    def _dispatch(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            listeners = list(self._listeners)
+        for listener in listeners:
+            try:
+                listener(dict(event))
+            except Exception as exc:  # pragma: no cover - un écouteur ne casse rien
+                log.debug("écouteur de contexte en échec : %s", exc)
 
     # -- interne -------------------------------------------------------------
 

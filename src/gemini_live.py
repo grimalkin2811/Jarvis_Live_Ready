@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import concurrent.futures
 import os
 import threading
 import time
@@ -138,6 +139,19 @@ CONTEXT_COMPRESSION_ENABLED = _env_flag("JARVIS_LIVE_COMPRESSION", True)
 #: qu'aucune confirmation explicite n'a été observée.
 SEED_COMMIT_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_SEED_COMMIT_TIMEOUT", "5") or 5)
 
+#: Attente supplémentaire maximale (s), APRÈS ``SEED_COMMIT_TIMEOUT_SECONDS``,
+#: pendant laquelle un message ÉCRIT attend la fin de la réponse du modèle au
+#: rejeu de contexte (correctif PR #50, scénario réel E08).
+#:
+#: Cause : la porte s'ouvre en dégradé au bout de ``SEED_COMMIT_TIMEOUT_SECONDS``
+#: alors que la réponse au rejeu peut encore être en cours (historique long après
+#: une coupure réseau). Un ``clientContent`` « interrompt toute génération en
+#: cours » (référence Live API) : le texte coupait cette réponse, et Jarvis lui
+#: attribuait l'interruption et le ``turn_complete`` qui suit (tour écrit clos
+#: sans réponse, relance en boucle). La voix n'est pas concernée : l'audio temps
+#: réel n'interrompt rien tant que l'utilisateur ne parle pas.
+SEED_REPLY_WAIT_SECONDS = float(os.getenv("JARVIS_LIVE_SEED_REPLY_WAIT", "10") or 10)
+
 #: Nombre maximal de relances automatiques quand le serveur clôt un tour
 #: (``turn_complete``) sans AUCUN contenu (ni audio, ni transcription) alors
 #: que l'utilisateur a réellement parlé ce tour-ci.
@@ -173,6 +187,45 @@ SEED_COMMIT_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_SEED_COMMIT_TIMEOUT",
 EMPTY_GENERATION_MAX_RETRIES = int(
     os.getenv("JARVIS_LIVE_EMPTY_GENERATION_RETRIES", "2") or 0
 )
+
+#: Longueur maximale d'un message TEXTE (Dashboard, v1.9). Au-delà, l'envoi
+#: est refusé explicitement plutôt que tronqué en silence.
+TEXT_INPUT_MAX_CHARS = 4000
+
+#: Filet de sécurité (s) : si un message texte n'a reçu AUCUNE réponse du
+#: serveur dans ce délai, son tour est clos en échec (message conservé et
+#: marqué ``failed``) et la porte micro retenue pour lui est rouverte. Une
+#: réponse tardive est encore affichée normalement. Si le serveur n'a RIEN
+#: envoyé depuis l'envoi du texte, la session est considérée comme muette et
+#: relancée (même reprise que ``RESPONSE_STALL_TIMEOUT_SECONDS``).
+TEXT_TURN_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_TEXT_TURN_TIMEOUT", "30") or 30)
+
+#: Chien de garde « serveur muet » (s) — correctif PR #50, validation Windows
+#: réelle. Défaut serveur documenté (googleapis/python-genai#2117, google-
+#: gemini/cookbook#1225) : en pleine génération, l'audio cesse d'arriver, sans
+#: ``turn_complete``, sans ``generation_complete``, sans erreur, et le
+#: WebSocket reste ouvert. Sans borne, ``speaking`` (ou une relance, ou une
+#: demande transcrite) restait vrai indéfiniment : micro fermé (« jarvis
+#: parle »), texte refusé (« Jarvis est occupé »), Jarvis sourd jusqu'à une
+#: coupure réseau. Si une réponse est DUE et que le serveur n'a envoyé AUCUN
+#: message pendant ce délai, le tour est clos en échec (demande conservée) et
+#: la session est relancée (handle de reprise conservé : contexte restauré).
+#: Même ordre de grandeur que le filet texte : un flux de réponse réel ne se
+#: tait jamais aussi longtemps. Un outil local en cours n'est jamais compté.
+#: ``0`` désactive le chien de garde (diagnostic uniquement).
+RESPONSE_STALL_TIMEOUT_SECONDS = float(os.getenv("JARVIS_LIVE_STALL_TIMEOUT", "30") or 30)
+
+
+class TextSubmitError(RuntimeError):
+    """Refus explicite d'un message texte (Dashboard), avec un code stable.
+
+    Codes : ``empty``, ``too_long``, ``not_connected``, ``not_ready``,
+    ``busy``, ``send_failed``, ``loop_unavailable``.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class GeminiLive:
@@ -265,8 +318,23 @@ class GeminiLive:
         # que la trace réelle (g2-t8) montre juste avant chaque génération
         # vide suivante.
         self._regeneration_pending = False
+        # v1.9 (Dashboard) : un message TEXTE a été envoyé dans la session et
+        # attend sa réponse. Même logique de porte micro que
+        # ``_regeneration_pending`` (cf. cause racine S6) : aucun audio temps
+        # réel ne doit se mêler à un ``clientContent`` texte clos tant que le
+        # serveur n'a pas répondu, sauf interruption réelle de l'utilisateur.
+        # Faux par défaut : le chemin audio historique est strictement
+        # inchangé tant qu'aucun texte n'est envoyé.
+        self._text_turn_pending = False
         self.tool_active = False
         self.resumption_handle = None
+        #: Nombre de messages locaux au moment où le handle de reprise a été
+        #: reçu (None = inconnu, on fait confiance au serveur). Si l'historique
+        #: local a grandi depuis, le point de reprise peut être ANTÉRIEUR au
+        #: dernier tour : reprendre sans rejouer perdrait ce tour (échec réel
+        #: E12 « contexte après reconnexion »). On rejoue alors le contexte.
+        self._resumption_handle_message_count: int | None = None
+        self._resumption_handle_received_this_turn = False
         # Traçabilité de session (instrumentation du contexte conversationnel) :
         # ``session_generation`` distingue chaque session Gemini successive,
         # ``session_id`` est l'identifiant serveur (setupComplete), et
@@ -342,6 +410,18 @@ class GeminiLive:
         # génération totalement vide pour un vrai tour utilisateur (cf.
         # EMPTY_GENERATION_MAX_RETRIES ci-dessus), jamais à autre chose.
         self._turn_model_content_seen = False
+        #: Octets audio du modèle réellement remis au lecteur pour CE tour
+        #: (0 = rien d'audible). Sert à distinguer une interruption réelle
+        #: (l'utilisateur a entendu et coupe) d'une annulation serveur avant
+        #: toute réponse exploitable (E01 : TTS_START puis INTERRUPTION, mais
+        #: aucune réponse audible).
+        self._turn_audio_bytes = 0
+        self._interruption_retry_pending = False
+        self._interruption_retry_text = ""
+        #: Une seule relance par tour : une seconde interruption serveur
+        #: avant audio suit le chemin historique (clôture) pour ne jamais
+        #: boucler sur un serveur qui annule systématiquement.
+        self._interruption_retry_used = False
         # Vrai quand le tour courant est clos côté contexte : la prochaine
         # transcription entrante ouvre un nouveau tour (et ne recopie pas la
         # demande précédente, cf. interruption suivie de turn_complete).
@@ -349,8 +429,38 @@ class GeminiLive:
         # première transcription doit donc en ouvrir un explicitement (et
         # être comptée par ``turn_counter``/tracée en ``TURN_OPEN``).
         self._turn_closed = True
+        # Correctif PR #50 (validation réelle E01/E07/E09/E10) : la génération en
+        # cours vient d'être interrompue par le serveur (``interrupted``) et SON
+        # ``turn_complete`` est attendu (« interrupted > turn_complete »,
+        # référence Live API). Ce ``turn_complete`` clôt la génération ANNULÉE :
+        # ce n'est ni une génération vide du tour en cours (pas de relance), ni
+        # la fin d'un tour plus récent. Effacé à sa réception, ou dès qu'une
+        # nouvelle sortie du modèle prouve qu'une autre génération a commencé.
+        self._interrupted_generation_pending = False
+        #: Dernière interruption serveur (diagnostic : classification, source).
+        self._last_interruption: dict | None = None
+        #: Instant du dernier ``clientContent`` envoyé (source d'interruption).
+        self._last_client_content_at = 0.0
+        # Réponse du modèle au rejeu de contexte (``_seed_context``) encore
+        # attendue après l'ouverture de la porte (cf. SEED_REPLY_WAIT_SECONDS).
+        self._seed_reply_pending = False
+        self._seed_reply_deadline = 0.0
+        # De l'audio micro a été envoyé depuis le dernier ``audio_stream_end`` :
+        # le flux est « ouvert » côté VAD serveur.
+        self._mic_stream_open = False
         self._loop = None
         self._watcher_task = None
+        # Chien de garde « serveur muet » (cf. RESPONSE_STALL_TIMEOUT_SECONDS) :
+        # ``_last_server_message`` = dernier message REÇU du serveur ;
+        # ``_last_exchange`` = dernier échange qui relance l'attente (message
+        # reçu, ou requête qui oblige le serveur à répondre : texte, relance,
+        # réponse d'outil, session prête). Mises à jour sans coût sur le
+        # chemin nominal ; seule la tâche de surveillance les compare.
+        self._last_server_message = time.monotonic()
+        self._last_exchange = self._last_server_message
+        self._stall_task = None
+        #: Nombre de blocages serveur détectés puis repris (diagnostic).
+        self.stalls_recovered = 0
         self._voice_version_used = None
         # Vrai quand la session a été fermée volontairement pour appliquer un
         # réglage (changement de voix) : la boucle externe reconnecte
@@ -363,32 +473,54 @@ class GeminiLive:
         # coupe son tour côté serveur.
         self.interrupt_requested = False
         self._interrupt_until = 0.0
+        #: Époque du tour arrêté MANUELLEMENT (cf. ``request_interrupt``).
+        self._manual_stop_epoch = None
         self._interrupt_was_active = False
 
     # ------------------------------------------------------------------
     # Interruption de la réponse en cours
     # ------------------------------------------------------------------
 
-    def request_interrupt(self) -> None:
+    def request_interrupt(self, manual: bool = False) -> None:
         """Demande l'arrêt de la réponse en cours (appelable depuis un
-        autre thread : n'écrit que des attributs simples)."""
+        autre thread : n'écrit que des attributs simples).
+
+        ``manual=True`` (bouton Stop du Dashboard, menu radial, touche S) :
+        correctif PR #50. Un clic est silencieux — le serveur n'entend rien
+        et poursuit sa génération — et aucune fausse détection n'est
+        possible. AVANT : passé la fenêtre de 4 s (prévue pour un barge-in
+        vocal mal détecté), la réponse stoppée REPRENAIT au milieu d'une
+        phrase et le micro se refermait (« jarvis parle »). Désormais l'audio
+        restant de CE tour est jeté jusqu'à sa fin côté serveur (fin de tour
+        ou interruption), le micro restant ouvert pour que l'utilisateur
+        puisse parler. Ancré sur ``turn_epoch`` : jamais au-delà du tour
+        stoppé ; sans effet si le serveur avait déjà tout envoyé.
+        """
         self._interrupt_until = time.monotonic() + INTERRUPT_WINDOW_SECONDS
         self.interrupt_requested = True
+        if manual and self.speaking:
+            self._manual_stop_epoch = self.turn_epoch
 
     def interrupt_active(self) -> bool:
         """Vrai tant que l'interruption locale est en cours (fenêtre)."""
         if not self.interrupt_requested:
             return False
+        manual_epoch = self._manual_stop_epoch
+        if manual_epoch is not None and manual_epoch == self.turn_epoch and self.speaking:
+            # Arrêt manuel : le tour stoppé n'est pas terminé côté serveur.
+            return True
         if time.monotonic() >= self._interrupt_until:
             # Gemini n'a pas confirmé : on reprend le cours normal plutôt
             # que de rester bloqué.
             self.interrupt_requested = False
+            self._manual_stop_epoch = None
             return False
         return True
 
     def _clear_interrupt(self) -> None:
         self.interrupt_requested = False
         self._interrupt_until = 0.0
+        self._manual_stop_epoch = None
 
     # ------------------------------------------------------------------
     # Évènements d'interface (v1.7.0)
@@ -530,6 +662,10 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_model_content_seen = False
+        self._turn_audio_bytes = 0
+        self._interruption_retry_pending = False
+        self._interruption_retry_text = ""
+        self._interruption_retry_used = False
         self.turn_counter += 1
         log.debug(
             "TURN START gen=%s conversation=%s",
@@ -547,9 +683,15 @@ class GeminiLive:
         """
         self._commit_user_text()
         self._commit_assistant_text()
+        if self._resumption_handle_received_this_turn:
+            # Le handle reçu pendant CE tour couvre la réponse qui vient
+            # d'être committée localement (le serveur l'a produite).
+            self._resumption_handle_message_count = len(self.conversation.get_messages())
+            self._resumption_handle_received_this_turn = False
         self.conversation.close_turn("fin de tour")
         already_closed = self._turn_closed
         self._turn_closed = True
+        self._text_turn_pending = False
         log.debug(
             "TURN COMPLETE gen=%s conversation=%s messages=%s",
             self.session_generation, self.conversation.conversation_id,
@@ -581,6 +723,9 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_closed = False
+        self._text_turn_pending = False
+        self._interrupted_generation_pending = False
+        self._seed_reply_pending = False
         self._session_ready = False
         if self.session is None and self.ctx is None:
             return
@@ -631,13 +776,32 @@ class GeminiLive:
         if self.session is None:
             return False
         if self.resumption_handle:
-            # Le serveur a restauré la conversation lui-même : rejouer
-            # créerait un doublon. C'est le chemin nominal de reconnexion.
-            log.debug(
-                "SESSION RESUMED gen=%s handle=present conversation=%s (pas de rejeu)",
-                self.session_generation, self.conversation.conversation_id,
+            local_messages = len(self.conversation.get_messages())
+            checkpoint = self._resumption_handle_message_count
+            if checkpoint is None or local_messages <= checkpoint:
+                # Le serveur a restauré la conversation lui-même et le point
+                # de reprise couvre tout l'historique local : rejouer
+                # créerait un doublon. C'est le chemin nominal de reconnexion.
+                log.debug(
+                    "SESSION RESUMED gen=%s handle=present conversation=%s (pas de rejeu)",
+                    self.session_generation, self.conversation.conversation_id,
+                )
+                return False
+            # Le handle a été délivré AVANT la fin du dernier tour : le point
+            # de reprise ne peut pas contenir les messages apparus depuis.
+            # Reprendre tel quel perdrait le contexte le plus récent — c'est
+            # exactement le symptôme E12 (reconnexion OK, contexte FAIL).
+            self._record_trace(
+                "SESSION_RESUME_STALE_CHECKPOINT",
+                checkpoint=checkpoint,
+                local_messages=local_messages,
             )
-            return False
+            log.warning(
+                "gen=%s : handle de reprise antérieur au dernier tour "
+                "(checkpoint=%s, local=%s) — rejeu du contexte pour ne pas "
+                "perdre la conversation récente",
+                self.session_generation, checkpoint, local_messages,
+            )
         if SEED_MODE == "off":
             return False
         messages = self.conversation.get_messages()
@@ -696,7 +860,31 @@ class GeminiLive:
         # ``context_seeded=True`` était pris à tort pour une preuve que le
         # contexte était déjà exploitable par le modèle.
         if turn_complete:
+            self._last_client_content_at = time.monotonic()
+            # La réponse du modèle au rejeu est attendue : si elle n'arrive pas
+            # dans ``SEED_COMMIT_TIMEOUT_SECONDS``, elle reste « en vol » (bornée)
+            # après l'ouverture de la porte, cf. ``SEED_REPLY_WAIT_SECONDS``.
+            self._seed_reply_pending = True
+            self._seed_reply_deadline = (
+                time.monotonic() + SEED_COMMIT_TIMEOUT_SECONDS + SEED_REPLY_WAIT_SECONDS
+            )
             self.context_seed_confirmed = await self._await_seed_commit()
+            if self.context_seed_confirmed:
+                self._seed_reply_pending = False
+            else:
+                self._record_trace(
+                    "SEED_REPLY_STILL_EXPECTED",
+                    wait_s=SEED_REPLY_WAIT_SECONDS,
+                )
+        return True
+
+    def _seed_reply_in_flight(self) -> bool:
+        """Vrai si la réponse du modèle au rejeu de contexte peut encore arriver."""
+        if not self._seed_reply_pending:
+            return False
+        if time.monotonic() >= self._seed_reply_deadline:
+            self._seed_reply_pending = False
+            return False
         return True
 
     async def _await_seed_commit(self) -> bool:
@@ -797,6 +985,8 @@ class GeminiLive:
         # prioritaire : l'utilisateur doit toujours pouvoir couper court.
         if self._regeneration_pending and not self.interrupt_active():
             return False, "relance de generation en cours"
+        if self._text_turn_pending and not self.interrupt_active():
+            return False, "message texte en cours"
         # Pendant une interruption, le micro doit passer : c'est ainsi que
         # Gemini entend « stop » et arrête réellement son tour.
         if self.speaking and not self.interrupt_active():
@@ -925,6 +1115,9 @@ class GeminiLive:
             "Pour savoir ce qui est réellement affiché, get_ui_state. "
             "Pour « passe en mode Desktop » ou « passe en mode Blob », appelle set_interface_mode avec mode='desktop' ou mode='blob' : "
             "le changement est immédiat et persistant, sans redémarrage. "
+            "Pour « ouvre le Dashboard » / « affiche le tableau de bord » (éventuellement une page : mémoire, "
+            "tâches, système…), appelle open_dashboard ; pour le fermer, close_dashboard. Le Dashboard coexiste "
+            "avec l'orbe et le Desktop : l'ouvrir ne change pas de mode. "
             "Pour « active/désactive la routine hydratation », utilise update_routine avec name et enabled=true/false uniquement : "
             "ne la recrée pas, ne demande aucun horaire ni paramètre supplémentaire. En cas de nom ambigu, liste les routines. "
             "Une routine désactivée ne peut pas être lancée ; son activation ne lance pas immédiatement ses étapes, "
@@ -1160,6 +1353,7 @@ class GeminiLive:
         # pendant que le serveur génère encore sa réponse à ce rejeu.
         self.context_seeded = await self._seed_context()
         self._session_ready = True
+        self._last_exchange = time.monotonic()
         # Diagnostic (v1.7.4 — validation réelle, item #7 de l'audit) :
         # marqueur explicite de l'instant où le micro est de nouveau autorisé
         # à écrire sur CETTE session (``_can_send_now`` refuse tout envoi
@@ -1177,6 +1371,7 @@ class GeminiLive:
             context_seed_confirmed=self.context_seed_confirmed,
         )
         self._start_voice_watcher()
+        self._start_response_watchdog()
 
     def _start_voice_watcher(self) -> None:
         """Surveille les changements de voix pour reconnecter proprement."""
@@ -1320,6 +1515,304 @@ class GeminiLive:
                 mime_type="audio/pcm;rate=16000"
             )
         )
+        self._mic_stream_open = True
+
+    def notify_mic_paused(self) -> None:
+        """La porte anti-écho retient le micro depuis plus d'une seconde.
+
+        Thread-safe (appelé depuis le worker audio). On clôt le flux côté
+        Gemini avec ``audioStreamEnd`` : c'est l'exigence documentée de la
+        Live API quand le flux audio est mis en pause, et cela empêche la VAD
+        serveur de rester suspendue au milieu d'une activité (cause probable
+        de l'interruption tardive observée en validation réelle E01). Le
+        flux se rouvre automatiquement au prochain bloc réellement envoyé.
+        Aucun effet si aucun audio n'a été envoyé depuis la dernière clôture.
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._end_mic_stream("mic_pause"), loop
+            )
+        except RuntimeError:  # pragma: no cover - boucle arrêtée entre-temps
+            pass
+
+    async def _end_mic_stream(self, reason: str) -> None:
+        """Clôt proprement le flux micro avant un ``clientContent`` de Jarvis.
+
+        Correctif PR #50. Quand Jarvis retient la porte micro pour un tour qu'il
+        envoie lui-même (message écrit, relance de génération vide), le flux
+        audio s'arrête net. Si l'utilisateur parlait, la VAD automatique du
+        serveur reste au milieu d'une activité qui ne se termine jamais
+        (documentation Live API : un flux suspendu doit être clos par
+        ``audioStreamEnd``, qui vide l'audio en cache ; le flux se rouvre au
+        prochain bloc audio). Sans effet si aucun audio n'est parti depuis la
+        dernière clôture. Un échec n'interrompt jamais le tour (simple trace).
+        """
+        session = self.session
+        if session is None or not self._mic_stream_open:
+            return
+        self._mic_stream_open = False
+        try:
+            await session.send_realtime_input(audio_stream_end=True)
+        except Exception as exc:
+            log.debug("gen=%s : audio_stream_end refusé (%s)", self.session_generation, exc)
+            self._record_trace("AUDIO_STREAM_END_FAILED", reason=reason, error=type(exc).__name__)
+            return
+        self._record_trace("AUDIO_STREAM_END", reason=reason)
+
+    # ------------------------------------------------------------------
+    # Entrée TEXTE (Dashboard, v1.9)
+    # ------------------------------------------------------------------
+
+    def _text_busy_reason(self) -> str:
+        """Raison pour laquelle un message texte ne peut PAS partir maintenant.
+
+        Une seule demande à la fois dans la session : un message texte ne
+        doit jamais se superposer à un tour vocal ou textuel en cours (ordre
+        USER -> OUTILS -> ASSISTANT du contexte, porte micro, relances).
+        """
+        if self.interrupt_active():
+            return "Interruption en cours : réessaie dans un instant."
+        if self.tool_active:
+            return "Jarvis exécute une action : réessaie quand elle sera terminée."
+        if self._regeneration_pending:
+            return "Jarvis relance une réponse : réessaie dans un instant."
+        if self._text_turn_pending:
+            return "Un message est déjà en attente de réponse."
+        if self.speaking:
+            return "Jarvis est en train de répondre : interromps-le ou attends la fin."
+        if not self._turn_closed and (self._turn_user_text or self._turn_model_text):
+            return "Une demande vocale est en cours de traitement."
+        return ""
+
+    def _abort_text_turn(self, reason: str, source: str = "text_input_failed") -> None:
+        """Clôt en échec un tour texte dont l'envoi (ou la réponse) n'a pas abouti."""
+        self.conversation.fail_open_turn(reason)
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self._text_turn_pending = False
+        already_closed = self._turn_closed
+        self._turn_closed = True
+        if not already_closed:
+            self.turn_epoch += 1
+            self._record_trace("TURN_CLOSE", source=source)
+            self._notify(self.on_turn_resolved)
+
+    async def submit_text(self, text: str) -> dict:
+        """Envoie un message TEXTE dans la session Live courante.
+
+        Doit s'exécuter sur la boucle asyncio de la session (voir
+        ``submit_text_threadsafe``). Le message devient un tour utilisateur
+        ordinaire : versé au contexte partagé (une seule source de vérité),
+        visible par l'orbe/Desktop (``on_user_transcript``), couvert par la
+        relance de génération vide, par l'extraction mémoire existante et
+        rejoué après reconnexion. La réponse arrive par le chemin normal
+        (audio + transcription) : rien n'est simulé.
+
+        Lève ``TextSubmitError`` (code stable) si l'envoi est impossible ;
+        n'altère alors ni le contexte ni l'état de tour.
+        """
+        cleaned = str(text or "").strip()
+        if not cleaned:
+            raise TextSubmitError("empty", "Message vide.")
+        if len(cleaned) > TEXT_INPUT_MAX_CHARS:
+            raise TextSubmitError(
+                "too_long",
+                f"Message trop long ({len(cleaned)} caractères, maximum {TEXT_INPUT_MAX_CHARS}).",
+            )
+        if self.session is None:
+            raise TextSubmitError("not_connected", "Jarvis n'est pas connecté au modèle.")
+        if not self._session_ready:
+            raise TextSubmitError("not_ready", "La session se prépare : réessaie dans un instant.")
+        if self._seed_reply_in_flight():
+            # E08 : ne pas couper la réponse du modèle au rejeu de contexte (le
+            # ``clientContent`` du texte l'interromprait) ; attente bornée.
+            await self._wait_seed_reply()
+            if self.session is None:
+                raise TextSubmitError("not_connected", "Jarvis n'est pas connecté au modèle.")
+            if not self._session_ready:
+                raise TextSubmitError("not_ready", "La session se prépare : réessaie dans un instant.")
+        busy = self._text_busy_reason()
+        if busy:
+            raise TextSubmitError("busy", busy)
+        session = self.session
+        if not self._turn_user_text and not self._turn_model_text:
+            # Aucun tour réellement en cours (y compris après un échec ou un
+            # reset, où ``_turn_closed`` peut rester faux avec des tampons
+            # vides) : le message ouvre un VRAI nouveau tour, compté et
+            # annoncé (``on_turn_open`` suspend la fenêtre de conversation).
+            self._turn_closed = True
+        self._begin_turn_if_needed()
+        self._turn_user_text.append(cleaned)
+        self._text_turn_pending = True
+        self._record_trace("TEXT_INPUT_SENT", chars=len(cleaned))
+        # « Jarvis traite » AVANT la transcription (correctif PR #50) : pour
+        # l'overlay Desktop, une transcription signifie « l'utilisateur
+        # parle » et faisait passer un halo caché en « à l'écoute » pendant
+        # le traitement d'un message ÉCRIT. Dans cet ordre, l'état affiché
+        # est « réflexion » et le texte de la demande reste affiché.
+        self._notify(self.on_thinking)
+        self._notify(self.on_user_transcript, cleaned, True)
+        self._commit_user_text()
+        # Époque du tour CAPTURÉE AVANT l'envoi (audit pré-fusion) : pendant
+        # l'``await`` ci-dessous, la boucle de réception peut déjà clore ce
+        # tour (``turn_epoch`` avance). Capturée après, l'époque serait celle
+        # du tour SUIVANT et ce filet rouvrirait trop tôt la porte micro d'un
+        # second message texte envoyé entre-temps.
+        epoch = self.turn_epoch
+        generation = self.session_generation
+        try:
+            # La porte micro est retenue (``_text_turn_pending``) : le flux audio
+            # est clos proprement AVANT le texte (VAD serveur jamais suspendue).
+            await self._end_mic_stream("text_input")
+            self._last_client_content_at = time.monotonic()
+            await session.send_client_content(
+                turns=[{"role": "user", "parts": [{"text": cleaned}]}],
+                turn_complete=True,
+            )
+        except asyncio.CancelledError:
+            # Envoi annulé (``Future`` annulé par l'appelant) : on ignore si le
+            # serveur a reçu le texte. Le tour est clos en échec AVANT de
+            # propager l'annulation : la porte micro ne reste jamais fermée
+            # sans filet (le watchdog n'est pas encore armé à ce stade).
+            self._abort_text_turn("envoi texte annulé")
+            raise
+        except Exception as exc:
+            log.warning("gen=%s : envoi du message texte impossible (%s)", self.session_generation, exc)
+            self._abort_text_turn("envoi texte impossible")
+            raise TextSubmitError(
+                "send_failed", "Envoi impossible : la connexion au modèle a été interrompue."
+            ) from exc
+        # Le serveur doit maintenant répondre : l'attente part de l'envoi.
+        sent_at = time.monotonic()
+        self._last_exchange = sent_at
+        try:
+            asyncio.get_running_loop().call_later(
+                TEXT_TURN_TIMEOUT_SECONDS, self._text_turn_watchdog, epoch, sent_at, generation
+            )
+        except RuntimeError:  # pragma: no cover - hors boucle
+            pass
+        return {
+            "accepted": True,
+            "session_generation": self.session_generation,
+            "turn": self.turn_counter,
+            "chars": len(cleaned),
+        }
+
+    async def _wait_seed_reply(self) -> None:
+        """Attend (borné) la fin de la réponse du modèle au rejeu de contexte."""
+        generation = self.session_generation
+        started = time.monotonic()
+        self._record_trace("TEXT_INPUT_WAITING_SEED_REPLY")
+        received = False
+        while self.session is not None and self.session_generation == generation:
+            if not self._seed_reply_pending:
+                received = True
+                break
+            if time.monotonic() >= self._seed_reply_deadline:
+                # Rien n'est venu (modèle à commit silencieux, ou réponse perdue) :
+                # on n'attend plus, ni pour ce message ni pour les suivants.
+                self._seed_reply_pending = False
+                break
+            await asyncio.sleep(0.05)
+        self._record_trace(
+            "TEXT_INPUT_SEED_REPLY_DONE",
+            waited_s=round(time.monotonic() - started, 2),
+            seed_reply_received=received,
+        )
+
+    def _text_turn_watchdog(self, epoch: int, sent_at: float | None = None,
+                            generation: int | None = None) -> None:
+        """Le serveur n'a jamais répondu au texte : le tour est clos, rien ne reste bloqué.
+
+        AVANT (constaté en validation PR #50) : seule la porte micro était
+        rouverte ; le tour restait ouvert avec le texte, si bien que chaque
+        message écrit suivant était refusé (« Une demande vocale est en cours
+        de traitement », message de surcroît inexact) jusqu'à la fin d'un
+        autre tour. Désormais le tour est clos en échec (message conservé,
+        marqué ``failed``) ; si le serveur n'a RIEN envoyé depuis l'envoi, la
+        session est muette et elle est relancée (chien de garde).
+        """
+        if generation is not None and generation != self.session_generation:
+            # Filet d'un message envoyé dans une session PRÉCÉDENTE (correctif
+            # PR #50) : ``_fail_open_turn`` a déjà clos ce tour-là ; sans ce
+            # contrôle, il fermait le message écrit de la nouvelle session.
+            return
+        if not (
+            self._text_turn_pending
+            and self.turn_epoch == epoch
+            and not self._turn_model_content_seen
+        ):
+            return
+        self._record_trace("TEXT_TURN_TIMEOUT", timeout=TEXT_TURN_TIMEOUT_SECONDS)
+        if (
+            sent_at is not None
+            and self.session is not None
+            and self._last_server_message <= sent_at
+        ):
+            # Aucun message du serveur depuis l'envoi : même reprise que le
+            # chien de garde (tour clos en échec, session relancée).
+            silence = time.monotonic() - sent_at
+            try:
+                asyncio.ensure_future(self._recover_from_stall("message écrit sans réponse", silence))
+                return
+            except RuntimeError:  # pragma: no cover - boucle arrêtée
+                pass
+        log.warning(
+            "gen=%s : aucune réponse au message texte après %.0f s -- tour clos en échec, micro rouvert",
+            self.session_generation, TEXT_TURN_TIMEOUT_SECONDS,
+        )
+        self._abort_text_turn("aucune réponse du modèle au message écrit", source="text_turn_timeout")
+
+    def submit_text_threadsafe(self, text: str) -> "concurrent.futures.Future":
+        """Point d'entrée thread-safe de ``submit_text`` (thread Qt, tests).
+
+        Ne bloque jamais l'appelant : retourne un ``concurrent.futures.Future``
+        résolu sur la boucle de la session (``TextSubmitError`` en cas de
+        refus). Toutes les vérifications d'état ont lieu SUR la boucle, au
+        moment de l'envoi — jamais sur le thread appelant (même principe
+        que ``send_audio``).
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed() or not loop.is_running():
+            future: concurrent.futures.Future = concurrent.futures.Future()
+            future.set_exception(TextSubmitError("loop_unavailable", "Le moteur vocal n'est pas actif."))
+            return future
+        return asyncio.run_coroutine_threadsafe(self.submit_text(text), loop)
+
+    def engine_snapshot(self) -> dict:
+        """État lisible (diagnostic) — lecture seule, jamais de contenu échangé."""
+        return {
+            "model": self.model,
+            "session_generation": self.session_generation,
+            "session_open": self.session is not None,
+            "session_ready": bool(self._session_ready),
+            "speaking": bool(self.speaking),
+            "tool_active": bool(self.tool_active),
+            "regeneration_pending": bool(self._regeneration_pending),
+            "text_turn_pending": bool(self._text_turn_pending),
+            "turn_open": not self._turn_closed and bool(self._turn_user_text or self._turn_model_text),
+            "stalls_recovered": self.stalls_recovered,
+            "turn_counter": self.turn_counter,
+            "context_seeded": bool(self.context_seeded),
+            "context_seed_confirmed": bool(self.context_seed_confirmed),
+            "resumable": bool(self.resumption_handle),
+            # Diagnostics du cycle de tour (correctif PR #50) : identifiants
+            # techniques et états seulement, jamais de texte échangé.
+            "session_id": self.session_id,
+            "turn_id": self.turn_id,
+            "model_output_seen": bool(self._turn_model_content_seen),
+            "turn_audio_bytes": self._turn_audio_bytes,
+            "interruption_retry_pending": bool(self._interruption_retry_pending),
+            "pending_response": self._pending_response_reason(),
+            "interrupted_generation_pending": bool(self._interrupted_generation_pending),
+            "seed_reply_pending": bool(self._seed_reply_pending),
+            "last_server_message_age_s": round(time.monotonic() - self._last_server_message, 1),
+            "last_interruption": self._interruption_snapshot(),
+        }
 
     async def receive_loop(self) -> None:
         try:
@@ -1342,6 +1835,10 @@ class GeminiLive:
         rester référençable après une coupure), la réponse partielle éventuelle
         est conservée elle aussi ; sinon le tour est marqué ``failed``.
         """
+        had_turn = not self._turn_closed and bool(
+            self._turn_user_text or self._turn_model_text or self._turn_model_content_seen
+            or self._text_turn_pending or self._regeneration_pending
+        )
         self._commit_user_text()
         if self._turn_model_text:
             self._commit_assistant_text()
@@ -1350,11 +1847,271 @@ class GeminiLive:
         self._turn_user_text.clear()
         self._turn_model_text.clear()
         self._user_text_committed = ""
-        self._turn_closed = False
+        # Correctif PR #50 : le tour est CLOS (auparavant ``_turn_closed=False``
+        # avec des tampons vides). Sinon la première transcription de la session
+        # suivante n'ouvrait pas de tour (ni ``TURN_OPEN`` ni ``on_turn_open``)
+        # et héritait de ``_turn_model_content_seen`` : une demande vocale restée
+        # sans réponse après une reconnexion échappait au chien de garde.
+        self._turn_closed = True
+        self._turn_model_content_seen = False
+        self._interrupted_generation_pending = False
+        self._seed_reply_pending = False
+        # La session ne parle plus (``_shutdown_session`` le confirme ensuite).
+        self.speaking = False
         # Une session qui s'arrête pendant une relance de génération vide ne
         # doit pas laisser la porte micro fermée indéfiniment pour la session
         # SUIVANTE (même instance ``GeminiLive`` réutilisée à la reconnexion).
         self._regeneration_pending = False
+        self._text_turn_pending = False
+        if had_turn:
+            self.turn_epoch += 1
+            self._record_trace("TURN_CLOSE", source="session_end", reason=reason)
+            # ``AudioIO`` lève la suspension posée par ``on_turn_open``.
+            self._notify(self.on_turn_resolved)
+
+    # ------------------------------------------------------------------
+    # Chien de garde « serveur muet » (correctif PR #50)
+    # ------------------------------------------------------------------
+
+    def _pending_response_reason(self) -> str:
+        """Pourquoi une réponse du serveur est DUE à cet instant (``""`` sinon).
+
+        Un outil local en cours n'en fait jamais partie : la boucle de
+        réception attend alors l'outil (``asyncio.to_thread``), pas le serveur,
+        et un outil peut légitimement durer.
+        """
+        if self.session is None or not self._session_ready or self.tool_active:
+            return ""
+        if self._regeneration_pending:
+            return "relance de génération sans réponse"
+        if self.speaking:
+            return "réponse vocale arrêtée en cours de route"
+        if self._text_turn_pending:
+            return "message écrit sans réponse"
+        if (
+            not self._turn_closed
+            and " ".join(self._turn_user_text).strip()
+            and not self._turn_model_content_seen
+        ):
+            return "demande vocale sans réponse"
+        return ""
+
+    def _start_response_watchdog(self) -> None:
+        if RESPONSE_STALL_TIMEOUT_SECONDS <= 0:
+            return
+        task = self._stall_task
+        if task is not None and not task.done():
+            return
+        try:
+            self._stall_task = asyncio.create_task(
+                self._watch_response_stall(self.session_generation)
+            )
+        except RuntimeError:  # pragma: no cover - hors boucle asyncio
+            self._stall_task = None
+
+    async def _watch_response_stall(self, generation: int) -> None:
+        """Surveille UNE session : reprise si le serveur se tait alors qu'il doit répondre."""
+        while self.session is not None and self.session_generation == generation:
+            timeout = RESPONSE_STALL_TIMEOUT_SECONDS
+            if timeout <= 0:
+                return
+            await asyncio.sleep(min(1.0, max(0.05, timeout / 4)))
+            if self.session is None or self.session_generation != generation:
+                return
+            reason = self._pending_response_reason()
+            if not reason:
+                continue
+            silence = time.monotonic() - self._last_exchange
+            if silence >= timeout:
+                await self._recover_from_stall(reason, silence)
+                return
+
+    async def _recover_from_stall(self, reason: str, silence: float) -> None:
+        """Clôt le tour bloqué (demande conservée) puis relance la session.
+
+        Rien n'est masqué : le tour est marqué ``failed`` dans le contexte
+        avec la raison, l'évènement est tracé (``RESPONSE_STALLED``) et
+        journalisé, et la boucle externe reconnecte (états publiés comme pour
+        toute reconnexion). Le handle de reprise est conservé : le serveur
+        restaure le contexte ; à défaut, le rejeu local s'en charge.
+        """
+        if self.session is None or self.reconnect_requested:
+            return  # une reprise (ou une reconnexion voulue) est déjà en cours
+        self.stalls_recovered += 1
+        had_model_content = bool(self.speaking or self._turn_model_content_seen)
+        self._record_trace(
+            "RESPONSE_STALLED",
+            reason=reason,
+            silence_s=round(silence, 1),
+            timeout_s=RESPONSE_STALL_TIMEOUT_SECONDS,
+        )
+        log.warning(
+            "gen=%s : aucun message du serveur depuis %.1f s alors qu'une réponse est due (%s) "
+            "-- tour clos en échec (demande conservée), session relancée",
+            self.session_generation, silence, reason,
+        )
+        self._close_stalled_turn(f"le serveur ne répondait plus ({reason})")
+        if had_model_content:
+            # La réponse commencée est coupée : l'interface quitte l'état
+            # « Jarvis parle » et la lecture résiduelle est vidée (même
+            # crochet qu'une interruption, câblé sur ``clear_output``).
+            self._notify(self.on_interrupted)
+        self._reconnect_reason = "stall"
+        self.reconnect_requested = True
+        # Protégé : la boucle externe annule cette tâche dans ``close()`` dès
+        # que la réception s'arrête ; la fermeture du WebSocket doit aller à
+        # son terme quand même.
+        await asyncio.shield(self._shutdown_session())
+
+    def _close_stalled_turn(self, reason: str) -> None:
+        """Clôt le tour en cours comme le chemin d'erreur, en notifiant sa résolution."""
+        self._commit_user_text()
+        if self._turn_model_text:
+            self._commit_assistant_text()  # réponse partielle conservée
+        elif self.conversation.has_open_turn():
+            self.conversation.fail_open_turn(reason)
+        self._turn_user_text.clear()
+        self._turn_model_text.clear()
+        self._user_text_committed = ""
+        self.speaking = False
+        self._regeneration_pending = False
+        self._text_turn_pending = False
+        self._clear_interrupt()
+        self._interrupt_was_active = False
+        already_closed = self._turn_closed
+        self._turn_closed = True
+        if not already_closed:
+            self.turn_epoch += 1
+            self._record_trace("TURN_CLOSE", source="stall")
+            # Le minuteur de conversation d'``AudioIO`` (suspendu par
+            # ``on_turn_open``) doit reprendre : même règle que ``_finish_turn``.
+            self._notify(self.on_turn_resolved)
+
+    # ------------------------------------------------------------------
+    # Fin de tour : génération annulée / sortie encore attendue (PR #50)
+    # ------------------------------------------------------------------
+
+    async def _absorb_interrupted_turn_complete(self, live_diag: dict) -> None:
+        """Traite le ``turn_complete`` d'une génération que le serveur a annulée.
+
+        Référence Live API (``generationComplete``) : une génération interrompue
+        passe par « interrupted > turn_complete ». Ce ``turn_complete`` lui
+        appartient : ce n'est ni une génération vide du tour en cours (aucune
+        relance — elle interromprait à son tour le serveur), ni la fin d'un tour
+        plus récent (dont la transcription peut déjà être arrivée : l'ordre des
+        transcriptions n'est pas garanti), ni un nouvel évènement pour
+        l'interface (l'interruption a déjà été signalée s'il y avait lieu).
+        """
+        self._interrupted_generation_pending = False
+        self._seed_reply_pending = False
+        last = self._last_interruption or {}
+        turn_open = not self._turn_closed
+        self._record_trace(
+            "TURN_COMPLETE",
+            source="serveur",
+            interrupted_generation=True,
+            turn_open=turn_open,
+            **live_diag,
+        )
+        if turn_open and self._interruption_retry_pending:
+            current = " ".join(self._turn_user_text).strip()
+            retry_text = self._interruption_retry_text
+            self._interruption_retry_pending = False
+            self._interruption_retry_text = ""
+            if retry_text and current == retry_text and not self.interrupt_active():
+                # La génération annulée n'a jamais rien produit d'audible et
+                # aucune nouvelle parole n'est arrivée : la demande est
+                # toujours sans réponse. On la relance UNE fois, flux micro
+                # clos AVANT (la VAD serveur ne doit pas rester en activité).
+                self._record_trace(
+                    "INTERRUPTION_RETRY",
+                    text_chars=len(retry_text),
+                )
+                self._regeneration_pending = True
+                self._clear_interrupt()
+                self._interrupt_was_active = False
+                try:
+                    await self._end_mic_stream("interruption_retry")
+                    self._last_client_content_at = time.monotonic()
+                    await self.session.send_client_content(
+                        turns=[{"role": "user", "parts": [{"text": retry_text}]}],
+                        turn_complete=True,
+                    )
+                except Exception as exc:
+                    log.warning(
+                        "gen=%s : relance après interruption serveur impossible (%s) "
+                        "— le tour sera clos sans réponse", self.session_generation, exc,
+                    )
+                    self._regeneration_pending = False
+                    self._finish_turn()
+                    if self.on_interrupted:
+                        self._notify(self.on_interrupted)
+                    return
+                self._last_exchange = time.monotonic()
+                # Nouvel appel à receive() (le précédent est terminé sur ce
+                # turn_complete) : borné par le même mécanisme que la relance
+                # de génération vide, sans en consommer le quota.
+                await self._receive_one_turn_cycle(0)
+                return
+            self._record_trace(
+                "INTERRUPTION_RETRY_CANCELLED",
+                reason="nouvelle parole ou interruption locale",
+            )
+        if turn_open:
+            # Tour gardé ouvert (génération annulée avant toute réponse) ou tour
+            # plus récent (sa transcription est déjà arrivée) : sa demande, sa
+            # relance éventuelle et son état de porte restent intacts ; SA fin
+            # de tour viendra. Lui signaler celle-ci serait la lui attribuer.
+            self._record_trace("TURN_COMPLETE_CALLBACK_SUPPRESSED_INTERRUPTED")
+            return
+        # Le tour interrompu est clos : plus aucune relance ni voix ne lui
+        # appartient. Mémoire persistante : même extraction conservatrice qu'en
+        # fin de tour normale, sur la demande de CE tour (inchangé).
+        self._regeneration_pending = False
+        self.speaking = False
+        if self.memory_manager is not None and self._turn_user_text:
+            try:
+                text = " ".join(self._turn_user_text).strip()
+                if text:
+                    self.memory_manager.remember_from_text(text, source="live_transcript")
+            except Exception as exc:
+                print(f"[Memory] Extraction ignorée : {exc}")
+        self._turn_user_text.clear()
+        if last.get("classification") == "interruption_reponse":
+            # Vraie interruption d'une réponse : le serveur confirme la fin de
+            # CE tour (signal historique conservé pour l'appelant : fenêtre
+            # d'écoute réarmée, journal des tours des harnais).
+            if self.on_turn_complete:
+                self.on_turn_complete()
+        else:
+            self._record_trace("TURN_COMPLETE_CALLBACK_SUPPRESSED_EMPTY")
+
+    def _turn_complete_awaits_more_output(self, server_content) -> bool:
+        """Vrai si ce ``turn_complete`` annonce que la réponse est encore à venir.
+
+        ``interaction_status=IN_PROGRESS`` : « le serveur traite encore l'entrée
+        utilisateur ou un raisonnement ; d'autres sorties du modèle peuvent
+        suivre » (référence Live API). Ne concerne qu'un tour OUVERT, avec une
+        demande, encore sans la moindre sortie du modèle : c'est le seul cas où
+        l'ancien code concluait à tort à une génération vide.
+        """
+        status = getattr(server_content, "interaction_status", None)
+        status = str(getattr(status, "value", status) or "")
+        return (
+            status == "IN_PROGRESS"
+            and not self._turn_closed
+            and not self._turn_model_content_seen
+            and bool(" ".join(self._turn_user_text).strip())
+            and not self.interrupt_active()
+        )
+
+    def _interruption_snapshot(self) -> dict | None:
+        last = self._last_interruption
+        if not last:
+            return None
+        view = {key: value for key, value in last.items() if key != "at"}
+        view["age_s"] = round(time.monotonic() - float(last.get("at", 0.0)), 1)
+        return view
 
     async def _receive_loop(self):
         """Reçoit les messages Gemini pour TOUS les tours de la session.
@@ -1442,6 +2199,8 @@ class GeminiLive:
         received_any = False
         async for r in self.session.receive():
             received_any = True
+            # Tout message prouve que le serveur est vivant (chien de garde).
+            self._last_server_message = self._last_exchange = time.monotonic()
 
             sru = getattr(
                 r,
@@ -1451,6 +2210,10 @@ class GeminiLive:
             if sru is not None:
                 if sru.new_handle:
                     self.resumption_handle = sru.new_handle
+                    self._resumption_handle_message_count = len(
+                        self.conversation.get_messages()
+                    )
+                    self._resumption_handle_received_this_turn = not self._turn_closed
                 elif getattr(sru, "resumable", None) is False:
                     # Le serveur indique que la session n'est PAS reprenable à
                     # cet instant (exécution d'outil en cours, génération…).
@@ -1461,6 +2224,17 @@ class GeminiLive:
                         "session gen=%s momentanément non reprenable (handle conservé)",
                         self.session_generation,
                     )
+
+            # Signaux de VAD du serveur (début/fin de parole), quand le service
+            # les envoie : diagnostic seulement (correctif PR #50) — ils
+            # permettent d'attribuer une interruption à une parole détectée.
+            vad = getattr(r, "voice_activity", None)
+            vad_type = getattr(vad, "voice_activity_type", None) if vad is not None else None
+            if vad_type is None:
+                signal = getattr(r, "voice_activity_detection_signal", None)
+                vad_type = getattr(signal, "vad_signal_type", None) if signal is not None else None
+            if vad_type is not None:
+                self._record_trace("SERVER_VAD", signal=str(getattr(vad_type, "value", vad_type)))
 
             # GoAway : le serveur annoncera la fin de la connexion sous peu
             # (ABORTED). On la devance proprement — reconnexion immédiate et
@@ -1502,6 +2276,13 @@ class GeminiLive:
                     transcript = getattr(server_content, "input_transcription", None)
                     text = getattr(transcript, "text", None) if transcript else None
                     if text:
+                        if self._interruption_retry_pending:
+                            # Une vraie parole a suivi l'interruption : c'est
+                            # un barge-in, pas une annulation fantôme. La
+                            # relance ne doit pas parler par-dessus.
+                            self._interruption_retry_pending = False
+                            self._interruption_retry_text = ""
+                            self._record_trace("INTERRUPTION_RETRY_CANCELLED", reason="nouvelle transcription")
                         self._begin_turn_if_needed()
                         self._turn_user_text.append(str(text))
                         self._record_trace("GEMINI_USER_TRANSCRIPT", text=str(text))
@@ -1526,6 +2307,9 @@ class GeminiLive:
                     if out_text:
                         self._commit_user_text()
                         self._turn_model_content_seen = True
+                        # Nouvelle sortie du modèle : une autre génération a
+                        # commencé, le ``turn_complete`` qui suivra est le sien.
+                        self._interrupted_generation_pending = False
                         self._turn_model_text.append(str(out_text))
                         self._record_trace("GEMINI_ASSISTANT_TRANSCRIPT", text=str(out_text))
                         # v1.7.5 sexies (instrumentation, lecture seule,
@@ -1595,6 +2379,9 @@ class GeminiLive:
                 # Le modèle répond : la demande de l'utilisateur est complète,
                 # on la fige dans le contexte avant tout message assistant.
                 self._commit_user_text()
+                # Une génération produit : ce n'est plus celle qui a été
+                # interrompue (son ``turn_complete`` la précède, cf. protocole).
+                self._interrupted_generation_pending = False
                 # Interruption locale en cours : l'audio déjà généré par
                 # Gemini est jeté (Jarvis se tait) jusqu'à ce que le serveur
                 # confirme l'interruption ou que la fenêtre expire.
@@ -1624,6 +2411,7 @@ class GeminiLive:
                         ):
 
                             self._turn_model_content_seen = True
+                            self._turn_audio_bytes += len(part.inline_data.data)
                             self.on_audio(
                                 part.inline_data.data
                             )
@@ -1644,36 +2432,124 @@ class GeminiLive:
                 # ci-dessous, qui ne doit PAS avaler ce cas précis --
                 # régression constatée par tests/test_interruption.py).
                 had_local_interrupt = self.interrupt_requested
+                manual_stop = self._manual_stop_epoch is not None
+                was_speaking = self.speaking
+                has_user_text = bool(" ".join(self._turn_user_text).strip())
+                had_model_output = self._turn_model_content_seen or was_speaking
+                # Origine probable (diagnostic) : arrêt demandé par Jarvis, ou
+                # ``clientContent`` qui vient de partir (le protocole l'applique
+                # comme une interruption), ou parole détectée par la VAD serveur.
+                if had_local_interrupt:
+                    origin = "arret_manuel" if manual_stop else "barge_in_local"
+                elif time.monotonic() - self._last_client_content_at < 2.0:
+                    origin = "client_content"
+                else:
+                    origin = "activite_vocale_serveur"
+                # Correctif PR #50 — trois cas distincts :
+                # * ``interruption_reponse`` : Jarvis parlait ou un arrêt était
+                #   demandé — vraie interruption, le tour est clos (inchangé) ;
+                # * ``generation_annulee_avant_reponse`` : le tour est ouvert, la
+                #   demande est connue, mais le modèle n'avait RIEN produit. Cas
+                #   réel E01/E07/E09/E10 : la VAD a clos la parole à la pause
+                #   entre deux phrases, la suite de la phrase a annulé la
+                #   génération naissante. La demande continue : le tour RESTE
+                #   OUVERT (la suite de la transcription s'y ajoute et la réponse
+                #   lui revient), rien n'est signalé comme interrompu ;
+                # * ``traine_vide`` : aucun tour (traîne d'une génération
+                #   abandonnée), comme avant.
+                if had_local_interrupt or had_model_output:
+                    classification = "interruption_reponse"
+                elif not self._turn_closed and has_user_text:
+                    classification = "generation_annulee_avant_reponse"
+                else:
+                    classification = "traine_vide"
                 self.speaking = False
                 self._clear_interrupt()
                 self._interrupt_was_active = False
-                self._record_trace("INTERRUPTION", source="serveur", **live_diag)
-                # v1.7.5 ter (régression S6, validation réelle) : un tour
-                # qui n'a RIEN produit (ni transcription utilisateur, ni
-                # audio/transcription assistant) n'est pas une vraie
-                # interruption observable -- c'est typiquement la traîne
-                # TARDIVE d'une génération déjà abandonnée côté client (ex. :
-                # le rejeu de contexte après un ``SEED_COMMIT_TIMEOUT``, dont
-                # la réponse serveur finit par arriver bien après que la
-                # porte micro s'est ouverte en dégradé, et se fait couper par
-                # l'arrivée du VRAI tour suivant). Sans ce filtre,
-                # ``on_interrupted`` se déclenche pour un non-évènement et —
-                # pire — le ``turn_complete`` séparé qui suit immédiatement
-                # (cf. bloc FIN DE TOUR) se ferait passer pour la fin du vrai
-                # tour en cours auprès de l'appelant (fenêtre de conversation
-                # réarmée à tort, ou pire : un consommateur qui attend « le
-                # prochain tour terminé » reçoit ce tour fantôme à la place
-                # de la vraie réponse, cf. harnais de validation réelle).
-                had_content = (
-                    bool(" ".join(self._turn_user_text).strip())
-                    or self._turn_model_content_seen
-                    or had_local_interrupt
+                # « interrupted > turn_complete » : le prochain ``turn_complete``
+                # appartient à la génération annulée (cf. bloc FIN DE TOUR).
+                self._interrupted_generation_pending = True
+                self._last_interruption = {
+                    "classification": classification,
+                    "origin": origin,
+                    "turn_id": self.turn_id,
+                    "audio_bytes": self._turn_audio_bytes,
+                    "at": time.monotonic(),
+                }
+                self._record_trace(
+                    "INTERRUPTION", source="serveur", origin=origin,
+                    classification=classification, **live_diag,
                 )
-                self._finish_turn()
-                if had_content and self.on_interrupted:
-                    self.on_interrupted()
-                elif not had_content:
-                    self._record_trace("INTERRUPTION_CALLBACK_SUPPRESSED_EMPTY")
+                # Interruption serveur AVANT toute réponse audible : sur les
+                # modèles audio natifs, la VAD peut annuler une génération
+                # naissante (pause entre deux phrases, écho, activité
+                # résiduelle). Fermer le tour ici laisse l'utilisateur sans
+                # réponse (E01 réel : transcription reçue, réponse vide,
+                # ``audio_bytes=0``). On garde le tour ouvert et on relance
+                # UNE fois la même demande après le ``turn_complete`` de la
+                # génération annulée. Une vraie interruption (barge-in local,
+                # arrêt manuel, ou au moins un octet audio déjà produit) suit
+                # le chemin historique.
+                spurious_before_audio = (
+                    classification == "interruption_reponse"
+                    and origin == "activite_vocale_serveur"
+                    and not had_local_interrupt
+                    and not manual_stop
+                    and has_user_text
+                    and self._turn_audio_bytes == 0
+                    and not self._interruption_retry_used
+                )
+                if spurious_before_audio:
+                    self._interruption_retry_pending = True
+                    self._interruption_retry_text = " ".join(self._turn_user_text).strip()
+                    self._interruption_retry_used = True
+                    # La transcription partielle appartient à la génération
+                    # ANNULÉE : elle a déjà été affichée à l'utilisateur, donc
+                    # on la verse à l'historique comme réponse interrompue.
+                    # On vide ensuite le tampon LIVE pour que la relance ne
+                    # s'y concatène pas (« Bonjour Adam » + « Bonjour Adam,
+                    # … »), avec un risque d'exactitude sur les tours
+                    # suivants (E09). Sans texte partiel, rien n'est versé.
+                    self._commit_assistant_text()
+                    self._turn_model_content_seen = False
+                    self._record_trace(
+                        "TURN_KEPT_OPEN",
+                        reason="interruption serveur avant toute réponse audible",
+                        text_turn=bool(self._text_turn_pending),
+                    )
+                    self._record_trace(
+                        "INTERRUPTION_RETRY_ARMED",
+                        text_chars=len(self._interruption_retry_text),
+                    )
+                elif classification == "generation_annulee_avant_reponse":
+                    self._record_trace(
+                        "TURN_KEPT_OPEN",
+                        reason="génération annulée avant toute réponse",
+                        text_turn=bool(self._text_turn_pending),
+                    )
+                else:
+                    # v1.7.5 ter (régression S6, validation réelle) : un tour
+                    # qui n'a RIEN produit (ni transcription utilisateur, ni
+                    # audio/transcription assistant) n'est pas une vraie
+                    # interruption observable -- c'est typiquement la traîne
+                    # TARDIVE d'une génération déjà abandonnée côté client (ex. :
+                    # le rejeu de contexte après un ``SEED_COMMIT_TIMEOUT``, dont
+                    # la réponse serveur finit par arriver bien après que la
+                    # porte micro s'est ouverte en dégradé, et se fait couper par
+                    # l'arrivée du VRAI tour suivant). Sans ce filtre,
+                    # ``on_interrupted`` se déclenche pour un non-évènement ; le
+                    # ``turn_complete`` qui suit est, lui, absorbé par le bloc
+                    # FIN DE TOUR (génération annulée, correctif PR #50).
+                    had_content = (
+                        has_user_text
+                        or self._turn_model_content_seen
+                        or had_local_interrupt
+                    )
+                    self._finish_turn()
+                    if had_content and self.on_interrupted:
+                        self.on_interrupted()
+                    elif not had_content:
+                        self._record_trace("INTERRUPTION_CALLBACK_SUPPRESSED_EMPTY")
 
             # =================================================
             # FIN DE TOUR
@@ -1682,13 +2558,41 @@ class GeminiLive:
             if (
                 server_content
                 and server_content.turn_complete
+                and self._interrupted_generation_pending
             ):
+                # Correctif PR #50 : « interrupted > turn_complete » — ce
+                # ``turn_complete`` clôt la génération ANNULÉE. Ni relance, ni
+                # fermeture du tour en cours (gardé ouvert, ou plus récent).
+                await self._absorb_interrupted_turn_complete(live_diag)
+            elif (
+                server_content
+                and server_content.turn_complete
+                and self._turn_complete_awaits_more_output(server_content)
+            ):
+                # ``interaction_status=IN_PROGRESS`` sur un tour encore sans
+                # réponse : « le serveur traite encore l'entrée utilisateur,
+                # d'autres sorties peuvent suivre » (référence Live API). Une
+                # relance (``clientContent``) INTERROMPRAIT ce traitement : on
+                # attend la suite, le chien de garde borne l'attente.
+                self._seed_reply_pending = False
+                self._record_trace(
+                    "TURN_COMPLETE", source="serveur", awaiting_more_output=True, **live_diag,
+                )
+                self._record_trace("EMPTY_TURN_COMPLETE_IN_PROGRESS")
+            elif (
+                server_content
+                and server_content.turn_complete
+            ):
+                # Toute fin de tour clôt une éventuelle réponse au rejeu de
+                # contexte encore attendue (cf. ``SEED_REPLY_WAIT_SECONDS``).
+                self._seed_reply_pending = False
                 # Capturé AVANT tout nettoyage, pour la même raison que dans
                 # le bloc INTERRUPTION ci-dessus : un ``turn_complete`` qui
                 # clôt un tour pendant qu'un barge-in local était en attente
                 # reste un évènement réel pour l'appelant, même sans la
                 # moindre miette de contenu transcrit ou audio.
                 had_local_interrupt = self.interrupt_requested
+                waiting_for_input = bool(getattr(server_content, "waiting_for_input", False))
                 # v1.7.5 bis : génération vide confirmée côté serveur Gemini
                 # (cf. EMPTY_GENERATION_MAX_RETRIES) -- un VRAI tour
                 # utilisateur (texte transcrit non vide) qui se clôt sans
@@ -1698,9 +2602,20 @@ class GeminiLive:
                 # jamais toucher le tour de rejeu de contexte (qui n'a pas
                 # de transcription utilisateur associée, cf. constante).
                 pending_user_text = " ".join(self._turn_user_text).strip()
-                if (
-                    pending_user_text
+                empty_open_turn = (
+                    bool(pending_user_text)
                     and not self._turn_model_content_seen
+                    and not self._turn_closed
+                )
+                if empty_open_turn and waiting_for_input:
+                    # Le modèle attend que l'utilisateur continue (référence Live
+                    # API, ``waitingForInput``) : forcer une réponse couperait
+                    # l'utilisateur. Le tour est clos normalement, la suite de
+                    # la parole ouvrira le suivant.
+                    self._record_trace("EMPTY_TURN_COMPLETE_WAITING_FOR_INPUT")
+                if (
+                    empty_open_turn
+                    and not waiting_for_input
                     and not self.interrupt_active()
                     and _empty_generation_retries < EMPTY_GENERATION_MAX_RETRIES
                 ):
@@ -1765,6 +2680,11 @@ class GeminiLive:
                     self._interrupt_was_active = False
                     self._record_trace("EMPTY_GENERATION_RETRY_MIC_HELD")
                     try:
+                        # Porte retenue : flux micro clos AVANT la relance, pour
+                        # que la VAD du serveur ne reste jamais suspendue au
+                        # milieu d'une parole (correctif PR #50).
+                        await self._end_mic_stream("regeneration")
+                        self._last_client_content_at = time.monotonic()
                         await self.session.send_client_content(
                             turns=[{"role": "user", "parts": [{"text": pending_user_text}]}],
                             turn_complete=True,
@@ -1776,6 +2696,9 @@ class GeminiLive:
                             self.session_generation, exc,
                         )
                     else:
+                        # La relance oblige le serveur à répondre : l'attente
+                        # du chien de garde repart de cet envoi.
+                        self._last_exchange = time.monotonic()
                         # ``session.receive()`` se termine NATURELLEMENT dès
                         # ``turn_complete`` (confirmé par Google, issue
                         # googleapis/python-genai#1224) : la boucle
@@ -1870,6 +2793,9 @@ class GeminiLive:
             )
 
             if tc and tc.function_calls:
+                # Un appel d'outil vient d'une génération active (pas de celle
+                # qui a été annulée) : son ``turn_complete`` sera le vrai.
+                self._interrupted_generation_pending = False
                 if self.on_thinking is not None:
                     try:
                         self.on_thinking()
@@ -1967,11 +2893,18 @@ class GeminiLive:
                     )
                 finally:
                     self.tool_active = False
+                    # Le temps passé dans l'outil n'est pas un silence du
+                    # serveur : l'attente de la suite du tour part d'ici.
+                    self._last_exchange = time.monotonic()
         return received_any
 
     async def _shutdown_session(self) -> None:
         self.speaking = False
         self._regeneration_pending = False
+        self._text_turn_pending = False
+        self._interrupted_generation_pending = False
+        self._seed_reply_pending = False
+        self._mic_stream_open = False
         self.tool_active = False
         self._clear_interrupt()
         self._interrupt_was_active = False
@@ -1989,10 +2922,11 @@ class GeminiLive:
                 pass
 
     async def close(self) -> None:
-        task = self._watcher_task
-        self._watcher_task = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
+        for name in ("_watcher_task", "_stall_task"):
+            task = getattr(self, name)
+            setattr(self, name, None)
+            if task is not None and task is not asyncio.current_task() and not task.done():
+                task.cancel()
         # Le contexte survit à la session (reconnexion, changement de voix,
         # changement d'interface) : seul le pont de reset est détaché.
         self.conversation.unbind_session(self._handle_context_reset)

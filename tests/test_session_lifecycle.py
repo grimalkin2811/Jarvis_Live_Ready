@@ -125,6 +125,22 @@ class _LifecycleTestCase(unittest.TestCase):
         lab.wait_until(quiescent, timeout, "quiétude du pipeline")
         return time.monotonic()
 
+    def wait_mic_capturing(self, lab: EchoLab, timeout: float = 15.0) -> None:
+        """Attend que le micro soit RÉELLEMENT rouvert avant de parler.
+
+        ``session_generation`` augmente dès que la nouvelle session est
+        connectée, avant la fin du rejeu de contexte et avant l'ouverture de
+        la porte anti-écho. Parler à cet instant (ce que faisait le test)
+        perdait l'énoncé sur une machine lente — d'où l'échec Windows
+        ``1 != 2``. On attend l'état contractuel : envoi autorisé ET porte
+        micro ouverte (traîne de lecture écoulée).
+        """
+        lab.wait_until(
+            lambda: lab.gemini.can_send() and lab.audio._mic_gate_open(),
+            timeout,
+            "porte micro rouverte (session prête, traîne audio écoulée)",
+        )
+
 
 class TestNoSpuriousReconnectDuringActiveWindow(_LifecycleTestCase):
     """Item #8 : réveil -> phrase -> réponse -> silence -> fenêtre de 8 s
@@ -304,6 +320,9 @@ class TestRealReconnectionIsNotCausedByTurnComplete(_LifecycleTestCase):
             10.0,
             "reconnexion après coupure réseau réelle",
         )
+        # La génération augmente à la CONNEXION : le rejeu de contexte et la
+        # réouverture de la porte anti-écho peuvent encore être en cours.
+        self.wait_mic_capturing(lab)
 
         connect_events = [
             e for e in gemini.trace_events()
@@ -322,11 +341,15 @@ class TestRealReconnectionIsNotCausedByTurnComplete(_LifecycleTestCase):
             f"raison de reconnexion inattendue : {reasons}",
         )
 
-        # Le nouveau cycle de session fonctionne normalement.
+        # Le nouveau cycle de session fonctionne normalement. On attend le
+        # TOUR UTILISATEUR (pas seulement un tour serveur quelconque) : une
+        # porte micro restée fermée doit produire un échec explicite, pas un
+        # succès dû à un tour fantôme d'écho.
         lab.user_speaks(1.5)
+        lab.wait_until(lambda: len(lab.user_turns()) >= 2, 15.0, "deuxième tour utilisateur")
         self.settle_response(lab, min_turns=2)
-        self.assertEqual(len(lab.user_turns()), 2)
-        self.assertEqual(len(lab.ghost_turns()), 0)
+        self.assertEqual(len(lab.user_turns()), 2, lab.server.turns)
+        self.assertEqual(len(lab.ghost_turns()), 0, lab.server.turns)
 
 
 class TestNoAudioBeforeSessionReady(_LifecycleTestCase):
@@ -788,6 +811,53 @@ class TestSeedCommitSkippedWithoutASeed(unittest.IsolatedAsyncioTestCase):
         self.assertLess(elapsed, 1.0)
 
 
+class TestResumedSessionStaleCheckpoint(unittest.IsolatedAsyncioTestCase):
+    """E12 : un handle de reprise peut précéder le dernier tour.
+
+    Le serveur délivre des handles pendant la génération. Si le dernier handle
+    a été émis AVANT que le tour courant ne soit committé localement, une
+    reprise « sans rejeu » restaure un contexte amputé du tour le plus récent :
+    c'est la signature réelle « reconnexion PASS, contexte après reconnexion
+    FAIL ». Jarvis doit alors rejouer son contexte au lieu de faire confiance
+    aveuglément au handle.
+    """
+
+    async def test_stale_checkpoint_triggers_a_context_replay(self) -> None:
+        session = _SlowAckSession()
+        gemini = _make_seeded_gemini(session)
+        gemini.resumption_handle = "handle-ancien"
+        gemini._resumption_handle_message_count = 0  # aucun message couvert
+
+        task = asyncio.ensure_future(gemini._connect_once())
+        for _ in range(200):
+            if session.sent:
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(session.sent, "aucun rejeu de contexte malgré un checkpoint périmé")
+        turns, turn_complete = session.sent[0]
+        self.assertTrue(turn_complete)
+        textes = [part.get("text") for turn in turns for part in turn.get("parts", [])]
+        self.assertIn("Mon prénom est Simon.", textes)
+        traces = [e["kind"] for e in gemini.trace_events()]
+        self.assertIn("SESSION_RESUME_STALE_CHECKPOINT", traces)
+
+        session.release_ack()
+        await asyncio.wait_for(task, timeout=3.0)
+        self.assertTrue(gemini.context_seeded)
+        self.assertTrue(gemini.context_seed_confirmed, "le rejeu doit être confirmé avant la porte")
+        self.assertTrue(gemini.can_send())
+
+    async def test_current_checkpoint_needs_no_replay(self) -> None:
+        session = _SlowAckSession()
+        gemini = _make_seeded_gemini(session)
+        gemini.resumption_handle = "handle-a-jour"
+        gemini._resumption_handle_message_count = len(gemini.conversation.get_messages())
+
+        await asyncio.wait_for(gemini._connect_once(), timeout=2.0)
+        self.assertFalse(gemini.context_seeded)
+        self.assertEqual(session.sent, [], "aucun rejeu quand le checkpoint couvre l'historique")
+
+
 class TestBugReproducesWithoutThePatchS6(unittest.IsolatedAsyncioTestCase):
     """Contrôle négatif (mission v1.7.5) : sans le correctif (c'est-à-dire si
     ``_seed_context`` n'attendait pas la confirmation serveur, comportement
@@ -862,7 +932,7 @@ class TestMultipleReconnectionsDoNotDuplicateContext(_LifecycleTestCase):
             lambda: gemini.session_generation > gen_before_first,
             10.0, "première reconnexion",
         )
-        lab.wait_until(lambda: gemini.can_send(), 10.0, "session prête (1re reco)")
+        self.wait_mic_capturing(lab)
         gen_after_first = gemini.session_generation
         self.assertTrue(gemini.context_seeded, "premier rejeu attendu (aucun handle)")
         handle_after_first = gemini.resumption_handle
@@ -887,7 +957,7 @@ class TestMultipleReconnectionsDoNotDuplicateContext(_LifecycleTestCase):
             lambda: gemini.session_generation > gen_after_first,
             10.0, "deuxième reconnexion",
         )
-        lab.wait_until(lambda: gemini.can_send(), 10.0, "session prête (2e reco)")
+        self.wait_mic_capturing(lab)
 
         self.assertFalse(
             gemini.context_seeded,
@@ -910,9 +980,10 @@ class TestMultipleReconnectionsDoNotDuplicateContext(_LifecycleTestCase):
         # Un vrai suivi après ces deux reconnexions reste fonctionnel.
         lab.server.next_user_transcripts = ["quel est mon prénom"]
         lab.user_speaks(1.5)
+        lab.wait_until(lambda: len(lab.user_turns()) >= 2, 15.0, "tour utilisateur après reprises")
         self.settle_response(lab, min_turns=2)
-        self.assertEqual(len(lab.user_turns()), 2)
-        self.assertEqual(len(lab.ghost_turns()), 0)
+        self.assertEqual(len(lab.user_turns()), 2, lab.server.turns)
+        self.assertEqual(len(lab.ghost_turns()), 0, lab.server.turns)
 
 
 if __name__ == "__main__":
