@@ -959,6 +959,53 @@ def is_new_conversation_command(text: str) -> bool:
     return any(pattern.search(normalized) for pattern in _RESET_PATTERNS)
 
 
+#: Pages du Dashboard adressables par la voix (identifiants du pont).
+_DASHBOARD_PAGES = ("accueil", "travail", "taches", "memoire", "systeme", "parametres")
+_DASHBOARD_OBJ = r"(?:le\s+|la\s+|mon\s+|ton\s+)?(?:dashboard|tableau\s+de\s+bord)"
+_DASHBOARD_OPEN = re.compile(
+    r"\b(ouvre|ouvrir|affiche|afficher|montre|montrer|lance|lancer|ouvre\s+moi|montre\s+moi|affiche\s+moi)\b"
+    r"(?:\s+\w+){0,3}?\s+" + _DASHBOARD_OBJ + r"\b"
+)
+_DASHBOARD_CLOSE = re.compile(
+    r"\b(ferme|fermer|masque|masquer|cache|cacher)\b(?:\s+\w+){0,3}?\s+" + _DASHBOARD_OBJ + r"\b"
+)
+_DASHBOARD_NEGATION = re.compile(r"\b(ne|n|pas|jamais|surtout\s+pas|sans)\b[^.]{0,40}\b(ouvre|affiche|montre|ferme|masque|cache)\b")
+_DASHBOARD_QUESTION = re.compile(r"^(qu|quel|quelle|comment|pourquoi|est\s+ce)\b")
+
+
+def parse_dashboard_command(text: str) -> tuple[str, str | None] | None:
+    """Commande Dashboard EXPLICITE : ``("open", page|None)`` / ``("close", None)``.
+
+    Filet déterministe (E02/E10/E11) : une simple MENTION (« le tableau de
+    bord de ma voiture », « mon tableau de bord Excel »), une question ou une
+    formulation négative ne déclenchent RIEN — il faut un verbe impératif
+    dont l'objet est le Dashboard de Jarvis. La page, si elle est nommée
+    parmi les pages connues, est extraite ; sinon ``None`` (dernière page).
+    """
+    normalized = _normalize(text)
+    if not normalized or _DASHBOARD_NEGATION.search(normalized):
+        return None
+    if _DASHBOARD_QUESTION.match(normalized):
+        return None
+    if _DASHBOARD_CLOSE.search(normalized):
+        return ("close", None)
+    if not _DASHBOARD_OPEN.search(normalized):
+        return None
+    page = None
+    match = re.search(r"\bpage\s+(\w+)\b", normalized) or re.search(
+        r"\b(?:sur|vers|ouvre|affiche|montre)\b[^.]{0,30}\b(" + "|".join(_DASHBOARD_PAGES) + r")\b", normalized)
+    if match:
+        candidate = match.group(1)
+        if candidate in _DASHBOARD_PAGES:
+            page = candidate
+    if page is None:
+        # « ouvre le tableau de bord sur la page mémoire » : la page suit « page ».
+        named = [p for p in _DASHBOARD_PAGES if re.search(rf"\bpage\s+{p}\b", normalized)]
+        if named:
+            page = named[0]
+    return ("open", page)
+
+
 # ---------------------------------------------------------------------------
 # Instance par défaut (même schéma que memory / modes / music)
 # ---------------------------------------------------------------------------

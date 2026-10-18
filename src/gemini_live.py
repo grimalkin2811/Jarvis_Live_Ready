@@ -14,6 +14,7 @@ from .conversation import (
     KIND_TOOL_RESULT,
     get_default_conversation_context,
     is_new_conversation_command,
+    parse_dashboard_command,
     to_gemini_contents,
 )
 from .logging_setup import get_logger
@@ -410,6 +411,8 @@ class GeminiLive:
         # génération totalement vide pour un vrai tour utilisateur (cf.
         # EMPTY_GENERATION_MAX_RETRIES ci-dessus), jamais à autre chose.
         self._turn_model_content_seen = False
+        #: Un outil a-t-il déjà été exécuté pour CE tour ? (filet Dashboard)
+        self._turn_tool_called = False
         #: Octets audio du modèle réellement remis au lecteur pour CE tour
         #: (0 = rien d'audible). Sert à distinguer une interruption réelle
         #: (l'utilisateur a entendu et coupe) d'une annulation serveur avant
@@ -662,6 +665,7 @@ class GeminiLive:
         self._turn_model_text.clear()
         self._user_text_committed = ""
         self._turn_model_content_seen = False
+        self._turn_tool_called = False
         self._turn_audio_bytes = 0
         self._interruption_retry_pending = False
         self._interruption_retry_text = ""
@@ -949,6 +953,47 @@ class GeminiLive:
         self.request_interrupt()
         info = self.conversation.start_new_conversation(reason="commande vocale")
         self._notify_reset(info)
+        return True
+
+    async def _maybe_run_dashboard_fallback(self, user_text: str) -> bool:
+        """Filet Dashboard (E02/E11) : commande explicite sans appel d'outil.
+
+        Le modèle reçoit déjà la déclaration ``open_dashboard`` /
+        ``close_dashboard`` et l'utilise normalement. Mais un tour réel peut
+        se clore avec une transcription correcte et AUCUN appel d'outil
+        (réponse verbale seule) : le Dashboard ne s'ouvre alors jamais.
+        Si — et seulement si — la transcription est une commande explicite
+        (``parse_dashboard_command``, mentions/questions/négations exclues)
+        et qu'aucun outil n'a été exécuté ce tour-ci, on exécute l'outil
+        localement, on le journalise dans le contexte comme un vrai appel
+        et on notifie l'interface (``on_tool_start``/``on_tool_end``).
+        """
+        if self._turn_tool_called:
+            return False
+        parsed = parse_dashboard_command(user_text)
+        if parsed is None:
+            return False
+        action, page = parsed
+        name = "open_dashboard" if action == "open" else "close_dashboard"
+        fn = TOOL_FUNCTIONS.get(name)
+        if fn is None:
+            return False
+        args: dict = {"page": page} if action == "open" and page else {}
+        self._turn_tool_called = True
+        self._commit_user_text()
+        self._notify(self.on_tool_start, name)
+        try:
+            result = await asyncio.to_thread(fn, **args)
+        except Exception as exc:  # l'outil ne doit jamais casser le tour
+            result = {"success": False, "error": str(exc)}
+        ok = bool(result.get("success", True)) if isinstance(result, dict) else True
+        self._notify(self.on_tool_end, name, ok)
+        try:
+            self.conversation.add_tool_interaction(name, args, result)
+        except Exception:
+            pass
+        self._record_trace("TOOL_CALL_FALLBACK_DASHBOARD", name=name, page=page or "", success=ok)
+        log.info("filet Dashboard : %s(page=%s) exécuté localement (aucun appel d'outil du modèle)", name, page)
         return True
 
     @staticmethod
@@ -2743,6 +2788,11 @@ class GeminiLive:
                     has_local_interrupt=had_local_interrupt,
                     **live_diag,
                 )
+                # Filet Dashboard : commande explicite restée sans appel
+                # d'outil du modèle — exécutée AVANT la clôture pour que le
+                # contexte garde l'ordre USER -> OUTILS -> ASSISTANT.
+                if has_user_text and not self._turn_closed:
+                    await self._maybe_run_dashboard_fallback(pending_user_text)
                 # Contexte conversationnel d'abord : le tour est clos avec
                 # l'ordre USER -> OUTILS -> ASSISTANT.
                 self._finish_turn()
@@ -2802,6 +2852,7 @@ class GeminiLive:
                     except Exception:
                         pass
                 self.tool_active = True
+                self._turn_tool_called = True
                 responses = []
                 # Un appel d'outil est une conséquence de la demande en cours :
                 # elle doit être dans le contexte AVANT l'appel.
