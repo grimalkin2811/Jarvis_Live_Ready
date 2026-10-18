@@ -339,9 +339,9 @@ class TestB_TwoPhrases(_EchoTestCase):
 class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
     """C : la sortie TTS ne doit jamais devenir une requête utilisateur.
 
-    Concrètement : pendant la lecture de la réponse (et jusqu'à la traîne
-    acoustique), le serveur ne reçoit AUCUN bloc micro — pas seulement des
-    blocs silencieux : la porte coupe le flux.
+    Pendant la lecture et la traîne acoustique, la porte ne soumet aucun
+    nouveau bloc micro ; les envois déjà planifiés peuvent arriver en retard,
+    mais aucun ne doit contenir l'écho de la réponse.
     """
 
     def test_no_mic_audio_reaches_server_while_speaking(self) -> None:
@@ -385,16 +385,20 @@ class TestC_TTSOutputIsNotUserInput(_EchoTestCase):
             (t, rms) for t, rms in lab.audio_in()
             if gate_closed_ts <= t <= reopen_ts
         ]
-        # Un unique « traînard d'ordonnancement » est possible : un bloc
-        # capturé AVANT la mise en file de la réponse (le pont micro le
-        # programme via run_coroutine_threadsafe, sa coroutine peut
-        # atterrir après la fermeture tracée). Ce bloc ne peut contenir
-        # AUCUN écho : rien ne jouait encore au moment de sa capture.
-        # La propriété de sûreté est donc : au plus un bloc, et aucun bloc
-        # porteur d'écho (>= seuil VAD serveur) pendant la fenêtre fermée.
-        self.assertLessEqual(
-            len(forwarded), 1,
-            f"blocs micro transmis pendant la lecture de la réponse: {forwarded}"
+        # L'horodatage de ``audio_in`` est celui de l'arrivée sur le faux
+        # serveur, pas celui de la capture : ``run_coroutine_threadsafe`` peut
+        # donc livrer plusieurs blocs déjà soumis après la trace de fermeture
+        # si la boucle asyncio est retardée (observé sur le runner Windows).
+        # Vérifier la porte à la source, au moment où le pont planifie l'envoi,
+        # puis garder le contrôle acoustique sur les blocs effectivement reçus.
+        submitted_while_closed = [
+            t for t in lab.mic_submit_times()
+            if gate_closed_ts <= t <= reopen_ts
+        ]
+        self.assertEqual(
+            submitted_while_closed,
+            [],
+            f"blocs micro soumis alors que la porte est fermée: {submitted_while_closed}",
         )
         for t, rms in forwarded:
             self.assertLess(

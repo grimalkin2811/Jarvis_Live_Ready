@@ -544,6 +544,8 @@ class EchoLab:
         self._loop_thread: threading.Thread | None = None
         self._voice_task_future = None
         self._mic_sent = 0
+        self._mic_send_times: list[float] = []
+        self._mic_send_lock = threading.Lock()
         self._t0 = time.monotonic()
 
         gemini = GeminiLive(
@@ -565,9 +567,12 @@ class EchoLab:
             # send_audio() de détecter un bloc devenu périmé entre la
             # capture et l'exécution, v1.7.3).
             if gemini is not None and gemini.can_send():
-                self._mic_sent += 1
+                submitted_at = time.monotonic()
                 capture_generation = gemini.session_generation
                 capture_turn_epoch = gemini.turn_epoch
+                with self._mic_send_lock:
+                    self._mic_sent += 1
+                    self._mic_send_times.append(submitted_at)
                 asyncio.run_coroutine_threadsafe(
                     gemini.send_audio(
                         pcm,
@@ -761,6 +766,11 @@ class EchoLab:
         """Audio micro reçu par le serveur (t, rms) après un instant donné."""
         return [(t, rms) for t, rms in self.server.audio_in_log
                 if since is None or t >= since]
+
+    def mic_submit_times(self) -> list[float]:
+        """Instants où le pont micro a planifié un envoi Live."""
+        with self._mic_send_lock:
+            return list(self._mic_send_times)
 
     def presence_states(self, since: float | None = None) -> list[str]:
         return [state for ts, state in self.presence_log
