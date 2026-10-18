@@ -92,7 +92,7 @@ class DashboardFallbackTurnTests(unittest.IsolatedAsyncioTestCase):
         # Le modèle répond verbalement mais n'émet AUCUN appel d'outil.
         self.session.push(*fake.answer("Bien sûr."))
         deadline = time.monotonic() + 3
-        while not self.calls and time.monotonic() < deadline:
+        while "end:open_dashboard:True" not in self.tool_events and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
         self.assertEqual(self.calls, [("open_dashboard", {"page": "memoire"})])
         self.assertIn("start:open_dashboard", self.tool_events)
