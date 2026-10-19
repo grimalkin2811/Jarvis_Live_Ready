@@ -533,6 +533,29 @@ PROMPTS = [
 ]
 
 
+def scenario_verdict(exc: BaseException) -> tuple[str, str]:
+    """Verdict d'un scénario interrompu par une exception (correctif PR #50).
+
+    « NON TESTABLE » est réservé aux PRÉREQUIS absents (clé refusée, quota
+    épuisé, réseau injoignable). Une absence de réponse dans le délai, une
+    erreur de session ou de protocole est un ÉCHEC (FAIL) : le scénario a été
+    exercé et n'a pas abouti. L'ancien code classait toute exception en
+    NON TESTABLE, ce qui masquait de vrais échecs.
+    """
+    from src.gemini_live import AuthError, _is_auth_error
+
+    text = redact(f"{type(exc).__name__}: {exc}")
+    low = text.lower()
+    if isinstance(exc, AuthError) or _is_auth_error(exc):
+        return "NON TESTABLE", f"prérequis absent : clé API refusée ({text[:160]})"
+    if any(marker in low for marker in ("resource_exhausted", "quota", " 429")):
+        return "NON TESTABLE", f"prérequis absent : quota de l'API épuisé ({text[:160]})"
+    if any(marker in low for marker in ("getaddrinfo", "name resolution", "network is unreachable",
+                                        "no route to host")):
+        return "NON TESTABLE", f"prérequis absent : réseau injoignable ({text[:160]})"
+    return "FAIL", text[:300]
+
+
 class ScenarioRunner:
     def __init__(self, lab: RealVoiceLab, prompt_cache: dict[str, bytes]):
         self.lab = lab
@@ -544,7 +567,20 @@ class ScenarioRunner:
         if wake:
             self.lab.wake()
         since = len(self.lab.turns)
+        # L'énoncé doit être émis pendant que la capture est RÉELLEMENT
+        # active (pas pendant la traîne audio du tour précédent / du rejeu).
+        self.lab.wait_mic_capturing()
+        sent_before = self.lab._mic_sent
         self.lab.speak_pcm(self.prompt_cache[prompt])
+        deadline = time.monotonic() + 5.0
+        while self.lab._mic_sent <= sent_before and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if self.lab._mic_sent <= sent_before:
+            raise RuntimeError(
+                "aucun bloc micro transmis après l'énoncé (micro/porte anti-écho) : "
+                f"can_send={self.lab.gemini.can_send()} "
+                f"gate={self.lab.audio._mic_gate_open()}"
+            )
         turn = self.lab.wait_for_new_turn(since, timeout)
         if turn is None:
             raise TimeoutError(f"aucune réponse reçue pour : {prompt!r}")
@@ -589,8 +625,8 @@ class ScenarioRunner:
                 f"awake après expiration = {self.lab.audio.awake}"
             )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S2 : deux tours rapides ------------------------------------------------
     def scenario_2_two_quick_turns(self) -> None:
@@ -612,8 +648,8 @@ class ScenarioRunner:
                     f"ou transcription incomplète) : {turn2.get('assistant')!r}"
                 )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S3 : trois tours ------------------------------------------------------------
     def scenario_3_three_turns(self) -> None:
@@ -652,8 +688,8 @@ class ScenarioRunner:
                     f"{name} : générations={gen0},{gen1},{gen2} nouveaux_tours={n_new_turns}"
                 )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S5 : reconnexion réelle forcée ---------------------------------------------
     def scenario_5_real_reconnection(self) -> None:
@@ -704,8 +740,8 @@ class ScenarioRunner:
                     f"{name} : reasons={reasons} audio_before_ready={len(audio_before_ready)}"
                 )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S6 : contexte réel ------------------------------------------------------------
     def scenario_6_real_context(self) -> None:
@@ -723,8 +759,8 @@ class ScenarioRunner:
             if not ok:
                 self.notes.append(f"{name} : réponse={turn.get('assistant')!r}")
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
 
 def print_verdicts(verdicts: dict[str, str], notes: list[str]) -> None:

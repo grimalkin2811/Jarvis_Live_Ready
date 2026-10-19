@@ -1,36 +1,36 @@
 """Version de Jarvis — source unique de vérité.
 
-Toutes les parties de l'application (Jarvis lui-même, le launcher, l'updater et
+Toutes les parties de l’application (Jarvis lui-même, le launcher, l’updater et
 le build GitHub Actions) lisent cette valeur. Ne la dupliquez pas par ailleurs :
-le fichier ``version.py`` à la racine du dépôt ne fait que re-porter cette valeur
+le fichier version.py à la racine du dépôt ne fait que re-porter cette valeur
 pour les scripts de développement.
 """
 
 from __future__ import annotations
 
-__version__ = "1.8.2"
+__version__ = "1.8.3"
 
-#: Canal de distribution. ``stable`` est utilisé par le launcher pour filtrer
-#: les mises à jour ; ``beta``/``dev`` servent aux canaux de prépublication.
-CHANNEL = "stable"
+#: Canal de distribution. stable est utilisé par le launcher pour filtrer
+#: les mises à jour ; beta/dev servent aux canaux de prépublication.
+CHANNEL = "beta"
 
-#: Nom de l'application, utilisé pour les chemins de données et l'affichage.
+#: Nom de l’application, utilisé pour les chemins de données et l’affichage.
 APP_NAME = "Jarvis"
 
 #: Identifiant du dépôt GitHub utilisé pour les mises à jour (owner/repo).
-#: Surchargeable par ``JARVIS_REPO`` (utile pour les forks / tests).
+#: Surchargeable par JARVIS_REPO (utile pour les forks / tests).
 REPO_SLUG = "grimalkin2811/Jarvis_Live_Ready"
 
 
 def get_version() -> str:
-    """Retourne la version courante (chaîne ``MAJOR.MINOR.PATCH``)."""
+    """Retourne la version courante (chaîne MAJOR.MINOR.PATCH)."""
     return __version__
 
 
 def version_tuple(version: str | None = None) -> tuple[int, int, int]:
-    """Convertit une version ``1.2.3`` en tuple ``(1, 2, 3)``.
+    """Convertit une version 1.2.3 en tuple (1, 2, 3).
 
-    Les éléments non numériques sont ignorés (``1.2.3-beta`` -> ``(1, 2, 3)``).
+    Les éléments non numériques sont ignorés (1.2.3-beta -> 1.2.3).
     """
     text = (version or __version__).split("+")[0].split("-")[0]
     parts: list[int] = []
@@ -46,7 +46,7 @@ def version_tuple(version: str | None = None) -> tuple[int, int, int]:
 def compare_versions(a: str, b: str) -> int:
     """Compare deux versions sémantiques.
 
-    Retourne -1 si ``a < b``, 0 si égales, 1 si ``a > b``.
+    Retourne -1 si a < b, 0 si égales, 1 si a > b.
     """
     ta = version_tuple(a)
     tb = version_tuple(b)
@@ -58,5 +58,5 @@ def compare_versions(a: str, b: str) -> int:
 
 
 def is_newer(candidate: str, current: str) -> bool:
-    """Vrai si ``candidate`` est une version strictement plus récente."""
+    """Vrai si candidate est une version strictement plus récente."""
     return compare_versions(candidate, current) > 0

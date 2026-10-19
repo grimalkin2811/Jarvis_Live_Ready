@@ -352,3 +352,71 @@ class UpdaterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UpdateFailureKeepsUserDataTests(unittest.TestCase):
+    """Correctif PR #50 (B09) : restauration après une mise à jour qui échoue et
+    conservation des données. Les données de Jarvis (mémoire, configuration,
+    préférences du Dashboard) sont VOISINES du dossier remplaçable ``app/`` :
+    aucune issue d'une mise à jour — réussie, refusée ou annulée — ne doit les
+    modifier, et l'ancienne version doit revenir intacte."""
+
+    DATA = {
+        "memory.db": b"SQLite format 3\x00 base de test",
+        "config.json": b'{"user": "Test", "memory_enabled": true}',
+        "ui/dashboard_state.json": b'{"layout": {"view_mode": "multipage"}}',
+    }
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.install_dir = self.root / "app"
+        (self.install_dir / "_internal").mkdir(parents=True)
+        (self.install_dir / "Jarvis.exe").write_bytes(b"old-exe")
+        (self.install_dir / "_internal" / "python311.dll").write_bytes(b"old-dll")
+        (self.install_dir / "_internal" / "base_library.zip").write_bytes(b"old-base")
+        for name, data in self.DATA.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        self.zip_path = self.root / "new.zip"
+        _make_zip(self.zip_path, {"Jarvis.exe": b"new-exe", "_internal/python311.dll": b"new-dll",
+                                  "_internal/base_library.zip": b"new-base"})
+        self.stamps = {name: (self.root / name).stat().st_mtime_ns for name in self.DATA}
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def assertDataIntact(self) -> None:
+        for name, data in self.DATA.items():
+            path = self.root / name
+            self.assertEqual(path.read_bytes(), data, f"{name} modifié")
+            self.assertEqual(path.stat().st_mtime_ns, self.stamps[name], f"{name} réécrit")
+
+    def assertOldVersionRestored(self) -> None:
+        self.assertEqual((self.install_dir / "Jarvis.exe").read_bytes(), b"old-exe")
+        self.assertEqual((self.install_dir / "_internal" / "python311.dll").read_bytes(), b"old-dll")
+
+    def test_copy_failure_restores_the_previous_version_and_keeps_data(self):
+        with patch("src.updater.os.replace", side_effect=OSError("disque plein")), \
+                patch("src.updater.shutil.copytree", side_effect=OSError("disque plein")):
+            with self.assertRaises(UpdateError):
+                apply_update(self.zip_path, self.install_dir, version="9.9.9", marker_dir=self.root)
+        self.assertOldVersionRestored()
+        self.assertDataIntact()
+        self.assertFalse((self.root / "version.json").exists(), "aucune version annoncée après un échec")
+
+    def test_invalid_new_installation_is_rolled_back_and_keeps_data(self):
+        with patch("src.updater._validate_app_dir", return_value=(False, ["Jarvis.exe"], [])):
+            with self.assertRaises(UpdateError):
+                apply_update(self.zip_path, self.install_dir, version="9.9.9", marker_dir=self.root)
+        self.assertOldVersionRestored()
+        self.assertDataIntact()
+
+    def test_successful_update_then_manual_rollback_never_touch_data(self):
+        apply_update(self.zip_path, self.install_dir, version="9.9.9", marker_dir=self.root)
+        self.assertEqual((self.install_dir / "Jarvis.exe").read_bytes(), b"new-exe")
+        self.assertDataIntact()
+        self.assertIsNotNone(rollback(self.install_dir))
+        self.assertOldVersionRestored()
+        self.assertDataIntact()

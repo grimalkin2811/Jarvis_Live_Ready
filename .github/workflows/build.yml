@@ -179,8 +179,11 @@ jobs:
         run: |
           $v = python -c "import sys; sys.path.insert(0,'.'); from src.version import __version__; print(__version__)"
           $v = $v.Trim()
+          $channel = python -c "import sys; sys.path.insert(0,'.'); from src.version import CHANNEL; print(CHANNEL)"
+          $channel = $channel.Trim()
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          Write-Host "Version depuis src/version.py: $v"
+          "channel=$channel" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Version depuis src/version.py: $v (canal: $channel)"
           # Le tag doit correspondre à la version.
           $tag = "${{ github.ref_name }}"
           Write-Host "Tag Git: $tag"
@@ -613,10 +616,25 @@ jobs:
           "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "SHA-256: $sha"
 
-      - name: Créer la release GitHub
+      - name: Créer la prérelease bêta du Dashboard
+        if: steps.vars.outputs.channel == 'beta'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref }}
+          tag_name: ${{ github.ref_name }}
+          name: Jarvis v${{ steps.vars.outputs.version }} — bêta Dashboard
+          body_path: docs/releases/RELEASE_NOTES_v1.8.3-beta.1.md
+          files: |
+            dist/JarvisSetup-*.exe
+            dist/Jarvis-v*-portable.zip
+            dist/Jarvis-v*-portable.zip.sha256
+          draft: false
+          prerelease: true
+
+      - name: Créer la release stable GitHub
+        if: steps.vars.outputs.channel == 'stable'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
           name: Jarvis v${{ steps.vars.outputs.version }}
           generate_release_notes: true
           files: |

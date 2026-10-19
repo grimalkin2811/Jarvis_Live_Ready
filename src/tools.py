@@ -2120,6 +2120,86 @@ def set_interface_mode(mode):
     return _ok(action="set_interface_mode", mode=selected, message=f"{label} activé.")
 
 
+def _wait_dashboard_visible(expected: bool, timeout: float = 1.5) -> bool:
+    """Attend la confirmation RÉELLE rapportée par l'interface (thread Qt)."""
+    import time as _time
+
+    from UI import dashboard_bridge
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        if bool(dashboard_bridge.DASHBOARD.state().get("visible")) == expected:
+            return True
+        _time.sleep(0.05)
+    return bool(dashboard_bridge.DASHBOARD.state().get("visible")) == expected
+
+
+def _wait_dashboard_request(request_id: int, timeout: float = 1.5) -> dict | None:
+    """Attend que l'interface ait TRAITÉ cette demande d'ouverture (thread Qt).
+
+    Une interface qui suit les demandes (``handled_request``) confirme SA
+    demande, avec la page réellement affichée ; à défaut (consommateur sans
+    suivi), seule la visibilité rapportée fait foi, comme auparavant.
+    """
+    import time as _time
+
+    from UI import dashboard_bridge
+
+    deadline = _time.monotonic() + timeout
+    while True:
+        state = dashboard_bridge.DASHBOARD.state()
+        if state.get("visible") and state.get("handled_request", request_id) == request_id:
+            return state
+        if _time.monotonic() >= deadline:
+            return None
+        _time.sleep(0.05)
+
+
+def open_dashboard(page=None):
+    """Ouvre le Dashboard (troisième interface), éventuellement sur une page.
+
+    Le Dashboard coexiste avec l'orbe et le Desktop : l'ouvrir ne change pas
+    de mode et n'interrompt ni la voix, ni la conversation, ni les tâches.
+    La page annoncée est celle que l'interface a RÉELLEMENT affichée.
+    """
+    try:
+        from UI import dashboard_bridge
+    except Exception as exc:
+        return _err(f"Dashboard indisponible : {exc}")
+    requested = str(page).strip() if page is not None else ""
+    resolved = dashboard_bridge.resolve_page(requested) if requested else None
+    target = resolved or (requested or None)
+    request_id = dashboard_bridge.DASHBOARD.request_open_tracked(target)
+    if not request_id:
+        return _err("Le Dashboard n'est pas disponible : l'interface graphique de Jarvis n'est pas lancée.")
+    state = _wait_dashboard_request(request_id)
+    if state is None:
+        return _ok(action="open_dashboard", page=target or "dernière page", confirmed=False,
+                   message="Ouverture du Dashboard demandée (affichage non encore confirmé par l'interface).")
+    shown = state.get("page") if state.get("handled_request") == request_id else None
+    if target and state.get("handled_request") == request_id and state.get("page_found") is False:
+        return _ok(action="open_dashboard", page=shown or "dernière page", requested_page=requested,
+                   page_found=False,
+                   message=f"Dashboard ouvert, mais la page « {requested} » est introuvable : "
+                           f"page affichée « {shown or 'dernière page'} ».")
+    return _ok(action="open_dashboard", page=shown or target or "dernière page",
+               message="Dashboard ouvert. La voix, la conversation et les tâches continuent.")
+
+
+def close_dashboard():
+    """Masque le Dashboard ; Jarvis continue dans l'orbe ou le Desktop."""
+    try:
+        from UI import dashboard_bridge
+    except Exception as exc:
+        return _err(f"Dashboard indisponible : {exc}")
+    if not dashboard_bridge.DASHBOARD.request_close():
+        return _err("Le Dashboard n'est pas disponible : l'interface graphique de Jarvis n'est pas lancée.")
+    if _wait_dashboard_visible(False):
+        return _ok(action="close_dashboard", message="Dashboard masqué. Jarvis continue de fonctionner.")
+    return _ok(action="close_dashboard", confirmed=False,
+               message="Fermeture du Dashboard demandée (non encore confirmée par l'interface).")
+
+
 # ===========================================================================
 # CONTEXTE CONVERSATIONNEL
 # ===========================================================================
@@ -2527,6 +2607,8 @@ _RAW_TOOL_FUNCTIONS = {
     "hide_menu": hide_menu,
     "get_ui_state": get_ui_state,
     "set_interface_mode": set_interface_mode,
+    "open_dashboard": open_dashboard,
+    "close_dashboard": close_dashboard,
     # Contexte conversationnel (v1.6.0)
     "reset_conversation": reset_conversation,
     "get_conversation_state": get_conversation_state,
@@ -3150,6 +3232,24 @@ TOOL_DECLARATIONS = [
             },
         },
         ["mode"],
+    ),
+    # --- Dashboard (v1.9) ------------------------------------------------------------------
+    _decl(
+        "open_dashboard",
+        "Ouvre le Dashboard (tableau de bord, troisieme interface de Jarvis). Utiliser pour "
+        "'ouvre le Dashboard', 'affiche le tableau de bord', 'montre-moi mes taches dans le Dashboard'. "
+        "Ne change pas le mode orbe/Desktop et n'interrompt rien.",
+        {
+            "page": {
+                **_STR,
+                "description": "Optionnel : accueil, travail, taches, memoire, systeme, parametres "
+                "(ou le nom d'une page personnalisee).",
+            },
+        },
+    ),
+    _decl(
+        "close_dashboard",
+        "Masque le Dashboard ('ferme le Dashboard'). Jarvis continue dans l'orbe ou le Desktop.",
     ),
     # --- Contexte conversationnel (v1.6.0) -------------------------------------------------
     _decl(

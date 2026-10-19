@@ -60,6 +60,13 @@ if ($LASTEXITCODE -ne 0) { throw "pip install requirements échoué" }
 & $venvPython -m pip install pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller échoué" }
 
+# --- Cohérence PySide6 / Qt (PR #50) ---
+# PyInstaller collecte PySide6 dans CE même interpréteur : le binaire embarque
+# donc exactement les versions vérifiées ici (celles que la CI a testées).
+Write-Host "[build] Vérification des versions PySide6 / Qt embarquées..."
+& $venvPython scripts/check_qt_runtime.py --requirements requirements.txt --out (Join-Path $DistDir "qt_versions.json")
+if ($LASTEXITCODE -ne 0) { throw "Versions PySide6/Qt incohérentes avec requirements.txt : build refusé." }
+
 # --- Modèles OpenWakeWord ---
 if (-not $SkipModels) {
     Write-Host "[build] Téléchargement des modèles OpenWakeWord..."
@@ -200,6 +207,13 @@ $versionJson = @"
 "@
 $versionJson | Out-File -FilePath (Join-Path $appDir "version.json") -Encoding utf8
 Write-Host "  version.json: OK"
+
+# Versions PySide6 / Qt vérifiées avant PyInstaller, embarquées DANS l'app
+# (PR #50) : une installation peut ainsi être comparée à ce qu'elle charge
+# réellement (Qt6Core.dll, Jarvis.exe --qt-versions) ; une installation qui ne
+# porte pas ce fichier a été construite avant ce contrôle.
+Copy-Item -LiteralPath (Join-Path $DistDir "qt_versions.json") -Destination (Join-Path $appDir "qt_versions.json") -Force
+Write-Host "  qt_versions.json: OK"
 
 # --- Archive portable ---
 Write-Host ""

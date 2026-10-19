@@ -213,6 +213,7 @@ Le build nécessite ensuite les outils de dev :
 .venv\Scripts\python -m src.main --ui     # orbe morphing interactif
 .venv\Scripts\python -m src.main --desktop# overlay halo plein écran
 .venv\Scripts\python -m src.main --protocol wake_up  # séquence cinématique
+.venv\Scripts\python -m src.main --ui --dashboard  # orbe + Dashboard
 ```
 
 > En développement, `Jarvis.bat` et `setup.bat` créent le `.venv` et le `.env`
@@ -248,7 +249,16 @@ Au premier lancement, Jarvis migre ce `.env` vers `config.json`.
 ```bash
 # Toute la suite (matériel audio et Gemini sont simulés)
 .venv\Scripts\python -m unittest discover tests
+# Référence de la CI : pytest collecte aussi les tests écrits pour pytest
+# (dont ceux du Dashboard, que unittest ne découvre pas)
+.venv\Scripts\python -m pytest -q
+
+# Protocole dédié au Dashboard (unitaires, intégration, performance,
+# captures, ruff) — indépendant du build et de la release
+.venv\Scripts\python scripts\run_dashboard_protocol.py
 ```
+
+Voir [docs/dashboard/PROTOCOLE_DE_TEST.md](docs/dashboard/PROTOCOLE_DE_TEST.md).
 
 Les tests sont multiplateformes et ne déclenchent aucune action réelle. Ceux
 qui nécessitent Qt s'exécutent en mode `offscreen` (et passent sur Windows/CI).
@@ -323,6 +333,22 @@ Jarvis propose désormais une interface reprenant l'orbe morphing de `grimalkin2
 | `Jarvis.bat` | Assistant headless (console), comme avant. |
 | `Jarvis.bat --ui` | Orbe morphing interactif + menus radiaux + assistant vocal. |
 | `Jarvis.bat --desktop` | **Desktop Mode** : halo périphérique traversant + HUD discret reflétant l'état réel de Jarvis. Voir [docs/DESKTOP_MODE.md](docs/DESKTOP_MODE.md). |
+| `Jarvis.bat --dashboard` | Interface enregistrée (orbe ou Desktop) **+ Dashboard**. Se combine aussi avec `--ui` ou `--desktop`. |
+
+### Dashboard (troisième interface)
+
+Une fenêtre de pilotage **en plus** de l'orbe et du Desktop (elle ne les
+remplace pas, la voix non plus) : état réel de Jarvis, conversation écrite
+dans la **même** session que la voix, tâches d'arrière-plan, mémoire
+(consultation, édition, historique), notes, documents, diagnostics,
+ressources, notifications. Pages personnalisables (mode édition, préréglages
+Cockpit / Productivité / Diagnostic / Personnalisée), affichage OnePage, trois
+thèmes (JARVIS, EDITH, FRIDAY).
+
+Ouvrir : `Ctrl+D` dans l'orbe, « Ouvrir le Dashboard » dans le menu de la zone
+de notification, à la voix (« ouvre le Dashboard »), ou `--dashboard` au
+lancement. L'ouvrir ou le fermer n'interrompt ni la voix, ni la conversation,
+ni les tâches. Guide complet : [docs/dashboard/README.md](docs/dashboard/README.md).
 
 ### Desktop Mode (v1.7.0)
 
@@ -409,6 +435,7 @@ s'appliquent aussi au mode console.
 | Flèches / `Entrée` | Navigue dans le menu ouvert et active l'item sélectionné. |
 | `M` | Coupe/rétablit le micro instantanément. |
 | `S` | **Stop** : coupe immédiatement la réponse en cours. |
+| `Ctrl+D` | Ouvre le Dashboard (la voix et les tâches continuent). |
 | `Échap` | Ferme d'abord le menu ouvert ; un second appui quitte Jarvis. |
 | Clic droit | Ferme le menu radial ouvert. |
 

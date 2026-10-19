@@ -544,6 +544,8 @@ class EchoLab:
         self._loop_thread: threading.Thread | None = None
         self._voice_task_future = None
         self._mic_sent = 0
+        self._mic_send_events: list[dict] = []
+        self._mic_send_lock = threading.Lock()
         self._t0 = time.monotonic()
 
         gemini = GeminiLive(
@@ -565,9 +567,19 @@ class EchoLab:
             # send_audio() de détecter un bloc devenu périmé entre la
             # capture et l'exécution, v1.7.3).
             if gemini is not None and gemini.can_send():
-                self._mic_sent += 1
+                submitted_at = time.monotonic()
                 capture_generation = gemini.session_generation
                 capture_turn_epoch = gemini.turn_epoch
+                event = {
+                    "ts": submitted_at,
+                    "rms": round(AudioIO._block_rms(pcm), 1),
+                    "mic_gate_state": audio._mic_gate_state,
+                    "output_pending_bytes": audio.output_pending_bytes(),
+                    "speaking": gemini.speaking,
+                }
+                with self._mic_send_lock:
+                    self._mic_sent += 1
+                    self._mic_send_events.append(event)
                 asyncio.run_coroutine_threadsafe(
                     gemini.send_audio(
                         pcm,
@@ -592,6 +604,9 @@ class EchoLab:
         # src/main.py / src/ui.py / tests/real_gemini_harness.py.
         gemini.on_turn_open = audio.note_turn_open
         gemini.on_turn_resolved = audio.note_turn_resolved
+        # Câblage identique à src/ui.py / src/main.py : une pause prolongée
+        # de la porte anti-écho clôt le flux micro côté Live API.
+        audio.mic_pause_hook = gemini.notify_mic_paused
 
     # -- cycle de vie -----------------------------------------------------------
 
@@ -758,6 +773,11 @@ class EchoLab:
         """Audio micro reçu par le serveur (t, rms) après un instant donné."""
         return [(t, rms) for t, rms in self.server.audio_in_log
                 if since is None or t >= since]
+
+    def mic_submit_events(self) -> list[dict]:
+        """État observé quand le pont micro planifie un envoi Live."""
+        with self._mic_send_lock:
+            return [dict(event) for event in self._mic_send_events]
 
     def presence_states(self, since: float | None = None) -> list[str]:
         return [state for ts, state in self.presence_log

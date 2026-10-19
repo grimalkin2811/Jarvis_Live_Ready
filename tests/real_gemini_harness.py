@@ -165,6 +165,9 @@ class RealVoiceLab:
         # qu'il a justement servi à révéler.
         gemini.on_turn_open = audio.note_turn_open
         gemini.on_turn_resolved = audio.note_turn_resolved
+        # Identique à src/ui.py / src/main.py : une pause prolongée de la
+        # porte anti-écho clôt le flux micro côté Live API.
+        audio.mic_pause_hook = gemini.notify_mic_paused
 
     # -- callbacks transcription / tour --------------------------------------
 
@@ -284,6 +287,27 @@ class RealVoiceLab:
                 pass
 
     # -- pilotage ---------------------------------------------------------------
+
+    def wait_mic_capturing(self, timeout: float = 20.0) -> None:
+        """Attend que le micro soit réellement capturé par Gemini.
+
+        ``can_send()`` seul ne suffit pas : la porte anti-écho peut encore
+        retenir les blocs pendant la traîne de lecture de la réponse
+        précédente (surtout au rejeu de contexte après reconnexion). Un
+        énoncé émis à cet instant est perdu, puis le scénario échoue comme
+        un faux défaut de contexte (E12 réel : S5 PASS, S6 FAIL). On attend
+        l'état complet : envoi autorisé, porte ouverte, sortie drainée.
+        """
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if (
+                self.gemini.can_send()
+                and self.audio._mic_gate_open()
+                and self.audio.output_pending_seconds() == 0.0
+            ):
+                return
+            time.sleep(0.05)
+        raise TimeoutError("micro non disponible pour l'énoncé (porte anti-écho ou session)")
 
     def speak_pcm(self, pcm: bytes) -> None:
         self.path.queue_pcm(pcm)
