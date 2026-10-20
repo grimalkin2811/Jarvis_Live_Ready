@@ -27,10 +27,17 @@ from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
 
 from google.genai import types
-from google.genai.live import _is_interaction_complete
 
 IDLE = types.InteractionStatus.IDLE
 IN_PROGRESS = types.InteractionStatus.IN_PROGRESS
+
+def _fake_interaction_complete(content: Any) -> bool:
+    """Reproduit localement la condition de fin utilis?e par ce faux serveur."""
+    if content is None or not getattr(content, "turn_complete", False):
+        return False
+    status = getattr(content, "interaction_status", None)
+    return status is None or status == IDLE
+
 
 #: 0,3 s de « voix » à 24 kHz : au-dessus du pré-tampon de lecture d'AudioIO.
 VOICE = b"\x10\x00" * 7200
@@ -110,7 +117,7 @@ class SdkLikeSession:
             if message is None:
                 return
             yield message
-            if _is_interaction_complete(message.server_content):
+            if _fake_interaction_complete(message.server_content):
                 return
 
     # -- côté Jarvis ---------------------------------------------------------------

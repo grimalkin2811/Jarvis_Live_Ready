@@ -67,3 +67,8 @@ user_content/*
 
 # Agent scratch (never ship audit downloads or local test data)
 .arena/
+
+# Résultats et traces locales de validation
+/validation-results/
+/s6_real_trace_*.txt
+/docs/validation/rapports/validation_pr50_*.md
