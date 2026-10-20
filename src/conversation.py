@@ -969,8 +969,14 @@ _DASHBOARD_OPEN = re.compile(
 _DASHBOARD_CLOSE = re.compile(
     r"\b(ferme|fermer|masque|masquer|cache|cacher)\b(?:\s+\w+){0,3}?\s+" + _DASHBOARD_OBJ + r"\b"
 )
-_DASHBOARD_NEGATION = re.compile(r"\b(ne|n|pas|jamais|surtout\s+pas|sans)\b[^.]{0,40}\b(ouvre|affiche|montre|ferme|masque|cache)\b")
-_DASHBOARD_QUESTION = re.compile(r"^(qu|quel|quelle|comment|pourquoi|est\s+ce)\b")
+_DASHBOARD_NEGATION = re.compile(
+    r"\b(ne|n|pas|jamais|surtout\s+pas|sans)\b[^.]{0,40}\b(ouvre|ouvrir|affiche|afficher|"
+    r"montre|montrer|lance|lancer|ferme|fermer|masque|masquer|cache|cacher)\b"
+)
+_DASHBOARD_QUESTION = re.compile(
+    r"^(qu|quel|quelle|comment|pourquoi|est\s+ce|peux\s+tu|pourrais\s+tu|veux\s+tu|"
+    r"voudrais\s+tu|tu\s+peux|tu\s+pourrais|tu\s+veux)\b"
+)
 
 
 def parse_dashboard_command(text: str) -> tuple[str, str | None] | None:
@@ -985,7 +991,7 @@ def parse_dashboard_command(text: str) -> tuple[str, str | None] | None:
     normalized = _normalize(text)
     if not normalized or _DASHBOARD_NEGATION.search(normalized):
         return None
-    if _DASHBOARD_QUESTION.match(normalized):
+    if "?" in text or _DASHBOARD_QUESTION.match(normalized):
         return None
     if _DASHBOARD_CLOSE.search(normalized):
         return ("close", None)

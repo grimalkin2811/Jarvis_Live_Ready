@@ -18,7 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
-from tests.dashboard_support import isolated_jarvis, pump  # noqa: E402
+from tests.dashboard_support import isolated_jarvis, pump, wait_until  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -56,6 +56,10 @@ def test_hidden_dashboard_costs_nothing_and_panels_are_cached(tmp_path):
             controller.window.resize(1500, 900)
             pump(app, 0.5)
             frames = [f for c in controller.window.all_canvases() for f in c.frames.values()]
+            assert frames
+            assert wait_until(app, lambda: all(frame.paint_count > 0 for frame in frames), timeout=3.0), [
+                frame.paint_count for frame in frames
+            ]
             counts = [f.paint_count for f in frames]
             pump(app, 0.6)  # le fond animé repeint la fenêtre plusieurs fois
             assert controller.window.root.frames_painted > 2

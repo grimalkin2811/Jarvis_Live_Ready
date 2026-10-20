@@ -41,8 +41,15 @@ class ParseDashboardCommandTests(unittest.TestCase):
     def test_mention_of_excel_dashboard_does_not_open(self):
         self.assertIsNone(parse_dashboard_command("Mon tableau de bord Excel est trop lent, tu as une idée ?"))
 
+    def test_question_does_not_open(self):
+        self.assertIsNone(parse_dashboard_command("Peux-tu ouvrir le tableau de bord ?"))
+        self.assertIsNone(parse_dashboard_command("Peux-tu ouvrir le tableau de bord"))
+        self.assertIsNone(parse_dashboard_command("Tu peux ouvrir le Dashboard ?"))
+
     def test_negation_does_not_open(self):
         self.assertIsNone(parse_dashboard_command("N'ouvre pas le tableau de bord"))
+        self.assertIsNone(parse_dashboard_command("Ne peux-tu pas ouvrir le tableau de bord"))
+        self.assertIsNone(parse_dashboard_command("Je ne peux pas ouvrir le Dashboard"))
 
     def test_ctrl_token_is_not_a_command(self):
         self.assertIsNone(parse_dashboard_command("<ctrl46> <ctrl46>"))
