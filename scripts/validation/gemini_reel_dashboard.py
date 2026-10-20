@@ -60,6 +60,18 @@ import time
 import traceback
 from pathlib import Path
 
+# Windows console cp1252 safety: prevent UnicodeEncodeError on unicode characters
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 #: Code de Jarvis testé : la copie isolée de la PR (posée par l'orchestrateur), jamais la copie de
 #: travail de l'utilisateur ; à défaut (exécution manuelle), le dépôt qui contient ce script.
 ROOT = Path(os.environ.get("JARVIS_VALIDATION_RACINE") or Path(__file__).resolve().parents[2]).resolve()
@@ -128,9 +140,17 @@ def extrait(texte: str, n: int = 140) -> str:
 def noter(cid: str, titre: str, statut: str, resultat: str, preuve: str = "") -> None:
     RESULTATS.append({"id": cid, "titre": titre, "statut": statut, "resultat": masquer(resultat),
                       "preuve": masquer(preuve)})
-    print(f"[{cid}] {statut} — {titre} : {masquer(resultat)}", flush=True)
+    msg = f"[{cid}] {statut} — {titre} : {masquer(resultat)}"
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"), flush=True)
     if statut == ECHEC and preuve:
-        print(f"[{cid}] diagnostic : {masquer(preuve)}", flush=True)
+        diag = f"[{cid}] diagnostic : {masquer(preuve)}"
+        try:
+            print(diag, flush=True)
+        except UnicodeEncodeError:
+            print(diag.encode("ascii", errors="replace").decode("ascii"), flush=True)
 
 
 def decrire_exception(exc: BaseException) -> str:

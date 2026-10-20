@@ -70,13 +70,20 @@ def _is_invalid_handle_error(exc: BaseException) -> bool:
 
     Constat googleapis/python-genai#2197 : un handle invalide produit une
     ``APIError 1007 … Invalid session handle`` À LA CONNEXION (pas de session
-    vide silencieuse). Le repli correct est alors une session neuve + rejeu
-    du contexte local, jamais une boucle de reconnexions avec le même handle.
+    vide silencieuse), ou ``APIError 1008 … Requested entity was not found``
+    quand la session a expiré côté serveur. Le repli correct est alors une
+    session neuve + rejeu du contexte local, jamais une boucle de reconnexions
+    avec le même handle.
     """
-    if getattr(exc, "code", None) == 1007:
+    code = getattr(exc, "code", None)
+    if code in (1007, 1008):
         return True
     text = str(exc).lower()
-    return "1007" in text or "invalid session handle" in text
+    return any(marker in text for marker in (
+        "1007", "1008", "invalid session handle",
+        "requested entity was not found", "entity was not found",
+        "session not found", "handle not found",
+    ))
 
 
 def _env_flag(name: str, default: bool = True) -> bool:
@@ -1066,7 +1073,14 @@ class GeminiLive:
                         "nouvelle session vierge + rejeu du contexte local",
                         exc,
                     )
+                    self._record_trace(
+                        "SESSION_RESUME_REJECTED",
+                        error=str(exc)[:200],
+                        code=getattr(exc, "code", None),
+                    )
                     self.resumption_handle = None
+                    self._resumption_handle_message_count = None
+                    self._resumption_handle_received_this_turn = False
                     attempts -= 1
                     continue
                 if resumed:

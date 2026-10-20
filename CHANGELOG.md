@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.9.0-dev — Dashboard, stabilisation Gemini Live, compatibilité SDK
+
+> [!NOTE]
+> Canal `dev` : en cours de validation. Ne pas utiliser en production avant confirmation sur API réelle.
+
+### Ajouté
+
+- **Entrée texte Dashboard (v1.9)** : `GeminiLive.submit_text` / `submit_text_threadsafe` — envoi d'un message écrit dans la session Live courante, versé au contexte partagé, couvert par la relance de génération vide et le rejeu après reconnexion. Porte micro retenue pendant le traitement (`_text_turn_pending`). Filet de sécurité `TEXT_TURN_TIMEOUT_SECONDS` (30 s) : tour clos en échec si le serveur ne répond pas.
+- **Filet d'intention Dashboard (E02/E10/E11)** : `_maybe_run_dashboard_fallback` — si la transcription est une commande explicite `open_dashboard`/`close_dashboard` mais qu'aucun appel d'outil n'a eu lieu, l'outil est exécuté localement avec notification interface et journalisation contexte.
+- **Chien de garde « serveur muet »** : `RESPONSE_STALL_TIMEOUT_SECONDS` (30 s) — si une réponse est due et que le serveur n'envoie rien, le tour est clos en échec et la session est relancée (handle conservé).
+- **Filet texte `TEXT_TURN_TIMEOUT_SECONDS`** : tour clos en échec + relance session si aucun message serveur depuis l'envoi d'un message écrit.
+- **Interruption manuelle améliorée** : `request_interrupt(manual=True)` ancré sur `turn_epoch` — l'audio du tour stoppé est jeté jusqu'à sa fin côté serveur, sans risque de reprise intempestive au-delà du tour stoppé.
+- **Arrêt de flux micro explicite** (`_end_mic_stream`) avant tout `clientContent` (relance, texte, interruption-retry) : la VAD serveur n'est plus suspendue indéfiniment.
+- **`parse_dashboard_command`** : détecte les commandes vocales Dashboard explicites (verbe impératif + objet Dashboard), exclut mentions, questions et négations, extrait la page nommée parmi les pages connues.
+- **`_wait_dashboard_request`** : attend la confirmation RÉELLE de l'interface (page affichée + `handled_request`) plutôt que la simple visibilité.
+- **Outil `open_dashboard` amélioré** : retourne la page RÉELLEMENT affichée, distingue page non trouvée / ouverture non confirmée.
+
+### Corrigé
+
+- **Compatibilité SDK** (`tests/sdk_live_fake.py`) : suppression de l'import privé `google.genai.live._is_interaction_complete`, remplacé par `_fake_interaction_complete` locale — même sémantique, sans dépendre d'un symbole interne susceptible de disparaître.
+- **Reconnexion après EMPTY_GENERATION** : `_regeneration_pending` (distinct de `speaking`) ferme la porte micro pendant toute relance de génération vide — supprime la cause d'aggravation CLIENT prouvée sur trace réelle (g2-t8, S6).
+- **Seed commit confirmé avant ouverture micro** : `_await_seed_commit` attend le `turn_complete` serveur du rejeu de contexte (`SEED_COMMIT_TIMEOUT_SECONDS`) ; `context_seed_confirmed` distingue « rejeu envoyé » de « rejeu traité ».
+- **`_fail_open_turn`** : tour resté ouvert à la fermeture de session désormais clos (`_turn_closed=True`) — la première transcription de la session suivante ouvre bien un nouveau tour.
+- **Reprise session avec handle périmé** : détection du cas `local_messages > checkpoint` — rejeu local plutôt que reprise incomplète (E12).
+- **`SEED_REPLY_WAIT_SECONDS`** : un message texte n'interrompt plus la réponse du modèle au rejeu si celle-ci est encore en vol.
+- **`_interruption_retry`** : relance UNE fois la demande sans réponse après une interruption serveur avant tout audio (E01/E07/E09/E10).
+- **`_text_turn_watchdog`** : filet génération = la session ne reçoit rien depuis l'envoi du texte → relance session ; sinon tour clos en échec proprement.
+
+### Technique
+
+- Version : `1.9.0`, CHANNEL : `dev`
+- Branche : `validation-pr50` → `feature/v1.9.0`
+- `.gitignore` : ajout `.pytest_cache/`, `.ruff_cache/`, `.mypy_cache/`, `pytest-results.xml`, `*.junit.xml`, `.coverage`, `htmlcov/`
+
 ## Non publié — Intégration historique
 
 - Tâches personnelles SQLite et journal opt-in sans contenu privé.

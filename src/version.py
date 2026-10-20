@@ -8,11 +8,11 @@ pour les scripts de développement.
 
 from __future__ import annotations
 
-__version__ = "1.8.2"
+__version__ = "1.9.0"
 
 #: Canal de distribution. ``stable`` est utilisé par le launcher pour filtrer
 #: les mises à jour ; ``beta``/``dev`` servent aux canaux de prépublication.
-CHANNEL = "stable"
+CHANNEL = "dev"
 
 #: Nom de l'application, utilisé pour les chemins de données et l'affichage.
 APP_NAME = "Jarvis"

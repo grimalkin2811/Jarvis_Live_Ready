@@ -58,6 +58,18 @@ import time
 import wave
 from pathlib import Path
 
+# Windows console cp1252 safety: prevent UnicodeEncodeError on unicode characters
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import gemini_live as gl  # noqa: E402
@@ -91,7 +103,11 @@ WIRE: list[dict] = []  # traçage des envois (patch du SDK, voir _install_wire_t
 def safe_print(*args, **kwargs) -> None:
     """Print qui ne peut JAMAIS laisser fuiter une clé API."""
     text = " ".join(str(a) for a in args)
-    print(_KEY_RE.sub("<clé masquée>", text), **kwargs, flush=True)
+    masked = _KEY_RE.sub("<clé masquée>", text)
+    try:
+        print(masked, **kwargs, flush=True)
+    except UnicodeEncodeError:
+        print(masked.encode("ascii", errors="replace").decode("ascii"), **kwargs, flush=True)
 
 
 # ---------------------------------------------------------------------------

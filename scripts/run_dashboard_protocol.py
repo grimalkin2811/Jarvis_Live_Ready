@@ -28,6 +28,18 @@ import os
 import platform
 import subprocess
 import sys
+
+# Windows console cp1252 safety: prevent UnicodeEncodeError on unicode characters
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 import time
 from pathlib import Path
 
@@ -75,7 +87,11 @@ def _run(name: str, command: list[str], out_dir: Path) -> dict:
     log = out_dir / f"{name}.log"
     log.write_text(proc.stdout + ("\n--- stderr ---\n" + proc.stderr if proc.stderr else ""), encoding="utf-8")
     tail = [line for line in proc.stdout.strip().splitlines() if line.strip()][-1:] or [""]
-    print(f"    → code {proc.returncode} en {elapsed:.1f} s · {tail[0]}", flush=True)
+    msg = f"    → code {proc.returncode} en {elapsed:.1f} s · {tail[0]}"
+    try:
+        print(msg, flush=True)
+    except UnicodeEncodeError:
+        print(msg.encode("ascii", errors="replace").decode("ascii"), flush=True)
     return {"step": name, "command": command, "returncode": proc.returncode, "seconds": round(elapsed, 1),
             "last_line": tail[0], "log": str(log.relative_to(ROOT)) if log.is_relative_to(ROOT) else str(log)}
 
