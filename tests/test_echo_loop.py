@@ -218,13 +218,21 @@ class MicGateUnitTests(unittest.TestCase):
         audio.awake = False
         # 5 blocs consécutifs (400 ms) : un seul réveil.
         block = _tone(0.08, 10, AudioIO.INPUT_RATE)
-        for _ in range(5):
+        clock = [100.0]
+        with patch("src.audio.time.monotonic", side_effect=lambda: clock[0]):
+            for _ in range(5):
+                audio._handle_idle_block(block)
+                clock[0] += 0.08
+            wake_events = [e for e in audio.trace_events() if e["kind"] == "wake"]
+            self.assertEqual(len(wake_events), 1)
+            clock[0] = audio.last_wake_time + audio.WAKE_COOLDOWN_SECONDS
             audio._handle_idle_block(block)
         wake_events = [
             e for e in audio.trace_events() if e["kind"] == "wake"
         ]
-        self.assertEqual(len(wake_events), 1)
+        self.assertEqual(len(wake_events), 2)
         self.assertEqual(wake_events[0]["reason"], "listen_mode")
+        self.assertEqual(wake_events[1]["reason"], "listen_mode")
         self.assertTrue(audio.awake)
         _ = wakes
 
