@@ -161,8 +161,15 @@ class StalledResponseTests(_Base):
         messages = self._messages()
         self.assertEqual([t for r, t, _f in messages if r == "user"].count("Raconte-moi une histoire"), 1)
         self.assertIn(("assistant", "Il était une fois", False), messages)
-        # Session REPRISE par handle : le contexte serveur est restauré...
-        self.assertTrue(self.server.current.resumed)
+        # Le checkpoint du handle précède le tour interrompu : une session
+        # fraîche doit donc recevoir le contexte local avant de reprendre.
+        self.assertFalse(self.server.current.resumed)
+        self.assertTrue(self.gemini.context_seeded)
+        seed_events = [
+            event for event in self.server.wire
+            if event.generation == self.gemini.session_generation and event.kind == "client_content"
+        ]
+        self.assertEqual(len(seed_events), 1, "le checkpoint périmé exige un rejeu unique")
         # ... et la voix comme le texte fonctionnent de nouveau, avec le contexte.
         self.assertEqual(await self.harness.speak("Quel est mon prénom ?"), "Ton prénom est Ada.")
         self.assertEqual(await self._text_turn("Comment je m'appelle ?"), "Ton prénom est Ada.")
