@@ -494,9 +494,8 @@ class RealRunner:
         await self._wait_sendable()
         self._turn_done.clear()
         before = len(self.turn_log)
-        await self.gemini.session.send_realtime_input(text=text)
-        return await self._wait_answer(before, lambda turn: bool(turn.get("user") or turn.get("assistant")),
-                                       "le texte")
+        await self.gemini.submit_text(text)
+        return await self._wait_answer(before, lambda turn: bool(turn.get("user")), "le texte")
 
     async def ask(self, prompt: str, mode: str, client=None, tts_model: str = "") -> dict:
         safe_print(f"   [question] {prompt}")
@@ -674,7 +673,11 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
         turn = await runner.ask("Quel est mon prénom ?", mode, client, tts_model)
         answer = (turn.get("assistant") or "").lower()
         audio_ok = "simon" in answer
-        verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
+        if mode == "text":
+            verdicts["AUDIO RÉEL"] = "NON TESTABLE"
+            notes.append("S2 : mode texte — aucun audio n'a été envoyé; le verdict audio reste NON TESTABLE.")
+        else:
+            verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
         verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok and seed_sends else "FAIL"
         if not audio_ok:
             notes.append(

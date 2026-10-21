@@ -20,6 +20,9 @@ import io
 import os
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest import mock
+from unittest.mock import AsyncMock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -99,6 +102,54 @@ class ScenarioVerdictTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(verdicts[name], "FAIL", name)
         self.assertTrue(any("aucune réponse" in note for note in notes))
 
+    async def test_text_mode_never_reports_real_audio_as_pass(self):
+        class TextModeRunner:
+            def __init__(self):
+                self.traces = []
+                self.gemini = SimpleNamespace(
+                    session_generation=1,
+                    resumption_handle=None,
+                    context_seed_confirmed=True,
+                    trace_events=lambda: self.traces,
+                )
+
+            async def ask(self, prompt, mode, client=None, tts_model=""):
+                if prompt == "J'habite à Tours.":
+                    self.gemini.resumption_handle = "handle"
+                    return {"user": prompt, "assistant": "Tu habites à Tours.", "tools": []}
+                if "validation_ping" in prompt:
+                    return {"user": prompt, "assistant": vrg.VALIDATION_CODE, "tools": ["validation_ping"]}
+                if "code" in prompt.lower():
+                    return {"user": prompt, "assistant": vrg.VALIDATION_CODE, "tools": []}
+                answer = "Simon" if "prénom" in prompt.lower() else "Tours"
+                return {"user": prompt, "assistant": answer, "tools": []}
+
+            async def drop_connection(self, keep_handle):
+                previous = self.gemini.session_generation
+                self.gemini.session_generation += 1
+                if keep_handle:
+                    self.traces.append({"kind": "SESSION_RESUME",
+                                        "session_generation": self.gemini.session_generation})
+                return previous
+
+            async def wait_reconnected(self, generation):
+                return None
+
+            def diagnostic(self):
+                return "{}"
+
+        runner = TextModeRunner()
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
+            vrg, "wire_since", side_effect=[[{"kind": "client_content", "turn_complete": True}], []]
+        ):
+            verdicts, _notes = await vrg.run_scenarios(runner, "text", None, "")
+
+        self.assertEqual(verdicts["GEMINI LIVE RÉEL"], "PASS")
+        self.assertEqual(verdicts["AUDIO RÉEL"], "NON TESTABLE")
+        self.assertEqual(verdicts["RECONNEXION RÉELLE"], "PASS")
+        self.assertEqual(verdicts["SESSION RESUMPTION RÉELLE"], "PASS")
+        self.assertEqual(verdicts["OUTILS RÉELS"], "PASS")
+
     async def test_selftest_observes_the_seed_after_the_real_reconnection(self):
         """Le rejeu est compté APRÈS la reconnexion effective (ancien code : avant,
         donc toujours 0) ; la reprise par handle est réellement observée."""
@@ -114,6 +165,33 @@ class ScenarioVerdictTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ContinuousMicrophoneTests(unittest.IsolatedAsyncioTestCase):
+    async def test_text_validation_uses_the_production_submit_text_path(self):
+        class FakeGemini:
+            def __init__(self):
+                self.submitted = []
+                self.session = self
+
+            async def submit_text(self, text):
+                self.submitted.append(text)
+                return {"accepted": True}
+
+            async def send_realtime_input(self, **kwargs):
+                raise AssertionError(f"validator bypassed submit_text: {kwargs}")
+
+        runner = object.__new__(vrg.RealRunner)
+        runner.gemini = FakeGemini()
+        runner.turn_log = []
+        runner._turn_done = asyncio.Event()
+        runner._audio_chunks = []
+        runner._wait_sendable = AsyncMock()
+        runner._wait_answer = AsyncMock(return_value={"user": "Bonjour", "assistant": "Oui."})
+
+        result = await runner.speak_text("Bonjour")
+
+        self.assertEqual(runner.gemini.submitted, ["Bonjour"])
+        runner._wait_answer.assert_awaited_once_with(0, unittest.mock.ANY, "le texte")
+        self.assertEqual(result["assistant"], "Oui.")
+
     async def test_the_microphone_keeps_streaming_after_the_utterance(self):
         """Comme le pont micro de production : des blocs continuent de partir
         après l'énoncé (la VAD du serveur voit la fin de la parole)."""

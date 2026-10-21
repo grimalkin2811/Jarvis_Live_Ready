@@ -695,9 +695,11 @@ class GeminiLive:
         self._commit_user_text()
         self._commit_assistant_text()
         if self._resumption_handle_received_this_turn:
-            # Le handle reçu pendant CE tour couvre la réponse qui vient
-            # d'être committée localement (le serveur l'a produite).
-            self._resumption_handle_message_count = len(self.conversation.get_messages())
+            # Le checkpoint reste celui observé à la réception du handle.
+            # L'avancer ici ferait passer un handle reçu AVANT le commit de la
+            # réponse serveur pour un snapshot qui couvre déjà ce tour; si la
+            # session est reprise ensuite, le serveur peut alors restaurer un
+            # contexte amputé sans que _seed_context détecte qu'il faut rejouer.
             self._resumption_handle_received_this_turn = False
         self.conversation.close_turn("fin de tour")
         already_closed = self._turn_closed
@@ -1056,8 +1058,31 @@ class GeminiLive:
         ~2 h, session terminée…) : l'erreur est levée À LA CONNEXION
         (APIError 1007). On efface alors le handle et on retente UNE fois en
         session neuve — le contexte local est rejoué par ``_seed_context``.
+        Si le checkpoint local prouve déjà que le handle ne couvre pas le
+        dernier tour, on démarre directement une session neuve : certains
+        serveurs acceptent la reprise puis refusent le rejeu ``clientContent``
+        sur cette session partielle (1008 Requested entity was not found).
         Sans ce repli, Jarvis bouclerait indéfiniment sur le handle mort.
         """
+        if self.resumption_handle:
+            local_messages = len(self.conversation.get_messages())
+            checkpoint = self._resumption_handle_message_count
+            if checkpoint is not None and local_messages > checkpoint:
+                self._record_trace(
+                    "SESSION_RESUME_STALE_CHECKPOINT",
+                    checkpoint=checkpoint,
+                    local_messages=local_messages,
+                    source="preconnect",
+                )
+                log.warning(
+                    "handle de reprise périmé avant connexion (checkpoint=%s, local=%s) : "
+                    "session neuve + rejeu du contexte local",
+                    checkpoint,
+                    local_messages,
+                )
+                self.resumption_handle = None
+                self._resumption_handle_message_count = None
+                self._resumption_handle_received_this_turn = False
         attempts = 2
         while True:
             resumed = bool(self.resumption_handle)
@@ -1078,6 +1103,11 @@ class GeminiLive:
                         error=str(exc)[:200],
                         code=getattr(exc, "code", None),
                     )
+                    # L'erreur peut arriver APRÈS l'ouverture du WebSocket
+                    # (par exemple pendant le commit du seed). Fermer ce
+                    # contexte avant la tentative fraîche évite de laisser
+                    # une session refusée active en parallèle.
+                    await self._shutdown_session()
                     self.resumption_handle = None
                     self._resumption_handle_message_count = None
                     self._resumption_handle_received_this_turn = False
