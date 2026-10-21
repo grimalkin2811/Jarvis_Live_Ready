@@ -142,8 +142,7 @@ jobs:
         run: pip install ruff
       - name: Lint (code applicatif)
         run: ruff check --output-format=github src launcher run_jarvis.py version.py
-      - name: Lint (tests & UI, sans bloquer)
-        continue-on-error: true
+      - name: Lint (tests & UI)
         run: ruff check --output-format=github UI tests
 
   build:

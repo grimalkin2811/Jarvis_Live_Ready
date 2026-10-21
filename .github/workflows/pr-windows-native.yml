@@ -59,11 +59,9 @@ jobs:
         run: python scripts/dashboard_first_open_profile.py --natif --repetitions 5 --reouvertures 5 --json profil.json
 
       - name: Sonde des polices de symboles (couverture, coût du repli)
-        continue-on-error: true
         run: python scripts/dashboard_first_open_profile.py --natif --sonde-polices --json sonde_polices.json
 
       - name: Mesures du protocole sous Qt natif (dashboard_perf.py)
-        continue-on-error: true
         env:
           QT_QPA_PLATFORM: windows
         run: python scripts/dashboard_perf.py --out perf_natif

@@ -10,7 +10,8 @@
 
 param(
     [switch]$SkipModels,
-    [string]$DistDir = "dist"
+    [string]$DistDir = "dist",
+    [string]$PythonExe
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,13 +41,20 @@ if ($Version -notmatch '^\d+\.\d+\.\d+') {
 }
 
 # --- Python de build ---
-$venvPython = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) {
-    $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe")
-}
-if (-not (Test-Path $venvPython)) {
-    Write-Host "[build] Aucun .venv trouvé : on utilise le python actif."
-    $venvPython = "python"
+if (-not [string]::IsNullOrWhiteSpace($PythonExe)) {
+    if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        throw "PythonExe introuvable : $PythonExe"
+    }
+    $venvPython = (Resolve-Path -LiteralPath $PythonExe).Path
+} else {
+    $venvPython = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe")
+    }
+    if (-not (Test-Path $venvPython)) {
+        Write-Host "[build] Aucun .venv trouvé : on utilise le python actif."
+        $venvPython = "python"
+    }
 }
 Write-Host "Python build : $venvPython"
 & $venvPython --version

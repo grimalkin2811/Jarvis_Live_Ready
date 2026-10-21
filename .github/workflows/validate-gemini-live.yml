@@ -53,6 +53,7 @@ jobs:
       # logs depuis le sandbox : le bilan est donc PUBLIE en commentaire de
       # la PR (lisible via l'API github.com).
       - name: Validation Gemini Live reelle
+        id: real_gemini_validation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -103,6 +104,7 @@ jobs:
       # cf. tests/real_gemini_harness.py) : "google-genai numpy" suffit.
       # ---------------------------------------------------------------
       - name: Validation reconnexion-par-tour (v1.7.4) reelle
+        id: real_reconnect_validation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           JARVIS_NO_MODEL_DOWNLOAD: "1"
@@ -149,6 +151,9 @@ jobs:
 
       - name: Conclusion
         if: always()
+        env:
+          REAL_GEMINI_OUTCOME: ${{ steps.real_gemini_validation.outcome }}
+          REAL_RECONNECT_OUTCOME: ${{ steps.real_reconnect_validation.outcome }}
         run: |
           if [ ! -f validation.log ] && [ ! -f validation_v174.log ]; then
             echo "pas de log"; exit 1
@@ -162,6 +167,19 @@ jobs:
             echo 'VALIDATION (reconnexion v1.7.4) EN ECHEC (voir le commentaire de PR)'
             FAILED=1
           fi
+          if [ "${REAL_GEMINI_OUTCOME:-}" != "success" ]; then
+            echo "Validation Gemini Live réelle non concluante (étape: ${REAL_GEMINI_OUTCOME:-inconnue})."
+            FAILED=1
+          fi
+          if [ "${REAL_RECONNECT_OUTCOME:-}" != "success" ]; then
+            echo "Validation réelle de reconnexion non concluante (étape: ${REAL_RECONNECT_OUTCOME:-inconnue})."
+            FAILED=1
+          fi
+          if { [ -f validation.log ] && grep -q 'NON TESTABLE' validation.log; } || \
+             { [ -f validation_v174.log ] && grep -q 'NON TESTABLE' validation_v174.log; }; then
+            echo 'VALIDATION GEMINI RÉELLE NON TESTABLE (clé, quota ou réseau absent) — ce check ne vaut pas PASS.'
+            FAILED=1
+          fi
           if [ "$FAILED" = "1" ]; then exit 1; fi
-          echo 'Aucun FAIL — voir les verdicts dans les commentaires de PR.'
+          echo 'Toutes les validations Gemini réelles sont PASS — voir les verdicts dans les commentaires de PR.'
 
