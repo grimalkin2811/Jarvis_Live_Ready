@@ -371,6 +371,28 @@ def test_protocol_step_survives_output_in_the_windows_ansi_code_page(tmp_path):
     assert resultat["last_line"].endswith("tape r\ufffdussie")
 
 
+def test_dashboard_protocol_uses_native_qt_for_windows_performance(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    module = _protocole_dashboard_module()
+    module.sys = SimpleNamespace(platform="win32", executable=sys.executable)
+    calls = []
+
+    def fake_run(name, command, out_dir, environment=None):
+        calls.append((name, environment))
+        return {"step": name, "command": command, "returncode": 0, "seconds": 0, "last_line": "ok",
+                "log": name}
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    assert module.main(["--only", "perf", "--out", str(tmp_path)]) == 0
+    assert calls == [
+        ("perf_tests", None),
+        ("perf_measures", {"QT_QPA_PLATFORM": "windows"}),
+    ]
+    summary = json.loads((tmp_path / "summary.json").read_text(encoding="utf-8"))
+    assert summary["performance_qpa"] == "windows"
+
+
 def test_c10_mismatch_between_exit_code_and_steps_stays_failed_but_explained(tmp_path):
     valider_pr = _valider_pr()
     x = _execution(tmp_path, valider_pr)

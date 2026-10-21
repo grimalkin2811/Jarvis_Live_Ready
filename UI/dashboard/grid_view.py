@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 from collections.abc import Callable
 
 from PySide6.QtCore import QPoint, QRect, QTimer, Signal
@@ -91,16 +89,17 @@ class GridCanvas(QWidget):
         self.relayout()
 
     def build_step(self, budget_ms: float = 12.0) -> bool:
-        """Crée des cadres manquants dans la limite d'un budget de temps.
+        """Crée au plus un cadre manquant par tour de boucle Qt.
 
         Construction INCRÉMENTALE (OnePage, correctif C10 — validation Windows
         PR #50) : une section entière construite d'un bloc gelait la boucle Qt
         (premier affichage OnePage 179 ms sur le Pentium G5400, seuil de
-        latence 150 ms). Au moins un cadre est créé à chaque appel (progrès
-        garanti). Résultat final identique à ``rebuild()``, qui est appelé pour
-        finaliser. Retourne True quand la page est complète.
+        latence 150 ms). La création d'un cadre est indivisible et peut elle-
+        même dépasser le budget; en limiter le nombre à un évite d'additionner
+        plusieurs créations coûteuses dans le même tour. Résultat final
+        identique à ``rebuild()``, appelé pour finaliser. Retourne True quand
+        la page est complète.
         """
-        deadline = time.perf_counter() + max(0.0, budget_ms) / 1000.0
         wanted = [p for p in self.page.widgets if not p.hidden]
         created = False
         for placement in wanted:
@@ -108,8 +107,7 @@ class GridCanvas(QWidget):
                 continue
             self.frames[placement.id] = self._create_frame(placement)
             created = True
-            if time.perf_counter() >= deadline:
-                break
+            break
         if all(p.id in self.frames for p in wanted):
             self.rebuild()  # finalisation : cadres disparus retirés, disposition
             return True

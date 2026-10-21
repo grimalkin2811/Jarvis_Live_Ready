@@ -30,8 +30,11 @@ python -m pytest -q
 ```
 
 Sous Linux sans écran : `QT_QPA_PLATFORM=offscreen` (positionné
-automatiquement par les scripts et les tests du Dashboard). Sous Windows,
-aucune variable n'est nécessaire.
+automatiquement par les scripts et les tests du Dashboard). Sous Windows, les
+tests d'interface restent hors écran; le protocole `run_dashboard_protocol.py`
+exécute toutefois les mesures de performance avec le plugin Qt natif `windows`,
+comme le workflow `pr-windows-native.yml`. Le résumé conserve `qpa` pour les
+tests et indique `performance_qpa` séparément pour éviter toute confusion.
 
 > Environnement de cette session : conteneur Linux sans écran ni carte son,
 > Python 3.11.2, PySide6 6.11.2. Les bibliothèques système `libGL`,
@@ -164,9 +167,21 @@ affichage 179) » : la dernière ligne, indicative, et jamais le critère dépas
 résumé du protocole contient `failed_checks` et les mesures clés, repris par
 C10. Le seul bloc mesuré au-delà de 150 ms sur le PC était le premier
 affichage OnePage (179 ms, une section entière construite d'un bloc) : OnePage
-construit maintenant quelques widgets par tour de boucle (budget de 12 ms,
-au moins un widget), soit 102 → ~64 ms hors écran pour le premier affichage
-et 44 → 27 ms pour le plus gros bloc d'une section.
+construit maintenant au plus un cadre par tour de boucle Qt. Le budget de 12 ms
+reste indicatif : la création d'un widget Qt est indivisible et peut elle-même
+le dépasser, d'où la borne stricte sur le nombre de cadres créés par tour.
+
+### 3.3 Mesure v1.9.0-dev sur le PC cible
+
+Le 2026-10-21, sur Windows 11 / Python 3.13.7 / Pentium Gold G5400, le
+protocole `run_dashboard_protocol.py --only perf` a mesuré avec le plugin Qt
+natif (`windows`) : première ouverture 448 ms, contenu complet 891 ms, latence
+maximale de boucle 144 ms (phase la plus chargée : retour multipage), OnePage
+complet 787 ms, CPU poussé 18,75 %, Dashboard masqué 0 %. Tous les critères
+étaient respectés sur ce run. D'autres répétitions natives ont mesuré des pics
+jusqu'à 155 ms et des dépassements CPU ponctuels sous charge; ce résultat
+isolé ne garantit donc pas une marge stable. Le protocole force maintenant
+`windows` pour la mesure native et conserve les tests/captures en hors écran.
 
 ## 4. Protocole visuel et ergonomique
 

@@ -73,9 +73,11 @@ STATIC_TARGETS = ["UI/dashboard", "UI/dashboard_bridge.py", "src/runtime_status.
 STEPS = ("unit", "integration", "perf", "visual", "static")
 
 
-def _run(name: str, command: list[str], out_dir: Path) -> dict:
+def _run(name: str, command: list[str], out_dir: Path, environment: dict[str, str] | None = None) -> dict:
     env = dict(os.environ)
     env.setdefault("QT_QPA_PLATFORM", "offscreen")
+    if environment:
+        env.update(environment)
     started = time.perf_counter()
     print(f"\n=== {name} : {' '.join(command)}", flush=True)
     # Décodage tolérant : sous Windows, un message natif (Qt, système) peut sortir
@@ -138,7 +140,8 @@ def main(argv=None) -> int:
     results: list[dict] = []
     for step in selected:
         for name, command in commands[step]:
-            result = _run(name, command, out_dir)
+            native_perf = {"QT_QPA_PLATFORM": "windows"} if name == "perf_measures" and sys.platform == "win32" else None
+            result = _run(name, command, out_dir, environment=native_perf)
             if name == "perf_measures":
                 result.update(_perf_details(out_dir / "perf" / "perf.json"))
             results.append(result)
@@ -152,6 +155,8 @@ def main(argv=None) -> int:
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "platform": f"{platform.system()} {platform.release()} · Python {platform.python_version()}",
         "qpa": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
+        "performance_qpa": ("windows" if sys.platform == "win32" else os.environ.get("QT_QPA_PLATFORM", "offscreen"))
+        if "perf" in selected else None,
         "steps": results,
         "success": ok,
         # Code de sortie ATTENDU de ce script : l'orchestrateur le compare au

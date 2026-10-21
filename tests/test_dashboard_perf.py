@@ -177,7 +177,7 @@ def test_onepage_builds_a_few_widgets_per_event_loop_turn(tmp_path, monkeypatch)
         return done
 
     monkeypatch.setattr(grid_view.GridCanvas, "build_step", counting_step)
-    monkeypatch.setattr(pages_view.OnePageView, "BUILD_BUDGET_MS", 0.0)  # pire cas : un widget par tour
+    monkeypatch.setattr(pages_view.OnePageView, "BUILD_BUDGET_MS", 1000.0)
     with isolated_jarvis():
         controller = DashboardController(state_path=str(tmp_path / "s.json"), attach_bridge=False,
                                          dialog_executor=lambda d: True)
