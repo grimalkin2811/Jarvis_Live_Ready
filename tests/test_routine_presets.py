@@ -195,8 +195,13 @@ class PresetInstallationTests(PresetTestCase):
 
     def test_read_only_installation_reports_error(self):
         path = Path(self.directory.name) / "readonly.json"
+        # Seam d'abstraction (json_state) plutôt que le détail d'implémentation
+        # historique (os.replace) : sous Windows l'écriture passe par le
+        # renommage POSIX et ne touche plus jamais os.replace.
         with patch.object(
-            routines.os, "replace", side_effect=PermissionError("lecture seule")
+            routines.json_state,
+            "write_text_atomic",
+            side_effect=PermissionError("lecture seule"),
         ):
             manager = routines.RoutineManager(path)
         self.assertIn("lecture seule", manager.last_error)

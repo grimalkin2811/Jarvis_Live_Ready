@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from .. import json_state
+
 
 class QuotaExceededError(RuntimeError):
     pass
@@ -80,10 +82,9 @@ class ComplexModelQuota:
                 "tokens_today": self._tokens_today, "minute": list(self._minute),
                 "minute_tokens": list(self._minute_tokens),
             }
-            self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-            temporary = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
-            temporary.write_text(json.dumps(payload), encoding="utf-8")
-            temporary.replace(self.storage_path)
+            # Écriture atomique partagée (json_state) : jamais de JSON tronqué,
+            # destination préservée, temporaire nettoyé.
+            json_state.write_text_atomic(self.storage_path, json.dumps(payload))
         except Exception:
             pass
 
@@ -91,7 +92,7 @@ class ComplexModelQuota:
         if self.storage_path is None or not self.storage_path.exists():
             return
         try:
-            data = json.loads(self.storage_path.read_text(encoding="utf-8"))
+            data = json.loads(json_state.read_text(self.storage_path))
             self._day = date.fromisoformat(data["day"])
             self._calls_today = max(0, int(data.get("calls_today", 0)))
             self._tokens_today = max(0, int(data.get("tokens_today", 0)))

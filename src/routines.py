@@ -42,7 +42,7 @@ import threading
 import time
 
 from .routine_presets import builtin_routines
-from . import paths
+from . import json_state, paths
 from .timeparse import describe_schedule, normalize, parse_schedule
 
 DEFAULT_DATA_DIR = str(paths.data_dir())
@@ -381,8 +381,9 @@ class RoutineManager:
             self.last_error = None
             return self._empty()
         try:
-            with open(self.path, "r", encoding="utf-8") as handle:
-                payload = json.load(handle)
+            # Lecture partagée (json_state) : ne bloque jamais un remplacement
+            # atomique concurrent, ni ne se heurte à un verrou de partage.
+            payload = json.loads(json_state.read_text(self.path))
         except Exception as exc:
             self.last_error = f"Fichier de routines illisible : {exc}"
             return self._empty()
@@ -402,14 +403,10 @@ class RoutineManager:
 
     def _save(self, payload: dict) -> bool:
         try:
-            directory = os.path.dirname(self.path)
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            temp = f"{self.path}.tmp"
-            with open(temp, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-            os.replace(temp, self.path)
+            # Écriture atomique (json_state) : la destination est préservée en
+            # cas d'échec et le temporaire toujours nettoyé.
+            text = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+            json_state.write_text_atomic(self.path, text)
             self.last_error = None
             return True
         except Exception as exc:

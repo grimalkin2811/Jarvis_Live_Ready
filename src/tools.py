@@ -48,6 +48,7 @@ from .system_extras import (
 from .backup import backup_data, list_backups, restore_backup
 from .forecast import get_forecast
 from . import paths
+from . import json_state
 from .activity import get_default_activity_log, log_action
 from .todo import get_default_todo_manager
 from .memory import get_default_memory_manager
@@ -556,16 +557,17 @@ def _send_key(vk_code):
 
 def _read_json(path, default):
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+        # Lecture partagée (json_state) : aucune collision avec une écriture
+        # atomique concurrente du même fichier.
+        return json.loads(json_state.read_text(path))
     except Exception:
         return default
 
 
 def _write_json(path, payload):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    # Écriture atomique (json_state) : dossier créé, destination préservée en
+    # cas d'échec, temporaire toujours nettoyé.
+    json_state.write_text_atomic(path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 # ===========================================================================

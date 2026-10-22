@@ -13,12 +13,11 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import threading
 import urllib.parse
 from pathlib import Path
 
-from .. import paths
+from .. import json_state, paths
 from .text import normalize_text, similarity
 
 log = logging.getLogger("jarvis.music.local_playlists")
@@ -237,8 +236,9 @@ class LocalPlaylistStore:
         if not self.path.is_file():
             return {}
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                raw = json.load(handle)
+            # Lecture partagée (json_state) : ne bloque jamais une écriture
+            # atomique concurrente du même fichier.
+            raw = json.loads(json_state.read_text(self.path))
         except (OSError, ValueError, TypeError) as exc:
             issue = "Le fichier des playlists Deezer est illisible ou corrompu."
             self._issues.append(issue)
@@ -289,20 +289,11 @@ class LocalPlaylistStore:
             except OSError as exc:
                 log.warning("Backup des playlists Deezer impossible: %s", exc)
 
-        fd, temporary_name = tempfile.mkstemp(prefix=f".{self.path.name}.", suffix=".tmp", dir=self.path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=False)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_name, self.path)
-        except Exception:
-            try:
-                os.unlink(temporary_name)
-            except OSError:
-                pass
-            raise
+        # Écriture atomique partagée (json_state) : temporaire unique et
+        # nettoyé, destination préservée en cas d'échec, remplacement POSIX
+        # sous Windows (aucun verrou de partage possible).
+        text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+        json_state.write_text_atomic(self.path, text)
         try:
             os.chmod(self.path, 0o600)
         except OSError:

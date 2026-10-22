@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from ... import paths
+from ... import json_state, paths
 from ..local_playlists import (
     LocalPlaylistStore,
     LocalPlaylistStoreError,
@@ -324,8 +324,9 @@ def load_stored_token(path: Path | None = None) -> dict[str, Any]:
     if not target.is_file():
         return {}
     try:
-        with target.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
+        # Lecture partagée (json_state) : aucun conflit avec une écriture
+        # atomique concurrente du même fichier.
+        data = json.loads(json_state.read_text(target))
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -333,7 +334,6 @@ def load_stored_token(path: Path | None = None) -> dict[str, Any]:
 
 def save_stored_token(payload: dict[str, Any], path: Path | None = None) -> Path:
     target = path or _token_file()
-    target.parent.mkdir(parents=True, exist_ok=True)
     # Ne jamais logger le token. On écrit avec permissions utilisateur.
     clean = {
         "access_token": str(payload.get("access_token") or "").strip(),
@@ -342,8 +342,9 @@ def save_stored_token(payload: dict[str, Any], path: Path | None = None) -> Path
         "user_name": payload.get("user_name"),
         "updated_at": int(time.time()),
     }
-    with target.open("w", encoding="utf-8") as handle:
-        json.dump(clean, handle, indent=2, ensure_ascii=False)
+    # Écriture atomique (json_state) : le token n'est jamais laissé tronqué.
+    text = json.dumps(clean, indent=2, ensure_ascii=False)
+    json_state.write_text_atomic(target, text)
     try:
         os.chmod(target, 0o600)
     except OSError:

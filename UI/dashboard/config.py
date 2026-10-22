@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from src.json_state import save_dict
+from src.json_state import read_text, save_dict
 
 from . import CONFIG_SCHEMA_VERSION
 from .layout_model import (
@@ -590,8 +590,9 @@ def load_config(path: str | os.PathLike | None) -> LoadResult:
     if not os.path.exists(path):
         return LoadResult(DashboardConfig.defaults(), "defaults")
     try:
-        with open(path, "r", encoding="utf-8") as handle:
-            text = handle.read()
+        # Lecture partagée (json_state) : ne bloque jamais une sauvegarde
+        # atomique concurrente du même fichier.
+        text = read_text(path)
     except UnicodeDecodeError:
         text = None
     except OSError as exc:
