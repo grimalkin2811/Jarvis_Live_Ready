@@ -18,6 +18,9 @@
 - **`_wait_dashboard_request`** : attend la confirmation RÉELLE de l'interface (page affichée + `handled_request`) plutôt que la simple visibilité.
 - **Outil `open_dashboard` amélioré** : retourne la page RÉELLEMENT affichée, distingue page non trouvée / ouverture non confirmée.
 - **Construction incrémentale du Dashboard** : au plus un cadre de widget est créé par tour Qt; la boucle graphique ne cumule plus les coûts de plusieurs widgets dans un seul tick.
+- **Aller-retour d'outil fidèle au protocole réel (S4)** : la génération qui porte un `tool_call` se termine par son propre `turn_complete` avant la réponse au résultat d'outil — le faux serveur l'émet désormais (`tests/live_harness.py`), et `GeminiLive` absorbe ce `turn_complete` précis (`_tool_roundtrip_open`) : le tour de l'utilisateur reste ouvert jusqu'à la VRAIE réponse, qui revient dans le tour de la question (contexte ordonné USER → OUTILS → ASSISTANT), sans relance « génération vide » ni renvoi de la question pendant l'aller-retour. Une réponse réellement vide APRÈS l'outil retombe dans la relance bornée normale.
+- **Verdict S3 du validateur réel** : preuves prises sur l'horodatage des traces — le repli documenté (checkpoint périmé détecté avant connexion ou handle refusé → session neuve + rejeu qui préserve le contexte, E12/1008) est distingué d'un doublon accidentel au lieu d'être compté comme un échec ; un rejeu SANS preuve reste un échec « doublon potentiel ».
+- **Diagnostic S6 du validateur reconnexion** : la note d'échec embarque les preuves moteur (rejeu envoyé/confirmé, nombre de relances « génération vide », forme des `model_turn`, champs serveur `interaction_status`/`waiting_for_input`) pour auto-classifier « contexte non restauré » vs bug serveur documenté (googleapis/python-genai#2117) sans nouvelle exécution.
 
 ### Corrigé
 
@@ -32,6 +35,7 @@
 - **`SEED_REPLY_WAIT_SECONDS`** : un message texte n'interrompt plus la réponse du modèle au rejeu si celle-ci est encore en vol.
 - **`_interruption_retry`** : relance UNE fois la demande sans réponse après une interruption serveur avant tout audio (E01/E07/E09/E10).
 - **`_text_turn_watchdog`** : filet génération = la session ne reçoit rien depuis l'envoi du texte → relance session ; sinon tour clos en échec proprement.
+- **Réponse d'outil perdue (S4 réel 2026-10-25)** : le `turn_complete` qui suit un `tool_call` clôturait le tour de l'utilisateur SANS la réponse — `on_turn_complete` partait avec `assistant` vide et la réponse du modèle arrivait sur un tour orphelin sans transcription utilisateur ; le bloc « génération vide » pouvait en outre relancer la question en plein aller-retour d'outil. Corrigé par l'absorption du `turn_complete` porteur d'appel (cf. Ajouté).
 
 ### Technique
 

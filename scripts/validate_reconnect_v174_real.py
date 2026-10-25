@@ -744,6 +744,57 @@ class ScenarioRunner:
             self.notes.append(f"{name} : {reason}")
 
     # -- S6 : contexte réel ------------------------------------------------------------
+    def _engine_failure_diagnostic(self) -> str:
+        """Preuves moteur pour un échec S6 : contexte restauré vs génération vide.
+
+        Un ``réponse=''`` seul ne permet pas de trancher entre « contexte non
+        restauré » et « bug serveur de génération vide » (googleapis/
+        python-genai#2117, cf. docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md
+        §11-§13). Le moteur trace déjà tout ce qu'il faut : on le rejoue ici
+        (lecture seule, borné) pour que CHAQUE échec réel soit
+        auto-classifiant sans nouvelle exécution.
+        """
+        events = self.lab.gemini_trace()
+        retries = [e for e in events if e.get("kind") == "EMPTY_GENERATION_RETRY"]
+        ready = [e for e in events if e.get("kind") == "SESSION_READY"]
+        seed_confirmed = any(
+            e.get("context_seed_confirmed") for e in ready
+        ) or any(e.get("kind") == "SEED_COMMIT_CONFIRMED" for e in events)
+        seeded = any(e.get("context_seeded") for e in ready) or any(
+            e.get("kind") == "CONTEXT_REPLAY_TOOL_ENTRIES" for e in events
+        )
+        empty_turns = [e for e in events if e.get("kind") == "TURN_COMPLETE"
+                       and e.get("has_user_text") and not e.get("has_model_content")]
+        hollow = [
+            e for e in events
+            if e.get("kind") == "MODEL_TURN_RECEIVED"
+            and not e.get("has_inline_audio")
+        ]
+        parts = [
+            f"rejeu_envoyé={bool(seeded)}",
+            f"rejeu_confirmé={bool(seed_confirmed)}",
+            f"relances_generation_vide={len(retries)}",
+            f"tours_avec_question_sans_réponse={len(empty_turns)}",
+            f"model_turn_sans_audio={len(hollow)}",
+        ]
+        if retries:
+            last = retries[-1]
+            parts.append(
+                f"dernière_relance=gen{last.get('session_generation')} "
+                f"attempt={last.get('attempt')}/{last.get('max_attempts')}"
+            )
+        if empty_turns:
+            last = empty_turns[-1]
+            parts.append(
+                "dernier_turn_complete="
+                + ", ".join(
+                    f"{k}={last[k]}"
+                    for k in ("interaction_status", "turn_complete_reason", "waiting_for_input")
+                    if k in last
+                )
+            )
+        return " ; ".join(parts)
+
     def scenario_6_real_context(self) -> None:
         """Le prénom donné AVANT S5 doit rester exploitable après cette
         reconnexion réelle (ne relance pas de wake : reste sur la session
@@ -757,10 +808,15 @@ class ScenarioRunner:
             ok = "simon" in answer
             self.verdicts[name] = "PASS" if ok else "FAIL"
             if not ok:
-                self.notes.append(f"{name} : réponse={turn.get('assistant')!r}")
+                self.notes.append(
+                    f"{name} : réponse={turn.get('assistant')!r} "
+                    f"[{self._engine_failure_diagnostic()}]"
+                )
         except Exception as exc:
             self.verdicts[name], reason = scenario_verdict(exc)
-            self.notes.append(f"{name} : {reason}")
+            self.notes.append(
+                f"{name} : {reason} [{self._engine_failure_diagnostic()}]"
+            )
 
 
 def print_verdicts(verdicts: dict[str, str], notes: list[str]) -> None:

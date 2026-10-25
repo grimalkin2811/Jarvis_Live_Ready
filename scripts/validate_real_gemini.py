@@ -704,45 +704,77 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
             notes.append("S3 : aucun handle de reprise reçu (sessionResumptionUpdate absent) alors que la "
                          "reprise est configurée — diagnostic : " + runner.diagnostic())
         else:
-            mark = len(WIRE)
+            mark_wire = len(WIRE)
+            mark_ts = time.monotonic()
             generation = await runner.drop_connection(keep_handle=True)
             await runner.wait_reconnected(generation)
-            reseed = [e for e in wire_since(mark) if e["kind"] == "client_content"]
-            resumed = any(e["kind"] == "SESSION_RESUME" and e.get("session_generation", 0) > generation
-                          for e in runner.gemini.trace_events())
+            reseed = [e for e in wire_since(mark_wire) if e["kind"] == "client_content"]
+            # Preuves prises sur l'horodatage des traces (et non sur la
+            # génération) : le repli « checkpoint périmé » est tracé AVANT
+            # l'ouverture de la nouvelle session, donc avec l'ancienne
+            # génération — un filtre « generation > N » l'aurait rendu
+            # invisible (angle mort exact du verdict S3 des runs réels
+            # 2026-10).
+            recent = [
+                e for e in runner.gemini.trace_events()
+                if e.get("ts", 0) >= mark_ts
+            ]
+            resumed = any(e["kind"] == "SESSION_RESUME" for e in recent)
+            stale = [
+                e for e in recent
+                if e["kind"] == "SESSION_RESUME_STALE_CHECKPOINT"
+            ]
+            rejected = [
+                e for e in recent
+                if e["kind"] == "SESSION_RESUME_REJECTED"
+            ]
+            fallback = bool(stale or rejected)
             safe_print(
                 f"   [câble] reprise avec handle : session reprise={resumed}, {len(reseed)} clientContent "
-                "(0 attendu : le serveur restaure l'historique lui-même)"
+                f"(0 attendu si reprise serveur ; 1+ attendu en repli documenté — "
+                f"checkpoint périmé={bool(stale)}, handle refusé={bool(rejected)})"
             )
-            stale = [
-                e for e in runner.gemini.trace_events()
-                if e.get("kind") == "SESSION_RESUME_STALE_CHECKPOINT"
-                and e.get("session_generation", 0) > generation
-            ]
             turn = await runner.ask("Où est-ce que j'habite déjà ?", mode, client, tts_model)
             answer = (turn.get("assistant") or "").lower()
-            # Un rejeu après reprise n'est légitime QUE si le handle précède le
-            # dernier tour (checkpoint périmé) : c'est alors la seule façon de
-            # ne pas perdre le contexte (correctif E12). Sans checkpoint
-            # périmé, zéro rejeu est exigé (pas de doublon).
-            replay_ok = (len(reseed) == 0 and not stale) or (len(reseed) >= 1 and stale)
-            ok = "tours" in answer and resumed and replay_ok
+            # Le contexte doit rester intact, et le câble doit être JUSTIFIÉ :
+            # * zéro rejeu + preuve de reprise serveur (SESSION_RESUME) ;
+            # * ou un rejeu + preuve que la reprise était impossible
+            #   (checkpoint périmé détecté avant connexion, ou handle refusé
+            #   par le serveur — repli documenté E12/1008, le rejeu est alors
+            #   ce qui PRÉSERVE le contexte, pas un doublon).
+            # Un rejeu SANS preuve reste un doublon potentiel (échec).
+            replay_ok = (len(reseed) == 0 and resumed and not fallback) or (
+                len(reseed) >= 1 and fallback
+            )
+            resume_ok = resumed or fallback
+            ok = "tours" in answer and resume_ok and replay_ok
             verdicts["SESSION RESUMPTION RÉELLE"] = "PASS" if ok else "FAIL"
             safe_print(
-                f"   [contexte] checkpoint périmé={bool(stale)}, rejeux={len(reseed)}, "
-                f"réponse exploitable={'tours' in answer}"
+                f"   [contexte] checkpoint périmé={bool(stale)}, handle refusé={bool(rejected)}, "
+                f"rejeux={len(reseed)}, réponse exploitable={'tours' in answer}"
             )
             if "tours" not in answer:
                 notes.append("S3 : le rappel après reprise par handle a échoué — diagnostic : "
                              + runner.diagnostic())
-            if stale and len(reseed) >= 1:
-                notes.append("S3 : checkpoint périmé détecté — rejeu volontaire pour préserver "
-                             "le contexte récent (attendu, ce n'est pas un doublon accidentel).")
+            if fallback and len(reseed) >= 1:
+                reason = "checkpoint périmé" if stale else "handle refusé par le serveur"
+                notes.append(
+                    f"S3 : reprise refusée ({reason}) — repli documenté : session neuve + "
+                    "rejeu complet, contexte préservé (pas un doublon)."
+                )
             elif reseed:
-                notes.append("S3 : un rejeu a été envoyé alors que le checkpoint couvrait "
-                             "l'historique (doublon potentiel).")
-            if not resumed:
-                notes.append("S3 : la nouvelle session n'a pas été ouverte en reprise (handle refusé ?).")
+                last_error = runner.errors[-1] if runner.errors else ""
+                notes.append(
+                    "S3 : un rejeu a été envoyé sans preuve de reprise impossible "
+                    "(checkpoint couvrant + handle accepté) (doublon potentiel)."
+                    + (f" Dernière erreur session : {last_error}" if last_error else "")
+                )
+            if not resumed and not fallback:
+                notes.append(
+                    "S3 : ni reprise confirmée, ni repli tracé (SESSION_RESUME / "
+                    "SESSION_RESUME_STALE_CHECKPOINT / SESSION_RESUME_REJECTED absents) — "
+                    "état de reprise indémontrable."
+                )
     except Exception as exc:
         failed(("SESSION RESUMPTION RÉELLE",), "S3", exc)
 

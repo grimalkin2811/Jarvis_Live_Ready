@@ -420,6 +420,18 @@ class GeminiLive:
         self._turn_model_content_seen = False
         #: Un outil a-t-il déjà été exécuté pour CE tour ? (filet Dashboard)
         self._turn_tool_called = False
+        #: v1.9.x (validation réelle, S4 « OUTILS RÉELS ») : un aller-retour
+        #: d'outil est EN COURS — le(s) ``tool_response`` viennent d'être
+        #: envoyés et le serveur doit encore produire la réponse. Protocole
+        #: Live API réel : la génération qui PORTE le ``tool_call`` se termine
+        #: par son PROPRE ``turn_complete`` dès l'appel (interaction_status
+        #: ``REQUIRES_ACTION``), AVANT la réponse au résultat d'outil. Ce
+        #: ``turn_complete``-là ne doit ni clore le tour de l'utilisateur ni
+        #: déclencher la relance « génération vide » : on l'absorbe (cf. bloc
+        #: FIN DE TOUR) et on attend la vraie réponse, qui arrive sur la même
+        #: session. Réarmé à chaque envoi de réponse d'outil ; retombé dès la
+        #: première sortie modèle (le tour se referme alors normalement).
+        self._tool_roundtrip_open = False
         #: Octets audio du modèle réellement remis au lecteur pour CE tour
         #: (0 = rien d'audible). Sert à distinguer une interruption réelle
         #: (l'utilisateur a entendu et coupe) d'une annulation serveur avant
@@ -673,6 +685,7 @@ class GeminiLive:
         self._user_text_committed = ""
         self._turn_model_content_seen = False
         self._turn_tool_called = False
+        self._tool_roundtrip_open = False
         self._turn_audio_bytes = 0
         self._interruption_retry_pending = False
         self._interruption_retry_text = ""
@@ -2394,6 +2407,13 @@ class GeminiLive:
                     out = getattr(server_content, "output_transcription", None)
                     out_text = getattr(out, "text", None) if out else None
                     if out_text:
+                        # Le modèle produit la réponse attendue : si un
+                        # aller-retour d'outil était en cours, il est terminé
+                        # — le ``turn_complete`` final refermera le tour
+                        # normalement (variante de serveur qui n'envoie pas
+                        # de ``turn_complete`` intermédiaire après le
+                        # ``tool_call``).
+                        self._tool_roundtrip_open = False
                         self._commit_user_text()
                         self._turn_model_content_seen = True
                         # Nouvelle sortie du modèle : une autre génération a
@@ -2445,6 +2465,12 @@ class GeminiLive:
                 server_content
                 and server_content.model_turn
             ):
+                # Première sortie modèle : un éventuel aller-retour d'outil
+                # est terminé (cf. _tool_roundtrip_open). Un ``model_turn``
+                # creux (génération vide simulée/bug serveur) retombe aussi
+                # ici, volontairement : son ``turn_complete`` doit alors
+                # repasser par le chemin normal de relance bornée.
+                self._tool_roundtrip_open = False
                 # v1.7.5 quinquies (instrumentation S6, lecture seule) :
                 # décrit EXACTEMENT ce que contient ce ``model_turn``, avant
                 # toute décision -- notamment si des ``parts`` contiennent du
@@ -2653,6 +2679,36 @@ class GeminiLive:
                 # ``turn_complete`` clôt la génération ANNULÉE. Ni relance, ni
                 # fermeture du tour en cours (gardé ouvert, ou plus récent).
                 await self._absorb_interrupted_turn_complete(live_diag)
+            elif (
+                server_content
+                and server_content.turn_complete
+                and self._tool_roundtrip_open
+            ):
+                # Correctif v1.9.x (validation réelle S4 « OUTILS RÉELS :
+                # FAIL ») : la génération qui PORTE le ``tool_call`` se
+                # termine par son propre ``turn_complete`` dès l'appel, AVANT
+                # que le modèle n'ait reçu la réponse d'outil. Le clôturer ici
+                # fermait le tour de l'utilisateur SANS la réponse (le
+                # ``on_turn_complete`` partait avec ``assistant`` vide — la
+                # réponse réelle arrivait ensuite sur un tour orphelin, sans
+                # transcription utilisateur), et faisait prendre ce
+                # ``turn_complete`` pour une « génération vide » (risque de
+                # relance en plein aller-retour d'outil). On l'absorbe, comme
+                # une génération interrompue : le tour reste ouvert et se
+                # refermera à la fin de la VRAIE réponse. Si le serveur n'envoie
+                # jamais ce ``turn_complete`` intermédiaire, l'absorption est
+                # sans effet (le drapeau est retombé à la première sortie
+                # modèle). Une réponse réellement vide APRÈS l'outil retombe
+                # elle, elle, dans le chemin normal de relance bornée.
+                self._tool_roundtrip_open = False
+                self._seed_reply_pending = False
+                self._record_trace(
+                    "TURN_KEPT_OPEN",
+                    reason="turn_complete de la génération porteuse d'un tool_call "
+                    "(aller-retour outil en cours, réponse attendue)",
+                    text_turn=bool(self._text_turn_pending),
+                    **live_diag,
+                )
             elif (
                 server_content
                 and server_content.turn_complete
@@ -2986,6 +3042,12 @@ class GeminiLive:
                     await self.session.send_tool_response(
                         function_responses=responses
                     )
+                    # Protocole Live API : la génération qui porte cet appel
+                    # va se terminer par son PROPRE ``turn_complete`` ; le
+                    # vrai résultat (réponse du modèle au résultat d'outil)
+                    # arrive ensuite sur la même session. Garder le tour
+                    # ouvert jusque-là (cf. bloc FIN DE TOUR).
+                    self._tool_roundtrip_open = True
                 finally:
                     self.tool_active = False
                     # Le temps passé dans l'outil n'est pas un silence du
@@ -2999,6 +3061,7 @@ class GeminiLive:
         self._text_turn_pending = False
         self._interrupted_generation_pending = False
         self._seed_reply_pending = False
+        self._tool_roundtrip_open = False
         self._mic_stream_open = False
         self.tool_active = False
         self._clear_interrupt()
