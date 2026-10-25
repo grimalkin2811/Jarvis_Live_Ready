@@ -533,6 +533,36 @@ PROMPTS = [
 ]
 
 
+# =====================================================================
+# Backend PRIMAIRE : fixtures WAV versionnées (zéro requête TTS).
+#
+# Les phrases EXACTES des scénarios sont des fichiers PCM 16 kHz mono
+# versionnés (tts_fixtures/, contrôlés par manifest.json : sha256, format,
+# durées). Aucune requête TTS au runtime, entrées identiques à chaque
+# exécution, aucun quota Gemini consommé. Toute fixture douteuse est
+# signalée explicitement (jamais envoyée en silence) et le validateur
+# retombe sur les backends historiques pour les phrases manquantes.
+# =====================================================================
+
+FIXTURES_BACKEND_NAME = "fixtures"
+
+
+def synthesize_from_fixtures(prompts: list[str]) -> tuple[dict[str, bytes], list[str]]:
+    """Charge les fixtures audio versionnées pour les prompts demandés.
+
+    Retourne ``(cache, problèmes)`` : les prompts sans fixture valide
+    restent à la charge des backends de secours ; les problèmes sont
+    affichés (jamais silencieux) et rappelés dans les notes de verdict.
+    """
+    from scripts.validation import tts_fixtures as fx
+
+    try:
+        cache, problems = fx.load_fixtures(prompts)
+    except fx.FixtureError as exc:
+        return {}, [str(exc)]
+    return cache, problems
+
+
 def scenario_verdict(exc: BaseException) -> tuple[str, str]:
     """Verdict d'un scénario interrompu par une exception (correctif PR #50).
 
@@ -585,6 +615,13 @@ class ScenarioRunner:
         if turn is None:
             raise TimeoutError(f"aucune réponse reçue pour : {prompt!r}")
         safe_print(f"   [question] {prompt}")
+        # Contrôle anti-audio-faux : ce que la reconnaissance vocale de
+        # Gemini a RÉELLEMENT entendu doit correspondre à la phrase demandée
+        # (une fixture corrompue ou un TTS dérivant se voient ici, dans le
+        # log, tour par tour).
+        heard = (turn.get("user") or "").strip()
+        if heard:
+            safe_print(f"   [entendu]  {heard}")
         safe_print(f"   [réponse]  {turn.get('assistant') or '(sans transcription)'}")
         return turn
 
@@ -854,10 +891,29 @@ async def main() -> int:
     prompt_cache: dict[str, bytes] = {}
     modes_used: set[str] = set()
 
-    # 1) Backend PRIMAIRE : synthèse locale (pyttsx3), zéro quota Gemini.
+    # 0) Backend PRIMAIRE : fixtures WAV versionnées — zéro requête TTS,
+    #    zéro quota Gemini, entrées identiques à chaque exécution. Les
+    #    fixtures sont validées (sha256, format, durée) AVANT toute
+    #    ouverture de session Gemini.
     tts_backend = os.getenv("JARVIS_VALIDATE_TTS_BACKEND", "auto").strip().lower()
-    if tts_backend in ("auto", "local"):
-        local_result = synthesize_all_local(PROMPTS)
+    if tts_backend in ("auto", "fixtures"):
+        fixture_cache, fixture_problems = synthesize_from_fixtures(PROMPTS)
+        if fixture_cache:
+            prompt_cache.update(fixture_cache)
+            modes_used.add(FIXTURES_BACKEND_NAME)
+            safe_print(
+                f"[entrée] {len(fixture_cache)}/{len(PROMPTS)} phrase(s) depuis les "
+                "fixtures versionnées (zéro requête TTS)."
+            )
+        for problem in fixture_problems:
+            safe_print(f"[entrée] FIXTURE INVALIDE : {problem}")
+        if fixture_problems:
+            notes.extend(f"fixture : {p}" for p in fixture_problems)
+
+    # 1) Backend local (pyttsx3), zéro quota Gemini : ne sert que pour les
+    #    prompts sans fixture valide.
+    if tts_backend in ("auto", "local") and any(p not in prompt_cache for p in PROMPTS):
+        local_result = synthesize_all_local([p for p in PROMPTS if p not in prompt_cache])
         if local_result:
             prompt_cache.update(local_result)
             modes_used.add("local-tts")

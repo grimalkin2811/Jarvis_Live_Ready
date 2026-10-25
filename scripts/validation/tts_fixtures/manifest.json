@@ -1,0 +1,82 @@
+{
+  "format": {
+    "sample_rate": 16000,
+    "channels": 1,
+    "sample_width_bytes": 2,
+    "encoding": "PCM s16le",
+    "note": "Le silence final (0,4-0,5 s pour la VAD serveur) est ajouté par les validateurs avant envoi."
+  },
+  "origin": "Voix TTS masculine française (Arena, voice-00), 2026-10-25 ; régénération : scripts/validation/make_tts_fixtures.py",
+  "fixtures": [
+    {
+      "text": "Bonjour Jarvis, quelle heure est-il ?",
+      "file": "bonjour_jarvis_quelle_heure.wav",
+      "sha256": "4fb307b715b69bb68f5ed914a2d6985c71b0ab4d79fa9951dc88448ed31cbd5a",
+      "duration_s": 2.52,
+      "bytes": 80684
+    },
+    {
+      "text": "Bonjour Jarvis, tu m'entends bien ?",
+      "file": "bonjour_jarvis_tu_m_entends_bien.wav",
+      "sha256": "06866757104c2076d5934fe8a5a3dceafe0e93e4343c504ddaa8ae29a9d8342e",
+      "duration_s": 2.68,
+      "bytes": 85804
+    },
+    {
+      "text": "Et demain, quel temps fera-t-il ?",
+      "file": "et_demain_quel_temps.wav",
+      "sha256": "0f8d815ae02889f65c0b0c05378c54e387bde341d2a68898e976d5e7cfa6011d",
+      "duration_s": 2.56,
+      "bytes": 81964
+    },
+    {
+      "text": "J'habite à Tours.",
+      "file": "j_habite_a_tours.wav",
+      "sha256": "1cf195e1d52d5d0e242c51f81ee546faf75ebcbaccd487fa904d822d789ae1ef",
+      "duration_s": 1.76,
+      "bytes": 56364
+    },
+    {
+      "text": "Mon prénom est Simon.",
+      "file": "mon_prenom_est_simon.wav",
+      "sha256": "d1ec552a0a4090c089a18b5e72f7bad9c4067b554d95edbdcf24ae3b9f3b8cf9",
+      "duration_s": 1.96,
+      "bytes": 62764
+    },
+    {
+      "text": "Où est-ce que j'habite déjà ?",
+      "file": "ou_est_ce_que_j_habite_deja.wav",
+      "sha256": "542d2e49a5a7e080a53b46b0d2ba5d588e3d4d82c92470a072c8fe76948e3dda",
+      "duration_s": 1.8,
+      "bytes": 57644
+    },
+    {
+      "text": "Peux-tu me le confirmer ?",
+      "file": "peux_tu_me_le_confirmer.wav",
+      "sha256": "2f8cf1dd50966ee2eb4bb93d013ec2dc02fabbe6beae032158911f121f2863c3",
+      "duration_s": 1.88,
+      "bytes": 60204
+    },
+    {
+      "text": "Quel est mon prénom ?",
+      "file": "quel_est_mon_prenom.wav",
+      "sha256": "94eb8ccfbb5ea983f043d4415bb064995e6750da81e64332696c8c4c8b9fd5d2",
+      "duration_s": 1.44,
+      "bytes": 46124
+    },
+    {
+      "text": "Quel était le code retourné par l'outil, déjà ?",
+      "file": "quel_etait_le_code_retourne.wav",
+      "sha256": "f74ff569494f5294e38d1fc959532dc77c47ab067c2f3177b2180818c9fe160c",
+      "duration_s": 3.08,
+      "bytes": 98604
+    },
+    {
+      "text": "Utilise l'outil validation_ping et répète-moi exactement le code qu'il retourne.",
+      "file": "utilise_l_outil_validation_ping.wav",
+      "sha256": "9a7ebf280d026d056ac6d11be6a335667afb3bdac1dcd5542318cef5ff0ca0c7",
+      "duration_s": 6.76,
+      "bytes": 216364
+    }
+  ]
+}

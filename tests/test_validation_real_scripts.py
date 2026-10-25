@@ -386,5 +386,107 @@ class S6FailureDiagnosticTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("relances_generation_vide=2", runner.notes[0])
 
 
+class V174FixturesBackendTests(unittest.TestCase):
+    """Backend PRIMAIRE v174 : les 5 phrases des scénarios ont une fixture.
+
+    Défaut reproduit (run réel 2026-10-25) : pyttsx3 absent en CI → TTS
+    Gemini 429 (quota) → repli Live conversationnel ayant envoyé une phrase
+    ne correspondant PAS à la question (« Sunday, October 25, 2026 at 8:03
+    PM UTC ») → 5/5 NON TESTABLE. Les fixtures versionnées suppriment cette
+    chaîne : zéro requête TTS pour les phrases couvertes.
+    """
+
+    def test_les_cinq_phrases_de_scenarios_sont_couvertes(self) -> None:
+        cache, problems = v174.synthesize_from_fixtures(v174.PROMPTS)
+        self.assertEqual(problems, [])
+        self.assertEqual(sorted(cache), sorted(v174.PROMPTS))
+        for pcm in cache.values():
+            self.assertIsInstance(pcm, bytes)
+            self.assertGreater(len(pcm), 1600)
+
+    def test_prompt_hors_liste_retombe_explicitement(self) -> None:
+        cache, problems = v174.synthesize_from_fixtures(["Phrase hors scénarios."])
+        self.assertEqual(cache, {})
+        self.assertEqual(len(problems), 1)
+
+
+class _DiagnosticRunner:
+    """Runner minimal pour ``_tool_failure_diagnostic`` (aucune API)."""
+
+    def __init__(self, traces: list[dict], wire_kinds: list[str], can_send=(True, "ok")) -> None:
+        self.gemini = SimpleNamespace(
+            trace_events=lambda: list(traces),
+            _can_send_now=lambda: can_send,
+        )
+        self._wire_kinds = wire_kinds
+
+    def diagnostic(self) -> str:
+        return '{"etat": "test"}'
+
+
+class ToolFailureDiagnosticTests(unittest.TestCase):
+    """Le diagnostic S4 distingue les 4 causes d'un « OUTILS RÉELS : FAIL ».
+
+    Exigence mission 3 : le test réel doit tracer et distinguer « aucun
+    appel reçu » / « appel non exécuté » / « réponse d'outil envoyée » /
+    « réponse finale absente » — sinon la note ``outils=[]`` du run réel
+    reste ininterprétable.
+    """
+
+    QUESTION = {"user": "Utilise l'outil validation_ping.", "assistant": "", "tools": []}
+
+    def _run(self, runner, wire_kinds):
+        with mock.patch.object(vrg, "WIRE", [{"kind": k} for k in wire_kinds]):
+            return vrg._tool_failure_diagnostic(runner, dict(self.QUESTION))
+
+    def test_cas_1_aucun_appel_recu(self) -> None:
+        runner = _DiagnosticRunner([], wire_kinds=["client_content"])
+        diag = self._run(runner, ["client_content"])
+        self.assertIn("appels_outil_executes=0 (aucun tool_call du serveur)", diag)
+        # !r échappe les apostrophes avec des guillemets doubles — accepter
+        # les deux rendus.
+        heard = diag.split("question_entendue=", 1)[1].split(" ; ", 1)[0]
+        self.assertIn("Utilise l'outil validation_ping.", heard)
+        self.assertIn("reponses_outil_envoyees=0", diag)
+
+    def test_cas_2_appel_execute_reponse_non_envoyee(self) -> None:
+        runner = _DiagnosticRunner(
+            [{"kind": "TOOL_CALL_EXECUTED", "name": "validation_ping"}],
+            wire_kinds=["tool_call"],
+        )
+        diag = self._run(runner, ["tool_call"])
+        self.assertIn("appels_outil_executes=1 ['validation_ping']", diag)
+        self.assertIn("reponses_outil_envoyees=0", diag)
+        self.assertIn("tool_response_sur_cable=0", diag)
+
+    def test_cas_3_reponse_envoyee_sur_le_cable(self) -> None:
+        runner = _DiagnosticRunner(
+            [
+                {"kind": "TOOL_CALL_EXECUTED", "name": "validation_ping"},
+                {"kind": "TOOL_RESPONSE_SENT", "names": ["validation_ping"]},
+            ],
+            wire_kinds=["tool_call", "tool_response"],
+        )
+        diag = self._run(runner, ["tool_call", "tool_response"])
+        self.assertIn("reponses_outil_envoyees=1", diag)
+        self.assertIn("tool_response_sur_cable=1", diag)
+
+    def test_cas_4_reponse_envoyee_mais_reponse_finale_absente(self) -> None:
+        runner = _DiagnosticRunner(
+            [
+                {"kind": "TOOL_CALL_EXECUTED", "name": "validation_ping"},
+                {"kind": "TOOL_RESPONSE_SENT", "names": ["validation_ping"]},
+                {"kind": "EMPTY_GENERATION_RETRY", "attempt": 1},
+                {"kind": "EMPTY_GENERATION_RETRY", "attempt": 2},
+            ],
+            wire_kinds=["tool_call", "tool_response"],
+            can_send=(False, "generation vide"),
+        )
+        diag = self._run(runner, ["tool_call", "tool_response"])
+        self.assertIn("relances_generation_vide=2", diag)
+        self.assertIn("porte_micro=False:generation vide", diag)
+        self.assertIn('{"etat": "test"}', diag)
+
+
 if __name__ == "__main__":
     unittest.main()

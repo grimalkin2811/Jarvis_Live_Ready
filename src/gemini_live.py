@@ -1927,12 +1927,36 @@ class GeminiLive:
     async def receive_loop(self) -> None:
         try:
             await self._receive_loop()
-        except BaseException:
+        except BaseException as exc:
             # Tour interrompu par une erreur réseau/serveur : le message
             # utilisateur reste dans le contexte mais le tour est marqué en
             # échec (comportement déterministe, testé).
             if not self.reconnect_requested:
                 self._reconnect_reason = "error"
+            # v1.9.x : un « Requested entity was not found » (1008) reçu sur
+            # la session OUVERTE signifie que la session serveur n'existe
+            # plus — son handle de reprise ne peut plus être valable. On
+            # l'invalide immédiatement (trace dédiée) pour que la prochaine
+            # reconnexion démarre en session neuve + rejeu contrôlé, au lieu
+            # d'essayer un handle que le serveur vient de déclarer introuvable
+            # (cycle « 1008 répétés » observé en validation réelle). Le rejeu
+            # reste celui de ``_seed_context`` : confirmé, borné, tracé.
+            if _is_invalid_handle_error(exc) and self.resumption_handle:
+                log.warning(
+                    "gen=%s : session tuée par une erreur d'entité introuvable (%s) : "
+                    "handle de reprise invalidé avant reconnexion (session neuve + rejeu)",
+                    self.session_generation,
+                    exc,
+                )
+                self._record_trace(
+                    "SESSION_RESUME_REJECTED",
+                    error=str(exc)[:200],
+                    code=getattr(exc, "code", None),
+                    source="receive_loop",
+                )
+                self.resumption_handle = None
+                self._resumption_handle_message_count = None
+                self._resumption_handle_received_this_turn = False
             self._fail_open_turn("erreur de session")
             raise
         else:
@@ -3051,9 +3075,27 @@ class GeminiLive:
                             )
                         )
 
-                    await self.session.send_tool_response(
-                        function_responses=responses
-                    )
+                    try:
+                        await self.session.send_tool_response(
+                            function_responses=responses
+                        )
+                        # v1.9.x (diagnostic S4 de bout en bout) : preuve
+                        # côté moteur que la réponse d'outil a bien été
+                        # ENVOYÉE sur le câble. Croisée avec le miroir
+                        # ``tool_response`` du validateur, elle distingue
+                        # « réponse non envoyée » de « réponse envoyée sans
+                        # réponse finale du modèle ».
+                        self._record_trace(
+                            "TOOL_RESPONSE_SENT",
+                            names=[r.name for r in responses],
+                        )
+                    except Exception as exc:
+                        self._record_trace(
+                            "TOOL_RESPONSE_SEND_FAILED",
+                            names=[r.name for r in responses],
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                        raise
                     # Protocole Live API : la génération qui porte cet appel
                     # va se terminer par son PROPRE ``turn_complete`` ; le
                     # vrai résultat (réponse du modèle au résultat d'outil)

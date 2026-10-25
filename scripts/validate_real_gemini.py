@@ -244,6 +244,32 @@ def _resample_to_16k(data: bytes, rate: int) -> bytes:
     return np.concatenate([samples, tail]).tobytes()
 
 
+def _pcm_with_tail(pcm: bytes, tail_seconds: float = 0.4) -> bytes:
+    """Ajoute le silence final attendu par la VAD serveur (comme les TTS)."""
+    import numpy as np
+
+    tail = np.zeros(int(SAMPLE_RATE * tail_seconds), dtype=np.int16)
+    return np.concatenate([np.frombuffer(pcm, dtype=np.int16), tail]).tobytes()
+
+
+def synthesize_from_fixtures(prompts: list[str]) -> tuple[dict[str, bytes], list[str]]:
+    """Charge les fixtures audio versionnées des prompts demandés.
+
+    Source PRIMAIRE des validations : zéro requête TTS, zéro quota Gemini,
+    entrées identiques à chaque exécution. Chaque fixture est validée
+    (sha256 manifeste, format 16 kHz mono s16le, durée plausible) AVANT
+    l'ouverture de toute session. Retourne ``(cache, problèmes)`` — les
+    problèmes sont affichés par l'appelant, jamais avalés.
+    """
+    from scripts.validation import tts_fixtures as fx
+
+    try:
+        cache, problems = fx.load_fixtures(prompts)
+    except fx.FixtureError as exc:
+        return {}, [str(exc)]
+    return {prompt: _pcm_with_tail(pcm) for prompt, pcm in cache.items()}, problems
+
+
 async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dict[str, bytes]:
     """Pré-synthétise les énoncés par une session Live (audio de sortie).
 
@@ -558,7 +584,9 @@ class RealRunner:
         keep = {"INTERRUPTION", "TURN_OPEN", "TURN_CLOSE", "TURN_COMPLETE", "TURN_KEPT_OPEN",
                 "EMPTY_GENERATION_RETRY", "EMPTY_TURN_COMPLETE_IN_PROGRESS", "RESPONSE_STALLED",
                 "SESSION_CONNECT", "SESSION_RESUME", "SESSION_READY", "SEED_COMMIT_TIMEOUT",
-                "SEED_COMMIT_CONFIRMED", "AUDIO_STREAM_END", "SERVER_VAD", "TEXT_TURN_TIMEOUT"}
+                "SEED_COMMIT_CONFIRMED", "SESSION_RESUME_REJECTED", "AUDIO_STREAM_END",
+                "SERVER_VAD", "TEXT_TURN_TIMEOUT",
+                "TOOL_CALL_EXECUTED", "TOOL_RESPONSE_SENT", "TOOL_CALL_FALLBACK_DASHBOARD"}
         fields = ("origin", "classification", "reason", "interrupted_generation", "interaction_status",
                   "waiting_for_input", "turn_complete_reason", "has_model_content")
         traces = [
@@ -586,6 +614,41 @@ class TurnTimeout(TimeoutError):
     def __init__(self, message: str, diagnostic: str) -> None:
         super().__init__(message)
         self.diagnostic = diagnostic
+
+
+def _tool_failure_diagnostic(runner: "RealRunner", turn: dict) -> str:
+    """Distinction explicite des 4 causes possibles d'un échec S4.
+
+    1. « aucun appel d'outil reçu » : pas de TOOL_CALL_EXECUTED côté moteur
+       (le serveur n'a jamais envoyé de tool_call — décision du modèle ou
+       question mal entendue : cf. transcription ci-jointe) ;
+    2. « appel reçu mais outil non exécuté » : impossible côté code (tout
+       tool_call déclenche l'exécution ou trace son erreur) — si le câble
+       ne montre pas de tool_response, chercher l'erreur de session ;
+    3. « réponse de l'outil envoyée » : TOOL_RESPONSE_SENT + câble ;
+    4. « réponse finale du modèle absente » : TOOL_RESPONSE_SENT sans
+       assistant non vide (relances vides, tour clos en échec…).
+    """
+    events = runner.gemini.trace_events()
+    executed = [e for e in events if e.get("kind") == "TOOL_CALL_EXECUTED"]
+    sent = [e for e in events if e.get("kind") == "TOOL_RESPONSE_SENT"]
+    wire_responses = [e for e in WIRE if e.get("kind") == "tool_response"]
+    retries = [e for e in events if e.get("kind") == "EMPTY_GENERATION_RETRY"]
+    heard = (turn.get("user") or "").strip()
+    parts = [
+        f"question_entendue={heard!r}",
+        f"appels_outil_executes={len(executed)}"
+        + (f" {[e.get('name') for e in executed]}" if executed else " (aucun tool_call du serveur)"),
+        f"reponses_outil_envoyees={len(sent)}",
+        f"tool_response_sur_cable={len(wire_responses)}",
+        f"relances_generation_vide={len(retries)}",
+    ]
+    try:
+        allowed, reason = runner.gemini._can_send_now()
+        parts.append(f"porte_micro={allowed}:{reason}")
+    except Exception:
+        pass
+    return "S4 diagnostic : " + " ; ".join(parts) + " — fin de trace : " + runner.diagnostic()[:800]
 
 
 def describe_exception(exc: BaseException) -> str:
@@ -644,6 +707,16 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
             verdicts[name] = verdict
         notes.append(f"{label} : {reason}")
 
+    async def backoff_after_failure(label: str, seconds: float) -> None:
+        # Les échecs d'ouverture de session (1008 « entity not found », gigue
+        # réseau) se produisent souvent en rafale : un délai croissant avant
+        # le scénario suivant laisse le service se stabiliser SANS requalifier
+        # l'échec (pas de relance interne du scénario). Ignoré en selftest.
+        if mode == "selftest":
+            return
+        safe_print(f"[pause] {label} en échec — backoff {seconds:.0f}s avant le scénario suivant.")
+        await asyncio.sleep(seconds)
+
     # ---- S1 : GEMINI LIVE RÉEL (connexion + premier tour audio) -------------
     try:
         safe_print("\n=== S1 : connexion + premier tour audio ===")
@@ -655,6 +728,7 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
                          f"réponse={bool(turn.get('assistant'))}) — diagnostic : {runner.diagnostic()}")
     except Exception as exc:
         failed(("GEMINI LIVE RÉEL",), "S1", exc)
+        await backoff_after_failure("S1", 5.0)
 
     # ---- S2 : AUDIO RÉEL + RECONNEXION RÉELLE (le correctif) -----------------
     try:
@@ -689,6 +763,7 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
             notes.append("S2 : AUCUN clientContent observé après reconnexion sans handle.")
     except Exception as exc:
         failed(("AUDIO RÉEL", "RECONNEXION RÉELLE"), "S2", exc)
+        await backoff_after_failure("S2", 10.0)
 
     # ---- S3 : SESSION RESUMPTION RÉELLE ---------------------------------------
     try:
@@ -800,6 +875,7 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
                 f"S4 : outils={tools} — le code {VALIDATION_CODE} n'a pas été retrouvé "
                 "dans la réponse (ni dans le suivi)."
             )
+            notes.append(_tool_failure_diagnostic(runner, turn))
     except Exception as exc:
         failed(("OUTILS RÉELS",), "S4", exc)
 
@@ -812,10 +888,11 @@ async def main() -> int:
     parser.add_argument("--tts-model", default="gemini-2.5-flash-preview-tts")
     parser.add_argument(
         "--mode",
-        choices=["auto", "tts", "live-tts", "mic", "text"],
+        choices=["auto", "fixtures", "tts", "live-tts", "mic", "text"],
         default="auto",
-        help="auto : TTS generateContent si disponible, sinon synthèse via "
-        "une session Live (jetons éphémères)",
+        help="auto : fixtures versionnées (zéro TTS), repli TTS generateContent "
+        "puis session Live (jetons éphémères) ; fixtures : échoue si une "
+        "phrase n'a pas de fixture valide",
     )
     parser.add_argument("--record", default=None, help="dossier où écrire les réponses audio (.wav)")
     parser.add_argument(
@@ -856,12 +933,38 @@ async def main() -> int:
     if args.mode == "mic":
         notes.append("mode --mic : l'opérateur doit parler distinctement chaque question.")
 
-    # Préparation des entrées audio : TTS generateContent, ou synthèse via
-    # une session Live (jeton éphémère sans accès generateContent). Tout est
-    # synthétisé AVANT les scénarios : l'expiration du jeton en cours de run
-    # ne peut plus interrompre la partie test.
+    # Préparation des entrées audio : fixtures WAV versionnées (zéro TTS,
+    # zéro quota) — TTS generateContent, ou synthèse via une session Live
+    # (jeton éphémère sans accès generateContent) en repli. Tout est
+    # préparé AVANT les scénarios : aucune dépendance instable en cours de
+    # run, et les entrées sont identiques d'une exécution à l'autre.
     input_mode = args.mode
     prompt_cache: dict[str, bytes] = {}
+    if input_mode in ("auto", "tts", "live-tts", "fixtures"):
+        fixture_cache, fixture_problems = synthesize_from_fixtures(ALL_PROMPTS)
+        for problem in fixture_problems:
+            safe_print(f"[entrée] FIXTURE INVALIDE : {problem}")
+        if fixture_problems:
+            notes.extend(f"fixture : {p}" for p in fixture_problems)
+        if len(fixture_cache) == len(ALL_PROMPTS):
+            prompt_cache = fixture_cache
+            input_mode = "fixtures"
+            safe_print(
+                f"[entrée] {len(fixture_cache)} phrase(s) depuis les fixtures "
+                "versionnées (zéro requête TTS, zéro quota Gemini)."
+            )
+        elif input_mode == "fixtures":
+            safe_print(
+                "[entrée] fixtures incomplètes ou invalides (cf. ci-dessus) — "
+                "mode fixtures exigé : échec explicite, aucun audio douteux envoyé."
+            )
+            print_verdicts({}, notes)
+            return 3
+        else:
+            safe_print(
+                "[entrée] fixtures incomplètes — repli sur la synthèse TTS "
+                "Gemini pour les phrases manquantes (quota limité)."
+            )
     if input_mode in ("auto", "tts", "live-tts"):
         try:
             if input_mode in ("auto", "tts"):
@@ -1042,4 +1145,7 @@ def _install_validation_tool():
 
 
 if __name__ == "__main__":
+    # Diagnostic AUDIO RÉEL : tracer chaque envoi d'entrée (taille + niveau
+    # estimé) — distingue un envoi absent d'un envoi à niveau nul.
+    os.environ.setdefault("JARVIS_AUDIO_TRACE", "1")
     raise SystemExit(asyncio.run(main()))

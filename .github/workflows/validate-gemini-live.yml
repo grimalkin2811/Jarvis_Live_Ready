@@ -23,7 +23,7 @@ on:
         required: false
         default: "gemini-2.5-flash-native-audio-preview-12-2025"
       mode:
-        description: "auto (TTS puis Live), tts, live-tts ou text"
+        description: "auto (fixtures versionnees puis TTS puis Live), fixtures, tts, live-tts ou text"
         required: false
         default: "auto"
 
