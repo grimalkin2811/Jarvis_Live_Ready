@@ -20,6 +20,7 @@ verrouillent le comportement attendu du client.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import unittest
@@ -29,6 +30,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import gemini_live as gl  # noqa: E402
+from src.conversation import ConversationContext  # noqa: E402
+from tests import sdk_live_fake as fake  # noqa: E402
 from tests.live_harness import FakeLiveServer  # noqa: E402
 from tests.voice_harness import VoiceHarness  # noqa: E402
 
@@ -195,6 +198,161 @@ class ToolRoundtripInterruptionTests(_ToolRoundtripCase):
             len(kept_open), 0,
             "aucun tour sans outil ne doit être « gardé ouvert »",
         )
+
+
+# ---------------------------------------------------------------------------
+# Séquences précises du protocole réel (idiome sdk_live_fake, cf.
+# test_live_turn_lifecycle.py) : cycle de vie du drapeau d'aller-retour
+# d'outil sur les chemins de clôture inhabituels.
+# ---------------------------------------------------------------------------
+
+
+def _fake_validation_probe(**_kwargs):
+    return {"success": True, "code": CODE, "message": "canal outil fonctionnel"}
+
+
+class _ScriptedCase(unittest.IsolatedAsyncioTestCase):
+    """Une ``GeminiLive`` réelle branchée sur une session scriptée du SDK."""
+
+    def setUp(self) -> None:
+        os.environ.setdefault("JARVIS_NO_MODEL_DOWNLOAD", "1")
+        self.events: list[str] = []
+        self.turns: list[dict] = []
+        self.current: dict = {"user": "", "assistant": ""}
+        self.conversation = ConversationContext(max_turns=40, max_tokens=8192)
+        patcher = mock.patch.dict(
+            gl.TOOL_FUNCTIONS, {"validation_probe": _fake_validation_probe}
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    async def asyncSetUp(self) -> None:
+        self.gemini = gl.GeminiLive(
+            "cle-de-test", MODEL_25, "Test",
+            on_audio=lambda pcm: None,
+            on_turn_complete=self._complete,
+            on_interrupted=lambda: self.events.append("interrupted"),
+            on_turn_open=lambda: self.events.append("open"),
+            on_turn_resolved=lambda: self.events.append("resolved"),
+            on_user_transcript=lambda text, final=False: self.current.__setitem__("user", text),
+            on_assistant_transcript=lambda text: self.current.__setitem__("assistant", text),
+            conversation=self.conversation,
+        )
+        self.session = fake.SdkLikeSession()
+        self.gemini.session = self.session
+        self.gemini._loop = asyncio.get_running_loop()
+        self.task = asyncio.create_task(self.gemini._receive_loop())
+
+    async def asyncTearDown(self) -> None:
+        self.session.close()
+        try:
+            await asyncio.wait_for(self.task, 2)
+        except Exception:
+            self.task.cancel()
+        await self.gemini.close()
+
+    def _complete(self) -> None:
+        self.events.append("complete")
+        self.turns.append(dict(self.current))
+        self.current = {"user": "", "assistant": ""}
+
+    def kinds(self) -> list[str]:
+        return [e["kind"] for e in self.gemini.trace_events()]
+
+    async def settle(self) -> None:
+        for _ in range(20):
+            await asyncio.sleep(0.005)
+
+
+class ToolRoundtripFlagLifecycleTests(_ScriptedCase):
+    async def _tool_roundtrip_started(self) -> None:
+        self.session.push(fake.user("Utilise l'outil validation_probe et dis le code."))
+        await self.settle()
+        self.session.push(fake.tool_call("validation_probe", {}, "call-1"))
+        await self.settle()
+        # L'outil a tourné et sa réponse est partie : l'aller-retour est armé.
+        self.assertIn("tool_response", self.session.kinds())
+        self.assertTrue(self.gemini._tool_roundtrip_open)
+
+    async def test_interruption_pendant_aller_retour_ne_contamine_pas_le_tour_suivant(self):
+        """Barge-in pendant l'aller-retour d'outil : l'interruption clôt le
+        tour et doit retomber le drapeau — sinon le ``turn_complete`` LÉGITIME
+        du tour suivant serait absorbé (tour jamais signalé)."""
+        await self._tool_roundtrip_started()
+        self.gemini.request_interrupt()
+        self.session.push(fake.interrupted())
+        await self.settle()
+        # Le tour est clôturé par l'interruption ; le drapeau doit être retombé.
+        self.assertTrue(self.gemini._turn_closed)
+        self.assertFalse(
+            self.gemini._tool_roundtrip_open,
+            "drapeau d'aller-retour orphelin après interruption (clôture du tour)",
+        )
+        # Fin de la génération annulée, puis un tour normal complet.
+        self.session.push(fake.turn_complete())
+        await self.settle()
+        self.session.push(fake.user("Quel est mon prénom ?"))
+        await self.settle()
+        self.session.push(*fake.answer("Simon."))
+        await self.settle()
+        self.assertIn("complete", self.events, "le tour suivant doit être signalé normalement")
+        self.assertEqual(self.turns[-1]["assistant"], "Simon.")
+        kept_after_interrupt = [
+            e for e in self.gemini.trace_events()
+            if e.get("kind") == "TURN_KEPT_OPEN"
+            and str(e.get("reason", "")).startswith("turn_complete de la génération porteuse")
+        ]
+        self.assertEqual(kept_after_interrupt, [], "aucune absorption après l'interruption")
+        self.assertNotIn("EMPTY_GENERATION_RETRY", self.kinds())
+
+    async def test_tool_call_tardif_sur_tour_cloture_narme_pas_le_drapeau(self):
+        """Un ``tool_call`` hors tour (tour déjà clôturé) ne doit armer aucun
+        drapeau orphelin : le tour suivant se referme normalement."""
+        self.session.push(fake.user("Bonjour Jarvis."))
+        await self.settle()
+        self.session.push(*fake.answer("Bonjour."))
+        await self.settle()
+        self.assertIn("complete", self.events)
+        self.assertTrue(self.gemini._turn_closed)
+        # ``tool_call`` tardif, hors de tout tour ouvert.
+        self.session.push(fake.tool_call("validation_probe", {}, "call-late"))
+        await self.settle()
+        self.assertIn("tool_response", self.session.kinds())
+        self.assertFalse(
+            self.gemini._tool_roundtrip_open,
+            "drapeau armé sur un tour clôturé (absorption future injustifiée)",
+        )
+        self.session.push(fake.turn_complete())
+        await self.settle()
+        self.session.push(fake.user("Quel est mon prénom ?"))
+        await self.settle()
+        self.session.push(*fake.answer("Simon."))
+        await self.settle()
+        # NB : on ne compte PAS les ``on_turn_complete`` ici — un
+        # ``turn_complete`` poussé sur un tour clôturé re-déclenche le callback
+        # avec le ``_turn_model_content_seen`` périmé du tour précédent
+        # (comportement préexistant « traîne tardive », hors périmètre). Ce qui
+        # compte : le drapeau n'était PAS armé, aucune absorption n'a eu lieu,
+        # et le tour suivant s'est refermé normalement avec SA réponse.
+        kept = [
+            e for e in self.gemini.trace_events()
+            if e.get("kind") == "TURN_KEPT_OPEN"
+            and str(e.get("reason", "")).startswith("turn_complete de la génération porteuse")
+        ]
+        self.assertEqual(kept, [], "aucune absorption ne doit suivre un tool_call hors tour")
+        self.assertNotIn("EMPTY_GENERATION_RETRY", self.kinds())
+        self.assertEqual(self.turns[-1]["assistant"], "Simon.")
+        self.assertEqual(self.turns[-1]["user"], "Quel est mon prénom ?")
+
+    async def test_clotures_de_tour_et_de_session_retombent_le_drapeau(self):
+        """Filets de clôture (stall, fin de session) : aucun drapeau résiduel
+        ne doit survivre à la session ou au tour (état hérité interdit)."""
+        await self._tool_roundtrip_started()
+        self.gemini._close_stalled_turn("le serveur ne répondait plus (test)")
+        self.assertFalse(self.gemini._tool_roundtrip_open, "drapeau résiduel après stall")
+        await self._tool_roundtrip_started()
+        self.gemini._fail_open_turn("erreur de session (test)")
+        self.assertFalse(self.gemini._tool_roundtrip_open, "drapeau résiduel après fin de session")
 
 
 if __name__ == "__main__":

@@ -90,6 +90,15 @@ def resumption(handle: str) -> types.LiveServerMessage:
     )
 
 
+def tool_call(name: str, args: dict | None = None, call_id: str = "call-1") -> types.LiveServerMessage:
+    """Appel d'outil du modèle (protocole réel : suivi de son propre turn_complete)."""
+    return types.LiveServerMessage(
+        tool_call=types.LiveServerToolCall(
+            function_calls=[types.FunctionCall(name=name, args=dict(args or {}), id=call_id)]
+        )
+    )
+
+
 class SdkLikeSession:
     """Session : file de messages serveur + journal de tout ce que Jarvis envoie."""
 

@@ -424,13 +424,16 @@ class GeminiLive:
         #: d'outil est EN COURS — le(s) ``tool_response`` viennent d'être
         #: envoyés et le serveur doit encore produire la réponse. Protocole
         #: Live API réel : la génération qui PORTE le ``tool_call`` se termine
-        #: par son PROPRE ``turn_complete`` dès l'appel (interaction_status
-        #: ``REQUIRES_ACTION``), AVANT la réponse au résultat d'outil. Ce
-        #: ``turn_complete``-là ne doit ni clore le tour de l'utilisateur ni
-        #: déclencher la relance « génération vide » : on l'absorbe (cf. bloc
-        #: FIN DE TOUR) et on attend la vraie réponse, qui arrive sur la même
-        #: session. Réarmé à chaque envoi de réponse d'outil ; retombé dès la
-        #: première sortie modèle (le tour se referme alors normalement).
+        #: par son PROPRE ``turn_complete`` dès l'appel (la complétion de la
+        #: génération porteuse est signalée côté serveur selon les modèles par
+        #: ``interaction_status`` ``REQUIRES_ACTION`` — alias déprécié d'IDLE —
+        #: ou directement IDLE). Ce ``turn_complete``-là ne doit ni clore le
+        #: tour de l'utilisateur ni déclencher la relance « génération vide » :
+        #: on l'absorbe (cf. bloc FIN DE TOUR) et on attend la vraie réponse,
+        #: qui arrive sur la même session. Réarmé à chaque envoi de réponse
+        #: d'outil ; retombé dès la première sortie modèle (le tour se referme
+        #: alors normalement), à toute clôture du tour, et à tout arrêt de
+        #: session — jamais armé sur un tour déjà clôturé.
         self._tool_roundtrip_open = False
         #: Octets audio du modèle réellement remis au lecteur pour CE tour
         #: (0 = rien d'audible). Sert à distinguer une interruption réelle
@@ -718,6 +721,11 @@ class GeminiLive:
         already_closed = self._turn_closed
         self._turn_closed = True
         self._text_turn_pending = False
+        # Un aller-retour d'outil armé appartient à CE tour : une clôture par
+        # interruption (le serveur a annulé la génération post-tool) doit
+        # retomber le drapeau, sinon le prochain ``turn_complete`` d'un tour
+        # ULTÉRIEUR serait absorbé à tort (fusion de tours).
+        self._tool_roundtrip_open = False
         log.debug(
             "TURN COMPLETE gen=%s conversation=%s messages=%s",
             self.session_generation, self.conversation.conversation_id,
@@ -1958,6 +1966,7 @@ class GeminiLive:
         self._turn_model_content_seen = False
         self._interrupted_generation_pending = False
         self._seed_reply_pending = False
+        self._tool_roundtrip_open = False
         # La session ne parle plus (``_shutdown_session`` le confirme ensuite).
         self.speaking = False
         # Une session qui s'arrête pendant une relance de génération vide ne
@@ -2078,6 +2087,7 @@ class GeminiLive:
         self.speaking = False
         self._regeneration_pending = False
         self._text_turn_pending = False
+        self._tool_roundtrip_open = False
         self._clear_interrupt()
         self._interrupt_was_active = False
         already_closed = self._turn_closed
@@ -2106,6 +2116,7 @@ class GeminiLive:
         """
         self._interrupted_generation_pending = False
         self._seed_reply_pending = False
+        self._tool_roundtrip_open = False
         last = self._last_interruption or {}
         turn_open = not self._turn_closed
         self._record_trace(
@@ -2683,6 +2694,7 @@ class GeminiLive:
                 server_content
                 and server_content.turn_complete
                 and self._tool_roundtrip_open
+                and not self._turn_closed
             ):
                 # Correctif v1.9.x (validation réelle S4 « OUTILS RÉELS :
                 # FAIL ») : la génération qui PORTE le ``tool_call`` se
@@ -3046,8 +3058,12 @@ class GeminiLive:
                     # va se terminer par son PROPRE ``turn_complete`` ; le
                     # vrai résultat (réponse du modèle au résultat d'outil)
                     # arrive ensuite sur la même session. Garder le tour
-                    # ouvert jusque-là (cf. bloc FIN DE TOUR).
-                    self._tool_roundtrip_open = True
+                    # ouvert jusque-là (cf. bloc FIN DE TOUR). JAMAIS armé sur
+                    # un tour déjà clôturé (``tool_call`` tardif hors tour) :
+                    # un drapeau orphelin absorberait le ``turn_complete``
+                    # d'un tour ultérieur.
+                    if not self._turn_closed:
+                        self._tool_roundtrip_open = True
                 finally:
                     self.tool_active = False
                     # Le temps passé dans l'outil n'est pas un silence du
