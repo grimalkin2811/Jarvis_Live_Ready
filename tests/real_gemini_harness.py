@@ -34,6 +34,7 @@ import time
 
 import numpy as np
 
+from src.gemini_live import SessionRecoveryExhausted  # noqa: F401
 from tests.echo_loop_harness import (  # noqa: F401  (réexport volontaire)
     AudioIO,
     ConversationContext,
@@ -209,10 +210,18 @@ class RealVoiceLab:
                 await gemini.receive_loop()
             except asyncio.CancelledError:
                 break
+            except SessionRecoveryExhausted as exc:
+                # v1.9.x : budget du moteur épuisé — arrêt explicite du
+                # keeper (aucune rafale de reconnexions sans fin).
+                self.errors.append(redact(f"récupération épuisée : {exc}"))
+                self.connected.clear()
+                break
             except Exception as exc:
                 self.errors.append(redact(repr(exc)))
                 if not gemini.reconnect_requested:
-                    await asyncio.sleep(1.0)
+                    await asyncio.sleep(
+                        max(1.0, gemini.session_recovery_backoff_seconds())
+                    )
             else:
                 await asyncio.sleep(0.1)
             finally:

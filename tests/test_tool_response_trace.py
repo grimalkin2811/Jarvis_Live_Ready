@@ -135,6 +135,59 @@ class ToolResponseTraceTests(_TraceCase):
         self.assertIsInstance(failures[0], RuntimeError)
 
 
+class ToolCallChainTests(_TraceCase):
+    """La chaîne de preuves S4 sur des cas de forme variés (mission P0-2)."""
+
+    async def test_plusieurs_appels_d_outils_dans_un_meme_message(self) -> None:
+        """Deux functionCalls simultanés : chacun reçu, validé, exécuté, et
+        UNE réponse d'outil unique contenant les deux résultats."""
+        self.session.push(
+            fake.user("Utilise l'outil validation_probe deux fois.")
+        )
+        await self.settle()
+        double = fake.types.LiveServerMessage(
+            tool_call=fake.types.LiveServerToolCall(
+                function_calls=[
+                    fake.types.FunctionCall(name="validation_probe", args={}, id="c1"),
+                    fake.types.FunctionCall(name="validation_probe", args={}, id="c2"),
+                ]
+            )
+        )
+        self.session.push(double)
+        await self.settle()
+
+        received = [e for e in self.gemini.trace_events()
+                    if e.get("kind") == "TOOL_CALL_RECEIVED"]
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].get("count"), 2)
+        self.assertEqual(received[0].get("names"), ["validation_probe", "validation_probe"])
+        validated = [e for e in self.gemini.trace_events()
+                     if e.get("kind") == "TOOL_CALL_VALIDATED"]
+        self.assertEqual(len(validated), 2)
+        executed = [e for e in self.gemini.trace_events()
+                    if e.get("kind") == "TOOL_CALL_EXECUTED"]
+        self.assertEqual(len(executed), 2)
+        sent = [e for e in self.gemini.trace_events()
+                if e.get("kind") == "TOOL_RESPONSE_SENT"]
+        self.assertEqual(len(sent), 1, "UNE réponse d'outil groupant les résultats")
+        responses = [entry for entry in self.session.sent if entry[0] == "tool_response"]
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(len(responses[0][1]), 2)
+
+    async def test_outil_inconnu_valide_en_echec_explicite_et_reponse_envoyee(self) -> None:
+        """Un toolCall d'outil NON enregistré : trace UNKNOWN_TOOL, résultat
+        d'erreur renvoyé au serveur (jamais de silence protocolaire)."""
+        self.session.push(fake.user("Utilise l'outil inexistant_probe."))
+        await self.settle()
+        self.session.push(fake.tool_call("inexistant_probe", {}, "call-x"))
+        await self.settle()
+
+        self.assertIn("TOOL_CALL_UNKNOWN_TOOL", self.trace_kinds())
+        # La réponse d'outil PART malgré l'outil inconnu (résultat d'erreur).
+        self.assertIn("tool_response", self.session.kinds())
+        self.assertIn("TOOL_RESPONSE_SENT", self.trace_kinds())
+
+
 class _KilledSession(fake.SdkLikeSession):
     """Session dont la réception lève immédiatement l'erreur fournie."""
 

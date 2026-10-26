@@ -410,6 +410,132 @@ class V174FixturesBackendTests(unittest.TestCase):
         self.assertEqual(len(problems), 1)
 
 
+class S6CauseSeparationTests(unittest.TestCase):
+    """S6 sépare transcription, récitation d'outil, génération et contexte.
+
+    Run 40370419959 : « Quel est mon frère ? » entendu au lieu de « Quel est
+    mon prénom ? » et « [appel outil] recall(...) » prononcé au lieu d'un
+    toolCall natif — deux causes qui ne doivent PAS être rapportées comme un
+    échec de contexte, et qui ne doivent JAMAIS permettre un PASS.
+    """
+
+    def _runner(self, heard: str, answer: str, tool_events: list[dict]):
+        lab = SimpleNamespace(
+            gemini_trace=lambda: list(tool_events),
+        )
+        runner = v174.ScenarioRunner(lab, {})
+        runner.verdicts = {}
+        runner.notes = []
+        runner.say = lambda prompt, **kw: {
+            "user": heard, "assistant": answer, "tools": []
+        }
+        return runner
+
+    def test_transcription_inexacte_rapportee_comme_telle(self):
+        runner = self._runner(
+            "Quel est mon frère ?", "Tu t'appelles Simon.", []
+        )
+        runner.scenario_6_real_context()
+        self.assertEqual(runner.verdicts["S6 CONTEXTE REEL APRES RECONNEXION"], "FAIL")
+        note = runner.notes[0]
+        self.assertIn("TRANSCRIPTION inexacte", note)
+        self.assertIn("Quel est mon frère ?", note)
+        self.assertNotIn("RÉCITATION", note)
+        # Le contexte n'est PAS déclaré restauré : aucune mention de succès.
+        self.assertNotIn("PASS", note)
+
+    def test_recitation_appel_outil_rapportee_comme_telle(self):
+        runner = self._runner(
+            "Quel est mon prénom ?",
+            "[appel outil]  recall(limit=1,  query='prénom')",
+            [{"kind": "TOOL_CALL_RECEIVED"}, {"kind": "TOOL_CALL_EXECUTED"}],
+        )
+        runner.scenario_6_real_context()
+        self.assertEqual(runner.verdicts["S6 CONTEXTE REEL APRES RECONNEXION"], "FAIL")
+        note = runner.notes[0]
+        self.assertIn("RÉCITATION d'appel d'outil", note)
+        self.assertIn("toolCall natif", note)
+
+    def test_reponse_fidele_sans_fait_memorise_cause_contexte(self):
+        runner = self._runner(
+            "Quel est mon prénom ?", "Je ne sais pas ton prénom.", []
+        )
+        runner.scenario_6_real_context()
+        self.assertEqual(runner.verdicts["S6 CONTEXTE REEL APRES RECONNEXION"], "FAIL")
+        note = runner.notes[0]
+        self.assertIn("fait mémorisé attendu", note)
+        self.assertNotIn("TRANSCRIPTION inexacte", note)
+        self.assertNotIn("RÉCITATION", note)
+
+    def test_preuve_complete_passe(self):
+        runner = self._runner(
+            "Quel est mon prénom ?", "Ton prénom est Simon.", []
+        )
+        runner.scenario_6_real_context()
+        self.assertEqual(runner.verdicts["S6 CONTEXTE REEL APRES RECONNEXION"], "PASS")
+        self.assertEqual(runner.notes, [])
+
+    def test_normalisation_tolere_ponctuation_et_casse(self):
+        normalise = v174.ScenarioRunner._normalize_speech
+        self.assertEqual(
+            normalise("Quel est mon prénom ?"), normalise("quel est mon prenom")
+        )
+        self.assertNotEqual(
+            normalise("Quel est mon prénom ?"), normalise("Quel est mon frère ?")
+        )
+
+
+class ToolDeclarationShapeTests(unittest.TestCase):
+    """Les déclarations d'outils (produit + validateur) survivent au SDK.
+
+    Garde-fou contre une malformation silencieuse des déclarations (le
+    modèle cesse alors d'appeler l'outil — symptôme « aucun tool_call ») :
+    la forme restreinte OpenAPI est exigée, et la sérialisation SDK réelle
+    doit produire un câble valide.
+    """
+
+    def test_declaration_validation_ping_forme_restriete(self):
+        from unittest import mock as _mock
+
+        patchers = vrg._install_validation_tool()
+        for patcher in patchers:
+            patcher.start()
+        try:
+            declarations = vrg.gl.TOOL_DECLARATIONS
+            self.assertEqual([d["name"] for d in declarations], ["validation_ping"])
+            params = declarations[0]["parameters"]
+            self.assertEqual(params["type"], "object")
+            self.assertIsInstance(params["properties"], dict)
+            self.assertIsInstance(params["required"], list)
+            # La sérialisation SDK réelle produit un câble valide.
+            wire = vrg.gl.types.FunctionDeclaration(
+                name=declarations[0]["name"],
+                description=declarations[0]["description"],
+                parameters=params,
+            ).model_dump(exclude_none=True)
+            self.assertEqual(wire["name"], "validation_ping")
+            type_value = wire["parameters"]["type"]
+            self.assertEqual(getattr(type_value, "name", str(type_value)),
+                             "OBJECT")
+        finally:
+            for patcher in patchers:
+                patcher.stop()
+
+    def test_toutes_les_declarations_du_produit_sont_en_forme_restriete(self):
+        from src.tools import TOOL_DECLARATIONS
+
+        allowed_top = {"name", "description", "parameters"}
+        for decl in TOOL_DECLARATIONS:
+            self.assertTrue(set(decl) <= allowed_top,
+                            f"{decl.get('name')} : clés hors forme restreinte : {set(decl)}")
+            params = decl.get("parameters")
+            if params is not None:
+                self.assertEqual(params.get("type"), "object",
+                                 f"{decl['name']} : type de paramètres non restreint")
+                self.assertIsInstance(params.get("properties", {}), dict)
+                self.assertIsInstance(params.get("required", []), list)
+
+
 class _DiagnosticRunner:
     """Runner minimal pour ``_tool_failure_diagnostic`` (aucune API)."""
 

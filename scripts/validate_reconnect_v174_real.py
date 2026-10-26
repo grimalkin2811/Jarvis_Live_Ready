@@ -611,6 +611,13 @@ class ScenarioRunner:
                 f"can_send={self.lab.gemini.can_send()} "
                 f"gate={self.lab.audio._mic_gate_open()}"
             )
+        # v1.9.x : keeper arrêté (budget d'ouvertures épuisé) — échec
+        # immédiat avec cause précise au lieu du timeout complet.
+        if getattr(self.lab.gemini, "session_recovery_exhausted", False):
+            raise TimeoutError(
+                "récupération de session épuisée : le superviseur a arrêté "
+                "les reconnexions (cf. SESSION_RECOVERY_EXHAUSTED)"
+            )
         turn = self.lab.wait_for_new_turn(since, timeout)
         if turn is None:
             raise TimeoutError(f"aucune réponse reçue pour : {prompt!r}")
@@ -832,22 +839,117 @@ class ScenarioRunner:
             )
         return " ; ".join(parts)
 
+    @staticmethod
+    def _normalize_speech(text: str) -> str:
+        """Normalisation douce pour comparer attendu vs transcrit.
+
+        Minuscules, ponctuation et diacritiques retirés (l'ASR peut
+        transcrire avec ou sans accents). Suffisant pour tolérer
+        « Quel est mon prénom ? » / « quel est mon prenom », pas pour
+        excuser « mon frère ».
+        """
+        import unicodedata
+
+        lowered = unicodedata.normalize("NFD", (text or "")).lower()
+        sans_accent = "".join(ch for ch in lowered
+                              if not unicodedata.combining(ch))
+        return " ".join("".join(ch for ch in sans_accent if ch.isalnum()
+                                or ch.isspace()).split())
+
     def scenario_6_real_context(self) -> None:
         """Le prénom donné AVANT S5 doit rester exploitable après cette
         reconnexion réelle (ne relance pas de wake : reste sur la session
         issue de S5, exactement le scénario demandé par la mission).
+
+        v1.9.x (run 40370419959) : les causes sont SÉPARÉES — une erreur de
+        transcription (« Quel est mon frère ? » entendu) et une récitation
+        d'appel d'outil (« [appel outil] recall(...)" prononcé au lieu d'un
+        toolCall natif) ne sont PAS des échecs de contexte et ne doivent pas
+        être rapportées comme tels. Le PASS exige la preuve complète :
+        transcription fidèle + réponse finale réellement reçue contenant le
+        fait mémorisé.
         """
         name = "S6 CONTEXTE REEL APRES RECONNEXION"
+        expected = PROMPTS[4]  # "Quel est mon prénom ?"
         try:
             safe_print("\n=== S6 : mémoire contextuelle réelle après reconnexion ===")
-            turn = self.say(PROMPTS[4])  # "Quel est mon prénom ?"
-            answer = (turn.get("assistant") or "").lower()
-            ok = "simon" in answer
+            turn = self.say(expected)
+            heard = (turn.get("user") or "").strip()
+            answer = (turn.get("assistant") or "").strip()
+            answer_lower = answer.lower()
+
+            # Cause 1 : la transcription d'ENTRÉE ne correspond pas à la
+            # question posée — le test de contexte n'a pas commencé dans des
+            # conditions valides (fixture inintelligible ou ASR).
+            transcription_fidele = (
+                self._normalize_speech(heard) == self._normalize_speech(expected)
+            )
+            # Cause 2 : le modèle a RÉCITÉ un appel d'outil (marqueur du
+            # contexte ou syntaxe d'appel) au lieu d'émettre un toolCall
+            # natif et de répondre — ce n'est pas une réponse finale.
+            recitation = (
+                "[appel outil]" in answer_lower
+                or "[résultat outil]" in answer_lower
+            )
+            tool_calls_recus = [
+                e for e in self.lab.gemini_trace()
+                if e.get("kind") == "TOOL_CALL_RECEIVED"
+            ]
+            tool_calls_executes = [
+                e for e in self.lab.gemini_trace()
+                if e.get("kind") == "TOOL_CALL_EXECUTED"
+            ]
+
+            # PASS seulement sur preuve COMPLÈTE : transcription fidèle +
+            # réponse finale réelle contenant le fait mémorisé. Une
+            # transcription inexacte ou une récitation interdisent le PASS,
+            # même si la chaîne « simon » apparaît par coïncidence.
+            ok = (
+                "simon" in answer_lower
+                and transcription_fidele
+                and bool(heard)
+                and not recitation
+            )
+
             self.verdicts[name] = "PASS" if ok else "FAIL"
             if not ok:
+                causes = []
+                if heard and not transcription_fidele:
+                    causes.append(
+                        f"TRANSCRIPTION inexacte : attendu={expected!r}, "
+                        f"entendu={heard!r} — le test de contexte n'a pas "
+                        "démarré dans des conditions valides (ni contexte ni "
+                        "outil ne sont conclusibles)"
+                    )
+                if not heard:
+                    causes.append(
+                        "aucune transcription utilisateur reçue — l'entrée "
+                        "audio n'a pas été comprise (fixture/ASR) : contexte "
+                        "non conclusible"
+                    )
+                if recitation:
+                    causes.append(
+                        "RÉCITATION d'appel d'outil : la réponse contient le "
+                        "marqueur de contexte d'outil au lieu d'une réponse "
+                        "finale (le modèle n'a PAS émis de toolCall natif : "
+                        f"reçus={len(tool_calls_recus)}, "
+                        f"exécutés={len(tool_calls_executes)})"
+                    )
+                if not answer:
+                    causes.append(
+                        "réponse finale ABSENTE (tour vide — relances "
+                        "éventuelles cf. diagnostic ci-dessous)"
+                    )
+                if not causes:
+                    causes.append(
+                        "réponse finale reçue mais sans le fait mémorisé "
+                        "attendu (Simon) — contexte non prouvé"
+                    )
                 self.notes.append(
-                    f"{name} : réponse={turn.get('assistant')!r} "
-                    f"[{self._engine_failure_diagnostic()}]"
+                    f"{name} : réponse={answer!r} ; entendu={heard!r} ; "
+                    f"outils_reçus={len(tool_calls_recus)} ; "
+                    f"causes=" + " ; ".join(causes)
+                    + f" [{self._engine_failure_diagnostic()}]"
                 )
         except Exception as exc:
             self.verdicts[name], reason = scenario_verdict(exc)

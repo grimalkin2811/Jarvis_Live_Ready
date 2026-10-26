@@ -360,6 +360,10 @@ class RealRunner:
         self._connected = asyncio.Event()
         self.connected = self._connected  # API publique pour les scénarios
         self._stop = asyncio.Event()
+        # v1.9.x : positionné si le keeper s'arrête AVANT toute session
+        # utilisable (budget de récupération épuisé) — start() échoue alors
+        # immédiatement avec un diagnostic, sans attendre TURN_TIMEOUT.
+        self._boot_failed = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._mic_task: asyncio.Task | None = None
         self._mic_queue = bytearray()
@@ -408,7 +412,19 @@ class RealRunner:
     # -- cycle de vie ----------------------------------------------------------
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run())
-        await asyncio.wait_for(self._connected.wait(), timeout=TURN_TIMEOUT)
+        # Session utilisable OU échec de démarrage explicite (budget de
+        # récupération épuisé) — jamais TURN_TIMEOUT dans le vide.
+        deadline = time.monotonic() + TURN_TIMEOUT
+        while not (self._connected.is_set() or self._boot_failed.is_set()):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"aucune session utilisable après {TURN_TIMEOUT:.0f} s "
+                    f"(erreurs : {self.errors[-1] if self.errors else 'aucune détaillée'})"
+                )
+            await asyncio.sleep(0.05)
+        if self._boot_failed.is_set() and not self._connected.is_set():
+            raise RuntimeError(self.errors[-1] if self.errors else
+                               "démarrage impossible (cf. erreurs de session)")
         self._mic_task = asyncio.create_task(self._mic_loop())
 
     async def stop(self) -> None:
@@ -443,12 +459,29 @@ class RealRunner:
                 await gemini.receive_loop()
             except asyncio.CancelledError:
                 break
+            except gl.SessionRecoveryExhausted as exc:
+                # v1.9.x (run 40370419959 : 45 sessions en rafale) : le budget
+                # du moteur est épuisé — on ARRÊTE le keeper. Les asks en vol
+                # échoueront en TurnTimeout dont le diagnostic porte la trace
+                # SESSION_RECOVERY_EXHAUSTED : échec explicite, jamais une
+                # boucle de reconnexions sans fin.
+                description = describe_exception(exc)
+                self.errors.append(f"récupération épuisée : {description}")
+                safe_print(f"   [session] ARRÊT : {description}")
+                self._connected.clear()
+                self._boot_failed.set()
+                break
             except Exception as exc:
                 description = describe_exception(exc)
                 self.errors.append(description)
                 safe_print(f"   [session] erreur : {description}")
                 if not gemini.reconnect_requested:
-                    await asyncio.sleep(1.0)
+                    # Backoff croissant tant que les sessions meurent sans
+                    # rien servir (le moteur retombe à ~0 après une session
+                    # saine) — plus aucune rafale 1-connexion/s.
+                    await asyncio.sleep(
+                        max(1.0, gemini.session_recovery_backoff_seconds())
+                    )
             finally:
                 try:
                     await gemini.close()
@@ -489,6 +522,14 @@ class RealRunner:
     async def _wait_sendable(self, timeout: float = TURN_TIMEOUT) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            # v1.9.x : le keeper s'est arrêté (budget épuisé) — échec
+            # immédiat avec cause précise, pas 60 s d'attente inutile.
+            if self.gemini.session_recovery_exhausted:
+                raise TurnTimeout(
+                    "récupération de session épuisée : plus aucune session "
+                    "n'est ouverte (cf. SESSION_RECOVERY_EXHAUSTED)",
+                    self.diagnostic(),
+                )
             if self.gemini.can_send() and not self.gemini.speaking and not self._mic_queue:
                 return
             await asyncio.sleep(0.05)
@@ -586,7 +627,10 @@ class RealRunner:
                 "SESSION_CONNECT", "SESSION_RESUME", "SESSION_READY", "SEED_COMMIT_TIMEOUT",
                 "SEED_COMMIT_CONFIRMED", "SESSION_RESUME_REJECTED", "AUDIO_STREAM_END",
                 "SERVER_VAD", "TEXT_TURN_TIMEOUT",
-                "TOOL_CALL_EXECUTED", "TOOL_RESPONSE_SENT", "TOOL_CALL_FALLBACK_DASHBOARD"}
+                "TOOL_CALL_EXECUTED", "TOOL_RESPONSE_SENT", "TOOL_CALL_FALLBACK_DASHBOARD",
+                "TOOL_CALL_RECEIVED", "TOOL_CALL_VALIDATED", "TOOL_CALL_UNKNOWN_TOOL",
+                "TOOL_RESULT_TURN_COMPLETED", "FINAL_TEXT_RECEIVED",
+                "SESSION_RECOVERY_FAILURE", "SESSION_RECOVERY_EXHAUSTED"}
         fields = ("origin", "classification", "reason", "interrupted_generation", "interaction_status",
                   "waiting_for_input", "turn_complete_reason", "has_model_content")
         traces = [
@@ -602,6 +646,11 @@ class RealRunner:
             "porte_micro": {"ouverte": allowed, "raison": reason},
             "blocs_micro_envoyes": self.mic_blocks_sent,
             "tours_observes": len(self.turn_log),
+            "recuperation_sessions": {
+                "echecs_consecutifs": self.gemini._recovery_failures,
+                "epuise": self.gemini.session_recovery_exhausted,
+                "backoff_s": self.gemini.session_recovery_backoff_seconds(),
+            },
             "erreurs_session": self.errors[-3:],
             "traces": traces,
         }
@@ -996,6 +1045,21 @@ async def main() -> int:
     patchers = _install_validation_tool()
     for patcher in patchers:
         patcher.start()
+    # Précondition S4 (v1.9.x) : l'outil de validation doit être ENREGISTRÉ
+    # dans la session qui exécute le test — fonction exécutable ET
+    # déclaration envoyée au serveur. Une absence ici expliquerait un
+    # « aucun tool_call reçu » sans même ouvrir de session.
+    declared_names = [d.get("name") for d in gl.TOOL_DECLARATIONS]
+    precondition = (
+        "validation_ping" in gl.TOOL_FUNCTIONS
+        and "validation_ping" in declared_names
+    )
+    if not precondition:
+        safe_print(
+            "[S4] PRÉCONDITION INVALIDE : validation_ping absent des outils "
+            f"installés (fonctions={sorted(gl.TOOL_FUNCTIONS)[:5]}…, "
+            f"déclarations={declared_names})"
+        )
     verdicts: dict[str, str] = {}
     try:
         try:
@@ -1013,6 +1077,10 @@ async def main() -> int:
                 runner, input_mode, client, args.tts_model
             )
             notes.extend(scenario_notes)
+            notes.append(
+                "précondition S4 : outil validation_ping enregistré="
+                f"{precondition} (fonction + déclaration envoyée au serveur)"
+            )
     finally:
         for patcher in patchers:
             patcher.stop()
@@ -1136,7 +1204,9 @@ def _install_validation_tool():
                 "Outil de validation de la connexion : retourne un code de test. "
                 "Appelle-le quand on te le demande et répète le code retourné."
             ),
-            "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+            # Forme OpenAPI restreinte identique au produit (le SDK
+            # normalise le type vers son enum — même câble, lisible).
+            "parameters": {"type": "object", "properties": {}, "required": []},
         }
     ]
     return mock.patch.object(

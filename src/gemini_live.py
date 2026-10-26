@@ -51,6 +51,19 @@ class AuthError(RuntimeError):
     """Erreur d'authentification Gemini : inutile de réessayer en boucle."""
 
 
+class SessionRecoveryExhausted(RuntimeError):
+    """Budget de récupération de session épuisé : arrêt explicite.
+
+    Levée par ``connect()`` quand ``JARVIS_SESSION_RECOVERY_MAX_FAILURES``
+    ouvertures de session CONSÉCUTIVES sont mortes sans avoir servi un seul
+    tour complet (boucle « 1008 Requested entity was not found » observée en
+    validation réelle, run 40370419959 : 45 générations en rafale). Le
+    superviseur doit alors TERMINER (scénario en échec explicite), pas
+    reconnexifier indéfiniment. ``reset_session_recovery()`` repart du budget
+    zéro (nouvelle conversation, intervention opérateur).
+    """
+
+
 def _is_auth_error(exc: BaseException) -> bool:
     text = str(exc).lower()
     markers = (
@@ -369,6 +382,20 @@ class GeminiLive:
         # reconnexion technique — et à détecter, en test, toute reconnexion
         # qui ne serait due à AUCUNE de ces raisons connues (régression).
         self._reconnect_reason: str = "startup"
+        # Budget de récupération de session (v1.9.x, run 40370419959) :
+        # borne les reconnexions consécutives qui ne servent RIEN (session
+        # tuée avant le premier tour complet). Une session qui sert un tour
+        # remet le compteur à zéro ; à épuisement, ``connect()`` lève
+        # ``SessionRecoveryExhausted`` — jamais de boucle infinie.
+        self._recovery_failures = 0
+        self.session_recovery_exhausted = False
+        self._current_session_served_a_turn = False
+        self._recovery_max_failures = max(1, int(
+            os.getenv("JARVIS_SESSION_RECOVERY_MAX_FAILURES", "5")
+        ))
+        self._recovery_max_backoff = max(0.5, float(
+            os.getenv("JARVIS_SESSION_RECOVERY_MAX_BACKOFF", "8")
+        ))
         # =====================================================
         # INSTRUMENTATION DU CYCLE DE TOUR (v1.7.3)
         # -----------------------------------------------------
@@ -671,6 +698,18 @@ class GeminiLive:
         text = " ".join(self._turn_model_text).strip()
         self._turn_model_text.clear()
         if text:
+            if self._turn_tool_called:
+                # v1.9.x (S4) : preuve d'un texte final APRÈS l'aller-retour
+                # d'outil. Aperçu borné : les transcripts complets sont déjà
+                # journalisés par ailleurs ; ici on ne trace que la preuve de
+                # présence + un extrait court.
+                self._record_trace(
+                    "FINAL_TEXT_RECEIVED",
+                    chars=len(text),
+                    preview=text[:60],
+                    turn=self.conversation.get_messages()[-1].turn
+                    if self.conversation.get_messages() else 0,
+                )
             self.conversation.add_assistant_message(text)
 
     def _begin_turn_if_needed(self) -> None:
@@ -721,6 +760,19 @@ class GeminiLive:
         already_closed = self._turn_closed
         self._turn_closed = True
         self._text_turn_pending = False
+        if self._turn_tool_called:
+            # Preuve que le tour porteur d'un tool_call s'est refermé AVEC la
+            # suite (la réponse du modèle au résultat d'outil) : le maillon
+            # final du roundtrip (cf. TOOL_RESPONSE_SENT).
+            self._record_trace(
+                "TOOL_RESULT_TURN_COMPLETED",
+                has_assistant_text=bool(self._turn_model_text),
+            )
+        # Un tour complet servi : CETTE session est saine — le budget de
+        # récupération repart de zéro (une session morte après un tour servi
+        # est une coupure normale, pas une boucle d'ouverture).
+        self._current_session_served_a_turn = True
+        self._recovery_failures = 0
         # Un aller-retour d'outil armé appartient à CE tour : une clôture par
         # interruption (le serveur a annulé la génération post-tool) doit
         # retomber le drapeau, sinon le prochain ``turn_complete`` d'un tour
@@ -1072,6 +1124,75 @@ class GeminiLive:
         allowed, _reason = self._can_send_now()
         return allowed
 
+    # -- Budget de récupération de session (v1.9.x) ---------------------------
+    #
+    # Constat réel (run 40370419959) : une rafale « 1008 Requested entity was
+    # not found » a fait monter le compteur de sessions jusqu'à g45 — chaque
+    # session mourant avant d'avoir servi UN tour, reconnexifiée en boucle par
+    # le superviseur SANS borne. Le budget suivant rend cette boucle
+    # impossible : backoff croissant borné, puis arrêt explicite.
+
+    def session_recovery_backoff_seconds(self) -> float:
+        """Délai à attendre avant la PROCHAINE tentative de connexion.
+
+        Croissant (0,5 s → borne haute) tant que les sessions meurent sans
+        rien servir ; retombe à 0 dès qu'une session sert un tour complet.
+        """
+        if self._recovery_failures <= 0:
+            return 0.0
+        delay = 0.5 * (2 ** (self._recovery_failures - 1))
+        return min(self._recovery_max_backoff, delay)
+
+    def reset_session_recovery(self) -> None:
+        """Repars du budget zéro (nouvelle conversation, opérateur, tests)."""
+        self._recovery_failures = 0
+        self.session_recovery_exhausted = False
+
+    def _note_session_opening_failed(self) -> None:
+        """La session courante est morte sans avoir servi UN tour complet."""
+        if self._current_session_served_a_turn:
+            self._recovery_failures = 0
+            self._current_session_served_a_turn = False
+            return
+        self._recovery_failures += 1
+        self._record_trace(
+            "SESSION_RECOVERY_FAILURE",
+            consecutive=self._recovery_failures,
+            budget=self._recovery_max_failures,
+            next_backoff_s=round(self.session_recovery_backoff_seconds(), 2),
+        )
+        if self._recovery_failures >= self._recovery_max_failures:
+            self.session_recovery_exhausted = True
+            self._record_trace(
+                "SESSION_RECOVERY_EXHAUSTED",
+                consecutive=self._recovery_failures,
+                budget=self._recovery_max_failures,
+            )
+            log.error(
+                "Budget de récupération de session épuisé (%s ouvertures "
+                "consécutives sans tour servi) : arrêt — cf. "
+                "SESSION_RECOVERY_EXHAUSTED.",
+                self._recovery_failures,
+            )
+
+    def _check_session_recovery_budget(self) -> None:
+        if self.session_recovery_exhausted:
+            raise SessionRecoveryExhausted(
+                f"récupération de session épuisée : {self._recovery_failures} "
+                "ouvertures consécutives de session sont mortes sans servir un "
+                "tour complet (erreurs récentes : "
+                + " | ".join(str(e) for e in self._session_errors_tail()) + ")"
+            )
+
+    def _session_errors_tail(self, count: int = 3) -> list[str]:
+        recent = list(self._trace)[-count * 2:]
+        events = [
+            e.get("error", "") for e in recent
+            if e.get("kind") in ("SESSION_RESUME_REJECTED", "SESSION_CONNECT",
+                                 "SESSION_RESUME")
+        ]
+        return events or ["(voir traces SESSION_*)"]
+
     async def connect(self) -> None:
         """Ouvre la session Live, avec repli automatique sur handle refusé.
 
@@ -1104,6 +1225,10 @@ class GeminiLive:
                 self.resumption_handle = None
                 self._resumption_handle_message_count = None
                 self._resumption_handle_received_this_turn = False
+        # Budget de récupération : au-delà de N ouvertures consécutives sans
+        # tour servi, on REFUSE d'ouvrir encore une session (l'exception
+        # remonte au superviseur, qui termine au lieu de boucler).
+        self._check_session_recovery_budget()
         attempts = 2
         while True:
             resumed = bool(self.resumption_handle)
@@ -1136,6 +1261,12 @@ class GeminiLive:
                     continue
                 if resumed:
                     log.warning("reprise de session impossible (%s) : tentative abandonnée", exc)
+                # Ouverture morte (erreur à la connexion ou pendant le rejeu
+                # de contexte) : comptée dans le budget de récupération —
+                # une rafale de telles ouvertures finit par lever
+                # ``SessionRecoveryExhausted`` au prochain ``connect()``
+                # (run 40370419959 : 45 sessions en rafale, jamais bornées).
+                self._note_session_opening_failed()
                 raise
 
     async def _connect_once(self):
@@ -1422,6 +1553,7 @@ class GeminiLive:
         # Comptabilité de session : distingue chaque session Gemini et dit si
         # le contexte a été repris par le serveur ou rejoué par Jarvis.
         resumed = bool(self.resumption_handle)
+        self._current_session_served_a_turn = False
         self.session_generation += 1
         self.session_id = getattr(
             getattr(self.session, "setup_complete", None), "session_id", None
@@ -1958,9 +2090,20 @@ class GeminiLive:
                 self._resumption_handle_message_count = None
                 self._resumption_handle_received_this_turn = False
             self._fail_open_turn("erreur de session")
+            self._note_session_opening_failed()
             raise
         else:
+            # Fin de la boucle de réception. Si AUCUN déclencheur légitime
+            # (GoAway, stall, reset de contexte, changement de voix) ne s'est
+            # manifesté, la raison doit rester EXPLICITE : « session_closed_
+            # cleanly » (fermeture propre du WebSocket) au lieu de laisser le
+            # marqueur par défaut « unexpected_after_normal_turn » — qui
+            # signalait précisément, en rafale, les reconnexions sans cause
+            # connue du run 40370419959.
+            if not self.reconnect_requested:
+                self._reconnect_reason = "session_closed_cleanly"
             self._fail_open_turn("session fermée avant la réponse")
+            self._note_session_opening_failed()
 
     def _fail_open_turn(self, reason: str) -> None:
         """Ferme le tour resté ouvert quand la session s'arrête.
@@ -2989,6 +3132,17 @@ class GeminiLive:
                         pass
                 self.tool_active = True
                 self._turn_tool_called = True
+                # v1.9.x (S4 de bout en bout) : la CHAÎNE de preuves d'un
+                # aller-retour d'outil — reçu → validé → exécuté → réponse
+                # envoyée → tour du résultat clos → texte final. Croisée avec
+                # le miroir câble du validateur, elle distingue SANS
+                # ambiguïté « le serveur n'a jamais appelé » de « la réponse
+                # d'outil n'a pas pu partir » de « le texte final manque ».
+                self._record_trace(
+                    "TOOL_CALL_RECEIVED",
+                    names=[c.name for c in tc.function_calls],
+                    count=len(tc.function_calls),
+                )
                 responses = []
                 # Un appel d'outil est une conséquence de la demande en cours :
                 # elle doit être dans le contexte AVANT l'appel.
@@ -3002,6 +3156,14 @@ class GeminiLive:
 
                         fn = TOOL_FUNCTIONS.get(c.name)
                         args = dict(c.args or {})
+                        if fn is not None:
+                            self._record_trace(
+                                "TOOL_CALL_VALIDATED", name=c.name,
+                            )
+                        else:
+                            self._record_trace(
+                                "TOOL_CALL_UNKNOWN_TOOL", name=c.name,
+                            )
                         # Filet d'intention : si la transcription de la demande
                         # est déjà là, le système d'écriture peut refuser une
                         # hypothèse (« qu'est-ce que tu écrirais ») même si le

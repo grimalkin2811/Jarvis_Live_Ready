@@ -209,7 +209,7 @@ async def run_headless() -> None:
     from .audio import AudioIO
     from .config import load_config
     from .conversation import get_default_conversation_context
-    from .gemini_live import AuthError, GeminiLive
+    from .gemini_live import AuthError, GeminiLive, SessionRecoveryExhausted
     from .memory import MemoryManager, set_default_memory_manager
     from .scheduler import start_default_scheduler
 
@@ -348,6 +348,14 @@ async def run_headless() -> None:
                 print(f"\n[Jarvis] {exc}")
                 print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
                 break
+            except SessionRecoveryExhausted as exc:
+                # v1.9.x : les ouvertures de session meurent en rafale sans
+                # rien servir (ex. 1008 « entity not found » côté service).
+                # Terminer PROPREMENT avec un diagnostic, jamais boucler.
+                print(f"\n[Jarvis] {exc}")
+                print("[Jarvis] Service injoignable de façon persistante. Arrêt "
+                      "(relancez Jarvis quand le service répond de nouveau).")
+                break
             except Exception:
                 import traceback
                 if gemini.reconnect_requested:
@@ -360,12 +368,19 @@ async def run_headless() -> None:
                         audio.wake_model.reset()
                     except Exception:
                         pass
-                    print("[Jarvis] Reconnexion dans 5 secondes...")
-                    await asyncio.sleep(5)
+                    # Backoff croissant si les sessions meurent sans rien
+                    # servir (borné par le moteur, retombe à ~0 après une
+                    # session saine).
+                    delay = max(1.0, min(30.0, gemini.session_recovery_backoff_seconds()))
+                    print(f"[Jarvis] Reconnexion dans {delay:.0f} seconde(s)...")
+                    await asyncio.sleep(delay)
             else:
                 # Reconnexion immédiate et silencieuse après une fermeture normale
                 # pour préserver l'état éveillé et la fenêtre de 8 secondes de l'utilisateur.
-                await asyncio.sleep(0.1)
+                # SAUF si les sessions meurent sans rien servir : le budget du
+                # moteur impose alors un backoff croissant (v1.9.x).
+                delay = gemini.session_recovery_backoff_seconds()
+                await asyncio.sleep(delay if delay > 0 else 0.1)
             finally:
                 try:
                     await gemini.close()
