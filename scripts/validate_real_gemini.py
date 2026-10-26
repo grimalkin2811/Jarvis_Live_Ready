@@ -713,6 +713,66 @@ def describe_exception(exc: BaseException) -> str:
     return _KEY_RE.sub("<clé masquée>", " <- ".join(parts))
 
 
+def _service_kill_cause(runner) -> str | None:
+    """Cause de coupure service si les preuves moteur l'établissent.
+
+    Distingue (run #93 / 40413544606) une session tuée par le SERVICE
+    (1008 « Requested entity was not found », budget de récupération
+    épuisé) d'un défaut audio : le canal audio peut parfaitement
+    fonctionner pendant que la session meurt.
+    """
+    if getattr(runner.gemini, "session_recovery_exhausted", False):
+        return (
+            "budget de récupération épuisé : "
+            f"{getattr(runner.gemini, '_recovery_failures', '?')} ouvertures "
+            "consécutives tuées sans tour servi"
+        )
+    errors = " | ".join(getattr(runner, "errors", [])[-3:]).lower()
+    if "1008" in errors or "entity was not found" in errors:
+        return "session tuée par le service (1008 Requested entity was not found)"
+    try:
+        rejected = [
+            e for e in runner.gemini.trace_events()
+            if e.get("kind") == "SESSION_RESUME_REJECTED"
+        ]
+    except Exception:
+        rejected = []
+    if rejected:
+        return "handle de reprise refusé par le serveur (SESSION_RESUME_REJECTED)"
+    return None
+
+
+def _attribute_transport_death(verdicts: dict, notes: list, runner, exc: BaseException) -> bool:
+    """Attribue un échec S2 à une coupure de TRANSPORT, pas à l'audio.
+
+    Faux négatif corrigé (run #93, artefact écouté et conforme) : la session
+    est morte (1008) PENDANT la réponse du modèle — l'audio déjà reçu
+    atteste que le canal audio fonctionnait. Un tour tué par le service
+    avant sa fin ne prouve NI un défaut audio NI la réussite de
+    l'aller-retour : AUDIO RÉEL est NON TESTABLE si de l'audio a été reçu
+    (preuve de réception), FAIL si aucun audio n'est arrivé (réception en
+    échec). RECONNEXION RÉELLE reste FAIL : le chemin de reconnexion est
+    précisément ce qui a été tué. Retourne True si l'attribution a été faite.
+    """
+    if not isinstance(exc, TurnTimeout):
+        return False
+    kill = _service_kill_cause(runner)
+    if kill is None:
+        return False
+    received = sum(len(chunk) for chunk in getattr(runner, "_audio_chunks", []))
+    verdicts["AUDIO RÉEL"] = "NON TESTABLE" if received else "FAIL"
+    verdicts["RECONNEXION RÉELLE"] = "FAIL"
+    notes.append(
+        f"S2 : coupure de TRANSPORT pendant le tour ({kill}) — audio modèle "
+        f"reçu avant coupure : {received} octets"
+        + (" (audible, cf. artefact) : aller-retour complet non conclusible "
+           "→ AUDIO RÉEL NON TESTABLE." if received else
+           " : AUCUN audio reçu → réception audio en échec (FAIL).")
+        + f" Diagnostic : {runner.diagnostic()[:300]}"
+    )
+    return True
+
+
 def classify_failure(exc: BaseException) -> tuple[str, str]:
     """Verdict d'un scénario interrompu par une exception.
 
@@ -782,36 +842,47 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
     # ---- S2 : AUDIO RÉEL + RECONNEXION RÉELLE (le correctif) -----------------
     try:
         safe_print("\n=== S2 : seed committé après reconnexion (correctif v1.7.1) ===")
-        await runner.ask("Mon prénom est Simon.", mode, client, tts_model)
-        mark = len(WIRE)
-        generation = await runner.drop_connection(keep_handle=False)
-        await runner.wait_reconnected(generation)
-        seed_sends = [e for e in wire_since(mark) if e["kind"] == "client_content"]
-        safe_print(
-            f"   [câble] session {generation} → {runner.gemini.session_generation} : "
-            f"{len(seed_sends)} clientContent après reconnexion "
-            f"(turn_complete={[e['turn_complete'] for e in seed_sends]}), "
-            f"rejeu confirmé par le serveur={runner.gemini.context_seed_confirmed}"
-        )
-        turn = await runner.ask("Quel est mon prénom ?", mode, client, tts_model)
-        answer = (turn.get("assistant") or "").lower()
-        audio_ok = "simon" in answer
-        if mode == "text":
-            verdicts["AUDIO RÉEL"] = "NON TESTABLE"
-            notes.append("S2 : mode texte — aucun audio n'a été envoyé; le verdict audio reste NON TESTABLE.")
+        try:
+            await runner.ask("Mon prénom est Simon.", mode, client, tts_model)
+        except Exception as exc:
+            if _attribute_transport_death(verdicts, notes, runner, exc):
+                # Session tuée par le service pendant la réponse : la suite
+                # de S2 (coupure volontaire + reprise) n'a aucun sens sans
+                # session — l'attribution est déjà posée (cf. helper).
+                await backoff_after_failure("S2", 10.0)
+            else:
+                raise
         else:
-            verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
-        verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok and seed_sends else "FAIL"
-        if not audio_ok:
-            notes.append(
-                "S2 : le rappel audio après seed a échoué — vérifier le protocole "
-                f"sur ce modèle (cf. scripts/dump_wire_protocol.py, journal E2/E8). Diagnostic : "
-                f"{runner.diagnostic()}"
+            mark = len(WIRE)
+            generation = await runner.drop_connection(keep_handle=False)
+            await runner.wait_reconnected(generation)
+            seed_sends = [e for e in wire_since(mark) if e["kind"] == "client_content"]
+            safe_print(
+                f"   [câble] session {generation} → {runner.gemini.session_generation} : "
+                f"{len(seed_sends)} clientContent après reconnexion "
+                f"(turn_complete={[e['turn_complete'] for e in seed_sends]}), "
+                f"rejeu confirmé par le serveur={runner.gemini.context_seed_confirmed}"
             )
-        if not seed_sends:
-            notes.append("S2 : AUCUN clientContent observé après reconnexion sans handle.")
+            turn = await runner.ask("Quel est mon prénom ?", mode, client, tts_model)
+            answer = (turn.get("assistant") or "").lower()
+            audio_ok = "simon" in answer
+            if mode == "text":
+                verdicts["AUDIO RÉEL"] = "NON TESTABLE"
+                notes.append("S2 : mode texte — aucun audio n'a été envoyé; le verdict audio reste NON TESTABLE.")
+            else:
+                verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
+            verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok and seed_sends else "FAIL"
+            if not audio_ok:
+                notes.append(
+                    "S2 : le rappel audio après seed a échoué — vérifier le protocole "
+                    f"sur ce modèle (cf. scripts/dump_wire_protocol.py, journal E2/E8). Diagnostic : "
+                    f"{runner.diagnostic()}"
+                )
+            if not seed_sends:
+                notes.append("S2 : AUCUN clientContent observé après reconnexion sans handle.")
     except Exception as exc:
-        failed(("AUDIO RÉEL", "RECONNEXION RÉELLE"), "S2", exc)
+        if not _attribute_transport_death(verdicts, notes, runner, exc):
+            failed(("AUDIO RÉEL", "RECONNEXION RÉELLE"), "S2", exc)
         await backoff_after_failure("S2", 10.0)
 
     # ---- S3 : SESSION RESUMPTION RÉELLE ---------------------------------------
@@ -900,7 +971,19 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
                     "état de reprise indémontrable."
                 )
     except Exception as exc:
-        failed(("SESSION RESUMPTION RÉELLE",), "S3", exc)
+        if getattr(runner.gemini, "session_recovery_exhausted", False):
+            # Aucune session disponible : le scénario n'a pas pu être
+            # exercé — NON TESTABLE (prérequis absent), cause précise.
+            # Le job CI échoue toujours (NON TESTABLE → exit 1) : c'est une
+            # attribution honnête, pas un masquage.
+            verdicts["SESSION RESUMPTION RÉELLE"] = "NON TESTABLE"
+            notes.append(
+                "S3 : NON TESTABLE — aucune session disponible (budget de "
+                "récupération épuisé : sessions tuées par le service, cf. "
+                "S2/SESSION_RECOVERY_EXHAUSTED). Scénario non exercé."
+            )
+        else:
+            failed(("SESSION RESUMPTION RÉELLE",), "S3", exc)
 
     # ---- S4 : OUTILS RÉELS ------------------------------------------------------
     try:
@@ -926,7 +1009,16 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
             )
             notes.append(_tool_failure_diagnostic(runner, turn))
     except Exception as exc:
-        failed(("OUTILS RÉELS",), "S4", exc)
+        if getattr(runner.gemini, "session_recovery_exhausted", False):
+            verdicts["OUTILS RÉELS"] = "NON TESTABLE"
+            notes.append(
+                "S4 : NON TESTABLE — aucune session disponible (budget de "
+                "récupération épuisé : sessions tuées par le service). "
+                "Scénario non exercé : ni l'appel validation_ping ni son "
+                "roundtrip ne peuvent être conclus."
+            )
+        else:
+            failed(("OUTILS RÉELS",), "S4", exc)
 
     return verdicts, notes
 

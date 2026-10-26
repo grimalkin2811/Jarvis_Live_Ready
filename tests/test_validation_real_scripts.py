@@ -536,6 +536,142 @@ class ToolDeclarationShapeTests(unittest.TestCase):
                 self.assertIsInstance(params.get("required", []), list)
 
 
+class _TransportKillRunner:
+    """Runner dont la session est tuée par le service pendant S2 (run #93).
+
+    ``40413544606`` : le 1008 a tué la session PENDANT la réponse du modèle
+    (~120 ko d'audio déjà reçus, artefact écouté et conforme), puis le budget
+    de récupération s'est épuisé. Sert à vérifier l'attribution des verdicts.
+    """
+
+    def __init__(self, *, exhausted: bool = True, audio_received: bool = True,
+                 transport_kill: bool = True, plain_timeout: bool = False,
+                 s2_answer: str = "Votre prénom est Simon.") -> None:
+        self.errors = (
+            ["connexion réinitialisée"] if plain_timeout
+            else ["APIError: 1008 None. Requested entity was not found. [code=1008]"]
+        )
+        self._audio_chunks = [b"\x01\x02" * 8000] if audio_received else []
+        self.drop_calls = 0
+        self._transport_kill = transport_kill
+        self._exhausted = exhausted
+        self._plain_timeout = plain_timeout
+        self._s2_answer = s2_answer
+        self.gemini = SimpleNamespace(
+            session_generation=6,
+            resumption_handle=None,
+            context_seed_confirmed=False,
+            session_recovery_exhausted=exhausted,
+            _recovery_failures=5,
+            trace_events=lambda: (
+                []
+                if plain_timeout
+                else [{"kind": "SESSION_RESUME_REJECTED",
+                       "error": "APIError 1008 Requested entity was not found"}]
+            ),
+        )
+
+    async def ask(self, prompt, mode, client=None, tts_model=""):
+        if prompt.startswith("Bonjour"):
+            return {"user": prompt, "assistant": "Je vous entends très bien.", "tools": []}
+        if prompt == "Mon prénom est Simon.":
+            if self._transport_kill:
+                raise vrg.TurnTimeout("aucune réponse 60 s après l'énoncé", "{}")
+            return {"user": prompt, "assistant": self._s2_answer, "tools": []}
+        if prompt == "Quel est mon prénom ?":
+            # C'est CETTE réponse que le verdict audio vérifie (présence de
+            # « Simon » après le rappel post-reconnexion).
+            return {"user": prompt, "assistant": self._s2_answer, "tools": []}
+        if self._plain_timeout or self._exhausted:
+            raise vrg.TurnTimeout(
+                "récupération de session épuisée : plus aucune session "
+                "n'est ouverte (cf. SESSION_RECOVERY_EXHAUSTED)", "{}"
+            )
+        if prompt == "Quel était le code retourné par l'outil, déjà ?":
+            return {"user": prompt, "assistant": f"Le code était {vrg.VALIDATION_CODE}.", "tools": []}
+        if "validation_ping" in prompt:
+            return {"user": prompt, "assistant": f"Le code est {vrg.VALIDATION_CODE}.",
+                    "tools": ["validation_ping"]}
+        if "J'habite" in prompt:
+            return {"user": prompt, "assistant": "Bien noté.", "tools": []}
+        return {"user": prompt, "assistant": "Tu habites à Tours.", "tools": []}
+
+    async def drop_connection(self, keep_handle):
+        self.drop_calls += 1
+        return 1
+
+    async def wait_reconnected(self, generation, timeout=None):
+        return None
+
+    def diagnostic(self):
+        return '{"moteur": {"turn_audio_bytes": 120960}}'
+
+
+class AudioVerdictAttributionTests(unittest.IsolatedAsyncioTestCase):
+    """AUDIO RÉEL n'absorbe plus les morts de transport (faux négatif #93).
+
+    Le validateur classait « AUDIO RÉEL : FAIL » tout TurnTimeout de S2 —
+    y compris une session tuée par le SERVICE (1008) pendant la réponse,
+    avec de l'audio parfaitement reçu. Séparation exigée : qualité audio /
+    transport / session / protocole.
+    """
+
+    async def _run(self, runner):
+        with contextlib.redirect_stdout(io.StringIO()), mock.patch.object(
+            vrg, "wire_since", side_effect=[[], []]
+        ):
+            return await vrg.run_scenarios(runner, "selftest", None, "")
+
+    async def test_coupure_transport_avec_audio_recu_audio_non_testable(self):
+        runner = _TransportKillRunner()
+        verdicts, notes = await self._run(runner)
+        self.assertEqual(verdicts["GEMINI LIVE RÉEL"], "PASS")
+        self.assertEqual(
+            verdicts["AUDIO RÉEL"], "NON TESTABLE",
+            "de l'audio a été reçu : le canal audio n'est pas en défaut, "
+            "mais l'aller-retour est incomplet (coupure service)",
+        )
+        self.assertEqual(verdicts["RECONNEXION RÉELLE"], "FAIL",
+                         "le chemin de reconnexion est ce qui a été tué")
+        self.assertEqual(verdicts["SESSION RESUMPTION RÉELLE"], "NON TESTABLE",
+                         "scénario non exercé : plus aucune session")
+        self.assertEqual(verdicts["OUTILS RÉELS"], "NON TESTABLE",
+                         "scénario non exercé : plus aucune session")
+        joined = " ".join(notes)
+        self.assertIn("TRANSPORT", joined)
+        self.assertIn("octets", joined)
+        self.assertEqual(runner.drop_calls, 0,
+                         "aucune coupure volontaire sans session disponible")
+
+    async def test_coupure_transport_sans_audio_reste_fail(self):
+        runner = _TransportKillRunner(audio_received=False)
+        verdicts, notes = await self._run(runner)
+        self.assertEqual(verdicts["AUDIO RÉEL"], "FAIL",
+                         "aucun audio reçu : réception audio en échec réel")
+        self.assertTrue(any("AUCUN audio" in n for n in notes))
+
+    async def test_timeout_sans_coupure_service_conserve_fail(self):
+        """Sans preuve de coupure service, un TurnTimeout reste un FAIL
+        (strictesse inchangée — aucun assouplissement général)."""
+        runner = _TransportKillRunner(exhausted=False, plain_timeout=True)
+        verdicts, notes = await self._run(runner)
+        self.assertEqual(verdicts["AUDIO RÉEL"], "FAIL")
+        self.assertEqual(verdicts["RECONNEXION RÉELLE"], "FAIL")
+        self.assertEqual(verdicts["SESSION RESUMPTION RÉELLE"], "FAIL")
+        self.assertFalse(any("TRANSPORT pendant le tour" in n for n in notes))
+
+    async def test_defaut_audio_reel_sur_tour_complete_rest_detecte(self):
+        """Tour COMPLET sans le fait attendu : AUDIO RÉEL reste FAIL —
+        la nouvelle attribution ne masque aucun vrai défaut."""
+        runner = _TransportKillRunner(
+            exhausted=False, transport_kill=False,
+            s2_answer="Je ne sais pas ton prénom.",
+        )
+        verdicts, notes = await self._run(runner)
+        self.assertEqual(verdicts["AUDIO RÉEL"], "FAIL")
+        self.assertTrue(any("rappel audio après seed a échoué" in n for n in notes))
+
+
 class _DiagnosticRunner:
     """Runner minimal pour ``_tool_failure_diagnostic`` (aucune API)."""
 

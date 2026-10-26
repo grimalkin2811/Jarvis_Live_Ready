@@ -396,6 +396,7 @@ class GeminiLive:
         self._recovery_max_backoff = max(0.5, float(
             os.getenv("JARVIS_SESSION_RECOVERY_MAX_BACKOFF", "8")
         ))
+        self._last_session_error = ""
         # =====================================================
         # INSTRUMENTATION DU CYCLE DE TOUR (v1.7.3)
         # -----------------------------------------------------
@@ -1148,8 +1149,10 @@ class GeminiLive:
         self._recovery_failures = 0
         self.session_recovery_exhausted = False
 
-    def _note_session_opening_failed(self) -> None:
+    def _note_session_opening_failed(self, error: str = "") -> None:
         """La session courante est morte sans avoir servi UN tour complet."""
+        if error:
+            self._last_session_error = error
         if self._current_session_served_a_turn:
             self._recovery_failures = 0
             self._current_session_served_a_turn = False
@@ -1188,9 +1191,10 @@ class GeminiLive:
         recent = list(self._trace)[-count * 2:]
         events = [
             e.get("error", "") for e in recent
-            if e.get("kind") in ("SESSION_RESUME_REJECTED", "SESSION_CONNECT",
-                                 "SESSION_RESUME")
+            if e.get("kind") == "SESSION_RESUME_REJECTED" and e.get("error")
         ]
+        if not events and self._last_session_error:
+            events = [self._last_session_error]
         return events or ["(voir traces SESSION_*)"]
 
     async def connect(self) -> None:
@@ -1266,7 +1270,7 @@ class GeminiLive:
                 # une rafale de telles ouvertures finit par lever
                 # ``SessionRecoveryExhausted`` au prochain ``connect()``
                 # (run 40370419959 : 45 sessions en rafale, jamais bornées).
-                self._note_session_opening_failed()
+                self._note_session_opening_failed(error=str(exc)[:200])
                 raise
 
     async def _connect_once(self):
@@ -2090,7 +2094,7 @@ class GeminiLive:
                 self._resumption_handle_message_count = None
                 self._resumption_handle_received_this_turn = False
             self._fail_open_turn("erreur de session")
-            self._note_session_opening_failed()
+            self._note_session_opening_failed(error=str(exc)[:200])
             raise
         else:
             # Fin de la boucle de réception. Si AUCUN déclencheur légitime
