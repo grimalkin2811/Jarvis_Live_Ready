@@ -119,6 +119,24 @@ class ScenarioVerdictTests(unittest.IsolatedAsyncioTestCase):
                     self.gemini.resumption_handle = "handle"
                     return {"user": prompt, "assistant": "Tu habites à Tours.", "tools": []}
                 if "validation_ping" in prompt:
+                    # v1.9.0 : le round-trip d'outil doit être PROUVÉ par la
+                    # chaîne d'événements du moteur (réception -> validation
+                    # -> exécution -> envoi -> clôture). Ce faux runner émet
+                    # donc ces événements comme le fait le vrai moteur,
+                    # pendant le tour — sinon il ne simule plus le protocole.
+                    now = time.monotonic()
+                    self.traces.extend([
+                        {"kind": "TOOL_CALL_RECEIVED", "names": ["validation_ping"],
+                         "count": 1, "ts": now},
+                        {"kind": "TOOL_CALL_VALIDATED", "name": "validation_ping",
+                         "ts": now + 0.001},
+                        {"kind": "TOOL_CALL_EXECUTED", "name": "validation_ping",
+                         "ts": now + 0.002},
+                        {"kind": "TOOL_RESPONSE_SENT", "names": ["validation_ping"],
+                         "ts": now + 0.003},
+                        {"kind": "TOOL_RESULT_TURN_COMPLETED", "has_assistant_text": True,
+                         "ts": now + 0.004},
+                    ])
                     return {"user": prompt, "assistant": vrg.VALIDATION_CODE, "tools": ["validation_ping"]}
                 if "code" in prompt.lower():
                     return {"user": prompt, "assistant": vrg.VALIDATION_CODE, "tools": []}
@@ -431,18 +449,31 @@ class S6CauseSeparationTests(unittest.TestCase):
         }
         return runner
 
-    def test_transcription_inexacte_rapportee_comme_telle(self):
+    def test_transcription_inexacte_est_non_testable_pas_un_echec_de_contexte(self):
+        """v1.9.0 : une question mal entendue n'est PAS un échec de contexte.
+
+        L'ancienne assertion attendait ``FAIL`` : elle imputait à la mémoire du
+        modèle une faute de reconnaissance vocale, ce que le docstring de cette
+        classe interdisait déjà (« deux causes qui ne doivent PAS être
+        rapportées comme un échec de contexte »). Le scénario n'a pas pu être
+        conduit -> ``NON TESTABLE``. Ce n'est pas un relâchement : l'étape
+        « Conclusion » de la CI échoue aussi sur ``NON TESTABLE``.
+        """
         runner = self._runner(
             "Quel est mon frère ?", "Tu t'appelles Simon.", []
         )
         runner.scenario_6_real_context()
-        self.assertEqual(runner.verdicts["S6 CONTEXTE REEL APRES RECONNEXION"], "FAIL")
+        self.assertEqual(
+            runner.verdicts["S6 CONTEXTE REEL APRES RECONNEXION"], "NON TESTABLE"
+        )
         note = runner.notes[0]
         self.assertIn("TRANSCRIPTION inexacte", note)
         self.assertIn("Quel est mon frère ?", note)
         self.assertNotIn("RÉCITATION", note)
         # Le contexte n'est PAS déclaré restauré : aucune mention de succès.
         self.assertNotIn("PASS", note)
+        # La note doit dire POURQUOI ce n'est pas un échec de contexte.
+        self.assertIn("NON TESTABLE", note)
 
     def test_recitation_appel_outil_rapportee_comme_telle(self):
         runner = self._runner(

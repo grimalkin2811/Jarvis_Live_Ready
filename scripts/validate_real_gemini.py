@@ -665,6 +665,95 @@ class TurnTimeout(TimeoutError):
         self.diagnostic = diagnostic
 
 
+#: Chaîne d'événements attendue pour un aller-retour d'outil complet.
+#: (libellé lisible, type d'événement moteur, clé portant le nom de l'outil)
+TOOL_CHAIN_STEPS = (
+    ("réception", "TOOL_CALL_RECEIVED", "names"),
+    ("validation", "TOOL_CALL_VALIDATED", "name"),
+    ("exécution", "TOOL_CALL_EXECUTED", "name"),
+    ("envoi du résultat", "TOOL_RESPONSE_SENT", "names"),
+    ("clôture du tour outil", "TOOL_RESULT_TURN_COMPLETED", None),
+)
+
+
+def _event_mentions_tool(event: dict, key: str | None, tool_name: str) -> bool:
+    """Vrai si l'événement nomme bien l'outil suivi (jamais un autre)."""
+    if key is None:
+        return True
+    value = event.get(key)
+    if isinstance(value, str):
+        return value == tool_name
+    if isinstance(value, (list, tuple)):
+        return tool_name in value
+    return False
+
+
+def _tool_roundtrip_chain(runner, since_ts: float, tool_name: str) -> dict:
+    """Chaîne de preuves OBSERVABLES du round-trip d'un outil, dans l'ordre.
+
+    Remplace le verdict proxy (« l'outil est nommé et le code apparaît dans la
+    réponse ») par la vérification étape par étape exigée pour S4 : chaque
+    maillon doit être présent, nommer LE bon outil, et apparaître dans l'ordre
+    chronologique. Les événements antérieurs à ``since_ts`` sont ignorés : la
+    trace couvre toute la session, un outil exécuté par un scénario précédent
+    ne doit jamais créditer S4.
+
+    Retourne ``{"observed": [libellés], "missing": [libellés], "details": [...]}``.
+    """
+    events = [
+        e for e in runner.gemini.trace_events()
+        if isinstance(e.get("ts"), (int, float)) and e["ts"] >= since_ts
+    ]
+    events.sort(key=lambda e: e["ts"])
+
+    cursor = 0
+    observed: list[str] = []
+    missing: list[str] = []
+    details: list[str] = []
+    for label, kind, key in TOOL_CHAIN_STEPS:
+        found_at = None
+        for index in range(cursor, len(events)):
+            event = events[index]
+            if event.get("kind") != kind:
+                continue
+            if not _event_mentions_tool(event, key, tool_name):
+                continue
+            found_at = index
+            break
+        if found_at is None:
+            missing.append(label)
+            details.append(f"{label} ({kind}) ABSENT")
+            continue
+        cursor = found_at + 1
+        observed.append(label)
+        details.append(f"{label} ({kind}) ok")
+
+    return {"observed": observed, "missing": missing, "details": details}
+
+
+def _s4_verdict(answer: str, chain: dict) -> tuple[bool, list[str]]:
+    """Décide du verdict S4 à partir de la chaîne de preuves.
+
+    Le PASS exige DEUX choses : la suite complète des événements observables
+    du round-trip, ET le code de validation réellement restitué dans la
+    réponse. Aucune des deux ne peut être déduite de l'autre.
+    """
+    answer_ok = VALIDATION_CODE.lower() in (answer or "").lower()
+    reasons: list[str] = []
+    if chain["missing"]:
+        reasons.append(
+            "chaîne de round-trip INCOMPLÈTE — maillons observés="
+            f"{chain['observed']} ; MANQUANTS={chain['missing']} "
+            "(la preuve exigée est la suite complète réception -> validation "
+            "-> exécution -> envoi -> clôture du tour)."
+        )
+    if not answer_ok:
+        reasons.append(
+            f"le code {VALIDATION_CODE} n'a pas été retrouvé dans la réponse."
+        )
+    return (answer_ok and not chain["missing"]), reasons
+
+
 def _tool_failure_diagnostic(runner: "RealRunner", turn: dict) -> str:
     """Distinction explicite des 4 causes possibles d'un échec S4.
 
@@ -988,25 +1077,41 @@ async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -
     # ---- S4 : OUTILS RÉELS ------------------------------------------------------
     try:
         safe_print("\n=== S4 : appel d'outil réel + suivi ===")
+        # Bornage temporel : la trace moteur couvre TOUTE la session (S1/S2/S3
+        # ont pu exécuter d'autres outils). Le round-trip de S4 doit être
+        # prouvé sur SES propres événements, jamais sur ceux d'un tour
+        # précédent.
+        s4_mark = time.monotonic()
         turn = await runner.ask(
             "Utilise l'outil validation_ping et répète-moi exactement le code qu'il retourne.",
             mode, client, tts_model,
         )
         tools = turn.get("tools", [])
         answer = (turn.get("assistant") or "")
-        tool_ok = "validation_ping" in tools and VALIDATION_CODE.lower() in answer.lower()
+        # Le verdict ne repose plus sur un proxy (« l'outil est nommé et le
+        # code apparaît ») mais sur la chaîne d'événements OBSERVABLES du
+        # round-trip : réception -> validation -> exécution -> envoi du
+        # résultat -> clôture du tour porteur. Chaque maillon manquant est
+        # rapporté nommément.
+        chain = _tool_roundtrip_chain(runner, s4_mark, "validation_ping")
+        tool_ok, fail_reasons = _s4_verdict(answer, chain)
         if tool_ok:
             follow = await runner.ask(
                 "Quel était le code retourné par l'outil, déjà ?",
                 mode, client, tts_model,
             )
-            tool_ok = VALIDATION_CODE.lower() in (follow.get("assistant") or "").lower()
+            follow_ok = VALIDATION_CODE.lower() in (follow.get("assistant") or "").lower()
+            if not follow_ok:
+                fail_reasons.append(
+                    f"le code {VALIDATION_CODE} n'a pas été restitué au tour de "
+                    "suivi : le résultat d'outil n'est pas resté exploitable "
+                    "dans le contexte."
+                )
+            tool_ok = follow_ok
         verdicts["OUTILS RÉELS"] = "PASS" if tool_ok else "FAIL"
         if not tool_ok:
-            notes.append(
-                f"S4 : outils={tools} — le code {VALIDATION_CODE} n'a pas été retrouvé "
-                "dans la réponse (ni dans le suivi)."
-            )
+            notes.extend(f"S4 : {reason}" for reason in fail_reasons)
+            notes.append(f"S4 : outils={tools} — diagnostic complet ci-dessous.")
             notes.append(_tool_failure_diagnostic(runner, turn))
     except Exception as exc:
         if getattr(runner.gemini, "session_recovery_exhausted", False):

@@ -856,6 +856,56 @@ class ScenarioRunner:
         return " ".join("".join(ch for ch in sans_accent if ch.isalnum()
                                 or ch.isspace()).split())
 
+    def _verify_context_without_asr(self, question: str,
+                                    timeout: float = TURN_TIMEOUT) -> dict | None:
+        """Vérifie le contexte par une relance TEXTE, sans aucune ASR.
+
+        Une question mal transcrite (« mon frère » au lieu de « mon prénom »)
+        ne dit rien de la mémoire du modèle : c'est l'entrée audio qui est en
+        cause. La relance texte traverse la MÊME session (aucune reconnexion,
+        aucun audio) : si elle restitue le fait mémorisé, le contexte est
+        prouvé indépendamment de la reconnaissance vocale.
+
+        Retourne ``None`` si le protocole ne permet pas cette vérification
+        (moteur sans entrée texte, session absente), sinon un dict
+        ``{"ok": bool, "reason": str, "answer": str}``.
+        """
+        # ``getattr`` en cascade : un harnais de test peut exposer la trace
+        # sans exposer le moteur. Dans ce cas la vérification indépendante
+        # n'est simplement pas disponible (-> None, donc NON TESTABLE) ; elle
+        # ne doit jamais lever et faire passer un test de contexte pour un
+        # échec d'infrastructure.
+        gemini = getattr(self.lab, "gemini", None)
+        submit = getattr(gemini, "submit_text_threadsafe", None) if gemini is not None else None
+        if submit is None:
+            return None
+        since = len(self.lab.turns)
+        try:
+            future = submit(question)
+            future.result(timeout=timeout)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "answer": "",
+                "reason": f"envoi texte refusé ({type(exc).__name__}: {exc})",
+            }
+        turn = self.lab.wait_for_new_turn(since, timeout)
+        if turn is None:
+            return {"ok": False, "answer": "", "reason": "aucun tour après la relance texte"}
+        answer = (turn.get("assistant") or "").strip()
+        lowered = answer.lower()
+        recitation = "[appel outil]" in lowered or "[résultat outil]" in lowered
+        ok = "simon" in lowered and not recitation
+        return {
+            "ok": ok,
+            "answer": answer,
+            "reason": (
+                "réponse texte contenant le fait mémorisé" if ok else
+                "réponse texte sans le fait mémorisé"
+                + (" (récitation d'appel d'outil)" if recitation else "")
+            ),
+        }
+
     def scenario_6_real_context(self) -> None:
         """Le prénom donné AVANT S5 doit rester exploitable après cette
         reconnexion réelle (ne relance pas de wake : reste sur la session
@@ -904,14 +954,36 @@ class ScenarioRunner:
             # réponse finale réelle contenant le fait mémorisé. Une
             # transcription inexacte ou une récitation interdisent le PASS,
             # même si la chaîne « simon » apparaît par coïncidence.
-            ok = (
-                "simon" in answer_lower
-                and transcription_fidele
-                and bool(heard)
-                and not recitation
-            )
+            #
+            # v1.9.0 (reprise de mission) : une transcription inexacte n'est
+            # PAS un échec de contexte — c'est un test qui n'a pas pu être
+            # conduit. Le verdict est alors NON TESTABLE, SAUF si le protocole
+            # permet de vérifier le contexte indépendamment de l'ASR : la
+            # relance en TEXTE (``submit_text_threadsafe``) traverse la même
+            # session sans aucune reconnaissance vocale. Dans ce cas le
+            # contexte est réellement prouvé et le PASS est légitime.
+            independent = None
+            if heard and not transcription_fidele:
+                independent = self._verify_context_without_asr(expected)
 
-            self.verdicts[name] = "PASS" if ok else "FAIL"
+            if transcription_fidele:
+                ok = "simon" in answer_lower and bool(heard) and not recitation
+                self.verdicts[name] = "PASS" if ok else "FAIL"
+            elif independent is not None and independent["ok"]:
+                # Contexte prouvé par une voie qui ne dépend pas de l'ASR.
+                self.verdicts[name] = "PASS"
+                self.notes.append(
+                    f"{name} : transcription audio inexacte (entendu={heard!r}) "
+                    "mais contexte VÉRIFIÉ INDÉPENDAMMENT par relance texte "
+                    f"(réponse={independent['answer']!r}) — le PASS ne dépend "
+                    "pas de la reconnaissance vocale."
+                )
+            else:
+                # Ni transcription exploitable, ni vérification indépendante :
+                # le scénario n'a pas été exercé dans des conditions valides.
+                self.verdicts[name] = "NON TESTABLE"
+
+            ok = self.verdicts[name] == "PASS"
             if not ok:
                 causes = []
                 if heard and not transcription_fidele:
@@ -921,6 +993,18 @@ class ScenarioRunner:
                         "démarré dans des conditions valides (ni contexte ni "
                         "outil ne sont conclusibles)"
                     )
+                    if independent is None:
+                        causes.append(
+                            "aucune vérification indépendante de l'ASR "
+                            "disponible (relance texte impossible) → "
+                            "NON TESTABLE, et non un échec de contexte"
+                        )
+                    else:
+                        causes.append(
+                            "relance TEXTE (sans ASR) non concluante : "
+                            f"{independent['reason']} ; "
+                            f"réponse={independent['answer']!r}"
+                        )
                 if not heard:
                     causes.append(
                         "aucune transcription utilisateur reçue — l'entrée "
