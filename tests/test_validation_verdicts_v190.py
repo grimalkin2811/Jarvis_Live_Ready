@@ -304,5 +304,54 @@ class ConclusionAggregationTests(unittest.TestCase):
         self.assertIn("grep -q 'NON TESTABLE'", content)
 
 
+class WiringTests(unittest.TestCase):
+    """Le code corrigé est-il bien CELUI QUE LA CI EXÉCUTE ?
+
+    Deux pièges possibles après une reprise de mission :
+    * les correctifs existent mais ne sont jamais appelés (code mort) ;
+    * la CI exécute un autre script que celui qu'on a corrigé.
+
+    Ces tests ferment les deux.
+    """
+
+    SCRIPTS = Path(ROOT) / "scripts"
+    WORKFLOW = Path(ROOT) / ".github" / "workflows" / "validate-gemini-live.yml"
+
+    def test_s4_appelle_reellement_la_chaine_de_preuves(self):
+        source = (self.SCRIPTS / "validate_real_gemini.py").read_text(encoding="utf-8")
+        self.assertIn('_tool_roundtrip_chain(runner, s4_mark, "validation_ping")', source)
+        self.assertIn("_s4_verdict(answer, chain)", source)
+
+    def test_lancien_proxy_ne_suffit_plus_a_lui_seul(self):
+        """Garde-fou anti-régression : la formule du proxy ne doit pas revenir."""
+        source = (self.SCRIPTS / "validate_real_gemini.py").read_text(encoding="utf-8")
+        self.assertNotIn('tool_ok = "validation_ping" in tools and VALIDATION_CODE', source)
+        self.assertNotIn('tools = turn.get("tools", []) and VALIDATION_CODE', source)
+
+    def test_s6_appelle_reellement_la_verification_independante(self):
+        source = (self.SCRIPTS / "validate_reconnect_v174_real.py").read_text(encoding="utf-8")
+        self.assertIn("_verify_context_without_asr(expected)", source)
+        # La transcription inexacte ne doit plus produire FAIL par défaut.
+        self.assertIn('self.verdicts[name] = "NON TESTABLE"', source)
+
+    def test_la_ci_execute_les_scripts_corriges(self):
+        """Le workflow doit lancer EXACTEMENT les deux fichiers corrigés."""
+        content = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("python scripts/validate_real_gemini.py", content)
+        self.assertIn("python scripts/validate_reconnect_v174_real.py", content)
+
+    def test_la_ci_transmet_bien_le_secret_sans_lefficher(self):
+        content = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}", content)
+        # Jamais d'écho de la clé.
+        self.assertNotIn("echo $GEMINI_API_KEY", content)
+        self.assertNotIn("echo \"$GEMINI_API_KEY\"", content)
+
+    def test_lagregateur_est_le_dernier_mot(self):
+        """Si la conclusion était neutralisée, un NON TESTABLE passerait."""
+        content = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("if [ \"$FAILED\" = \"1\" ]; then exit 1; fi", content)
+
+
 if __name__ == "__main__":
     unittest.main()
