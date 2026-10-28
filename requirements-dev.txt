@@ -2,6 +2,7 @@
 ruff>=0.5
 pytest>=8.0
 pyinstaller>=6.0
+PyYAML>=6.0
 # Note : la régénération des fixtures tests/fixtures/openwakeword/*.onnx
 # (tests/_make_oww_stubs.py) demande `pip install onnx`, inutile sinon.
 
