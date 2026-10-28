@@ -110,7 +110,12 @@ jobs:
           JARVIS_NO_MODEL_DOWNLOAD: "1"
         run: |
           set -o pipefail
-          python scripts/validate_reconnect_v174_real.py 2>&1 | tee validation_v174.log
+          # Le modèle sélectionné doit être transmis aux DEUX validateurs :
+          # sans ce --model, S1-S6 continuaient de tourner sur le modèle
+          # par défaut, quel que soit le choix de l'utilisateur (v1.9.0).
+          python scripts/validate_reconnect_v174_real.py \
+            --model "${{ inputs.model || 'gemini-2.5-flash-native-audio-preview-12-2025' }}" \
+            2>&1 | tee validation_v174.log
         continue-on-error: true
 
       - name: Bilan v1.7.4 en commentaire de PR

@@ -29,6 +29,7 @@ import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -351,6 +352,107 @@ class WiringTests(unittest.TestCase):
         """Si la conclusion était neutralisée, un NON TESTABLE passerait."""
         content = self.WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("if [ \"$FAILED\" = \"1\" ]; then exit 1; fi", content)
+
+
+class ModelPropagationTests(unittest.TestCase):
+    """Le modèle choisi doit atteindre LES DEUX validateurs (v1.9.0).
+
+    Défaut corrigé : `validate_reconnect_v174_real.py` n'acceptait aucun
+    argument et lisait `GEMINI_MODEL` — variable qu'aucun workflow ne définit.
+    S1-S6 tournaient donc toujours sur le modèle par défaut. Un essai
+    « sur Gemini 3 » n'aurait rien testé de tel, sans que le log le dise.
+    """
+
+    WORKFLOW = Path(ROOT) / ".github" / "workflows" / "validate-gemini-live.yml"
+    DEFAULT = "gemini-2.5-flash-native-audio-preview-12-2025"
+    NEW = "gemini-3.8-live"
+
+    def test_argument_explicite_prioritaire(self):
+        self.assertEqual(v174.resolve_model(["--model", self.NEW]), self.NEW)
+
+    def test_forme_avec_egal(self):
+        self.assertEqual(v174.resolve_model([f"--model={self.NEW}"]), self.NEW)
+
+    def test_environnement_en_second_recours(self):
+        with mock.patch.dict(os.environ, {"GEMINI_MODEL": self.NEW}, clear=False):
+            self.assertEqual(v174.resolve_model([]), self.NEW)
+
+    def test_argument_prime_sur_environnement(self):
+        with mock.patch.dict(os.environ, {"GEMINI_MODEL": self.DEFAULT}, clear=False):
+            self.assertEqual(v174.resolve_model(["--model", self.NEW]), self.NEW)
+
+    def test_defaut_quand_rien_nest_fourni(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GEMINI_MODEL", None)
+            self.assertEqual(v174.resolve_model([]), v174.DEFAULT_MODEL)
+
+    def test_argument_vide_ignore(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GEMINI_MODEL", None)
+            self.assertEqual(v174.resolve_model(["--model", "  "]), v174.DEFAULT_MODEL)
+
+    def test_le_workflow_transmet_le_modele_aux_deux_validateurs(self):
+        """Garde-fou anti-régression : les deux scripts doivent le recevoir."""
+        content = self.WORKFLOW.read_text(encoding="utf-8")
+        # validateur principal
+        self.assertRegex(
+            content,
+            r"validate_real_gemini\.py \\\n\s+--model",
+            "le validateur principal doit recevoir --model",
+        )
+        # validateur secondaire (le défaut corrigé)
+        second = content.split("validate_reconnect_v174_real.py", 1)[1][:260]
+        self.assertIn("--model", second,
+                      "S1-S6 doivent recevoir explicitement le modèle choisi")
+
+    def test_les_deux_validateurs_partagent_la_meme_priorite(self):
+        """Aucun des deux ne doit lire le modèle d'une façon divergente."""
+        source = (Path(ROOT) / "scripts" / "validate_reconnect_v174_real.py").read_text(
+            encoding="utf-8")
+        self.assertIn("def resolve_model(", source)
+        self.assertIn('os.getenv("GEMINI_MODEL", DEFAULT_MODEL)', source)
+        # L'ancienne lecture directe (sans --model) ne doit plus être la seule voie.
+        self.assertNotIn('    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)\n    tts_model', source)
+
+
+class WorkflowStructureTests(unittest.TestCase):
+    """Analyse STRUCTURELLE du workflow : plus robuste qu'une recherche de texte.
+
+    Une simple correspondance de chaîne se casse dès qu'on reformate le YAML
+    (retours à la ligne, quotes, espaces). On vérifie ici le contenu réel des
+    commandes, après parsing.
+    """
+
+    WORKFLOW = Path(ROOT) / ".github" / "workflows" / "validate-gemini-live.yml"
+
+    def _runs(self) -> str:
+        import yaml
+
+        data = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        # YAML 1.1 convertit la clé `on` en booléen True.
+        triggers = data.get("on") or data.get(True) or {}
+        self.assertIn("workflow_dispatch", triggers)
+        steps = data["jobs"]["validate"]["steps"]
+        return "\n".join(str(step.get("run", "")) for step in steps)
+
+    def test_yaml_valide_et_declenchement_manuel(self):
+        runs = self._runs()          # lève si le YAML est invalide
+        self.assertIn("validate_real_gemini.py", runs)
+
+    def test_les_deux_validateurs_recoivent_le_modele(self):
+        runs = self._runs()
+        primary = runs.split("validate_real_gemini.py", 1)[1]
+        secondary = runs.split("validate_reconnect_v174_real.py", 1)[1]
+        self.assertIn("--model", primary.split("validate_reconnect_v174_real.py")[0])
+        self.assertIn("--model", secondary.split("tee")[0],
+                      "S1-S6 doivent recevoir --model : c'est le défaut corrigé")
+
+    def test_le_secret_reste_dans_env_et_jamais_en_argument(self):
+        runs = self._runs()
+        self.assertNotIn("$GEMINI_API_KEY", runs,
+                         "la clé ne doit jamais apparaître en ligne de commande")
+        raw = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("secrets.GEMINI_API_KEY", raw)
 
 
 if __name__ == "__main__":

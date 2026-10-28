@@ -1060,6 +1060,33 @@ def print_verdicts(verdicts: dict[str, str], notes: list[str]) -> None:
     safe_print("=" * 70)
 
 
+def resolve_model(argv: list[str] | None = None) -> str:
+    """Modèle Live réellement demandé : ``--model`` > ``GEMINI_MODEL`` > défaut.
+
+    Défaut corrigé (v1.9.0) : ce validateur ignorait complètement le modèle
+    choisi dans le workflow. L'entrée ``model`` de ``workflow_dispatch``
+    n'était transmise qu'au validateur principal ; S1-S6 continuaient donc de
+    tourner sur ``DEFAULT_MODEL``, quel que soit le modèle sélectionné. Un
+    essai « sur Gemini 3 » aurait ainsi testé le modèle 2.x sans que rien ne
+    le signale.
+
+    L'ordre de priorité (argument explicite, puis environnement, puis défaut)
+    est celui du validateur principal, pour que les deux scripts ne puissent
+    pas diverger.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    for index, token in enumerate(args):
+        if token == "--model" and index + 1 < len(args):
+            value = args[index + 1].strip()
+            if value:
+                return value
+        elif token.startswith("--model="):
+            value = token.split("=", 1)[1].strip()
+            if value:
+                return value
+    return os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+
+
 async def main() -> int:
     api_key = load_api_key()
     if not api_key:
@@ -1070,8 +1097,12 @@ async def main() -> int:
         print_verdicts({}, ["aucune clé API disponible dans cet environnement."])
         return 2
 
-    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+    model = resolve_model()
     tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+    # Le modèle demandé est une information de diagnostic, pas un secret :
+    # il doit figurer dans le log du run pour qu'un résultat soit rattachable
+    # au modèle réellement utilisé.
+    safe_print(f"[modèle] Live demandé : {model}")
 
     notes: list[str] = []
     prompt_cache: dict[str, bytes] = {}

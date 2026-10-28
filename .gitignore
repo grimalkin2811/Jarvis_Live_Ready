@@ -10,6 +10,10 @@ __pycache__/
 .mypy_cache/
 pytest-results.xml
 *.junit.xml
+# Artefacts de validation réelle : `validate_real_gemini.py --record reponses`
+# y écrit l'audio reçu du modèle. Sorties de run, jamais des sources :
+# elles ne doivent pas entrer dans un commit ni dans une release.
+reponses/
 .coverage
 htmlcov/
 
