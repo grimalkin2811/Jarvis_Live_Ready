@@ -497,6 +497,7 @@ class LiveVerdictGateTests(unittest.TestCase):
         return "\n".join(lines) + "\n"
 
     def _run_cli(self, main_text: str | None, v174_text: str | None):
+        import os
         import subprocess
         import tempfile
 
@@ -507,10 +508,13 @@ class LiveVerdictGateTests(unittest.TestCase):
                 main_path.write_text(main_text, encoding="utf-8")
             if v174_text is not None:
                 v174_path.write_text(v174_text, encoding="utf-8")
+            env = dict(os.environ)
+            env["PYTHONUTF8"] = "1"
             proc = subprocess.run(
                 [sys.executable, str(self.SCRIPT),
                  "--main-log", str(main_path), "--v174-log", str(v174_path)],
                 capture_output=True, text=True, encoding="utf-8", errors="replace",
+                env=env,
             )
         return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 

@@ -26,9 +26,15 @@ Sortie : 0 seulement si **tous** les verdicts attendus sont PASS.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 #: Verdicts produits par ``scripts/validate_real_gemini.py`` (S1-S4 + outils).
 MAIN_VERDICTS: tuple[str, ...] = (
