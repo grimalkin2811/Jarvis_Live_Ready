@@ -185,6 +185,13 @@ jobs:
             echo 'VALIDATION GEMINI RÉELLE NON TESTABLE (clé, quota ou réseau absent) — ce check ne vaut pas PASS.'
             FAILED=1
           fi
+          # Un run qui n'imprime AUCUN verdict (import cassé, dépendance
+          # manquante, plantage avant le bloc final) ne contient ni ' : FAIL'
+          # ni 'NON TESTABLE' : la porte s'ouvrirait sur du vide. Chaque
+          # verdict attendu doit donc être PRÉSENT, et valoir PASS.
+          python scripts/check_live_verdicts.py \
+            --main-log validation.log \
+            --v174-log validation_v174.log || FAILED=1
           if [ "$FAILED" = "1" ]; then exit 1; fi
           echo 'Toutes les validations Gemini réelles sont PASS — voir les verdicts dans les commentaires de PR.'
 

@@ -455,5 +455,144 @@ class WorkflowStructureTests(unittest.TestCase):
         self.assertIn("secrets.GEMINI_API_KEY", raw)
 
 
+class LiveVerdictGateTests(unittest.TestCase):
+    """``scripts/check_live_verdicts.py`` : pas de vert par absence de preuve.
+
+    Défaut réel visé : un run sans AUCUN verdict (import cassé, dépendance
+    manquante, plantage avant le bloc final) ne contient ni ``' : FAIL'`` ni
+    ``'NON TESTABLE'``. L'ancienne étape « Conclusion » le laissait donc
+    passer au vert. La porte exige maintenant chaque verdict attendu.
+    """
+
+    SCRIPT = Path(ROOT) / "scripts" / "check_live_verdicts.py"
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("check_live_verdicts", cls.SCRIPT)
+        cls.gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.gate)
+
+    # -- helpers ---------------------------------------------------------
+    @staticmethod
+    def _main_log(overrides: dict[str, str] | None = None) -> str:
+        verdicts = {name: "PASS" for name in
+                    ("GEMINI LIVE RÉEL", "AUDIO RÉEL", "RECONNEXION RÉELLE",
+                     "SESSION RESUMPTION RÉELLE", "OUTILS RÉELS")}
+        verdicts.update(overrides or {})
+        lines = ["", "=" * 70, "GEMINI LIVE RÉEL (S1-S4)"]
+        lines += [f"{name} : {verdict}" for name, verdict in verdicts.items()]
+        return "\n".join(lines) + "\n"
+
+    @staticmethod
+    def _v174_log(overrides: dict[str, str] | None = None) -> str:
+        verdicts = {name: "PASS" for name in
+                    ("S1+S4 SILENCE PUIS EXPIRATION", "S2 DEUX TOURS RAPIDES",
+                     "S3 TROIS TOURS", "S5 RECONNEXION REELLE",
+                     "S6 CONTEXTE REEL APRES RECONNEXION")}
+        verdicts.update(overrides or {})
+        lines = ["=" * 70]
+        lines += [f"{name} : {verdict}" for name, verdict in verdicts.items()]
+        return "\n".join(lines) + "\n"
+
+    def _run_cli(self, main_text: str | None, v174_text: str | None):
+        import subprocess
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            main_path = Path(tmp) / "validation.log"
+            v174_path = Path(tmp) / "validation_v174.log"
+            if main_text is not None:
+                main_path.write_text(main_text, encoding="utf-8")
+            if v174_text is not None:
+                v174_path.write_text(v174_text, encoding="utf-8")
+            proc = subprocess.run(
+                [sys.executable, str(self.SCRIPT),
+                 "--main-log", str(main_path), "--v174-log", str(v174_path)],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+            )
+        return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+    # -- cas nominaux ----------------------------------------------------
+    def test_tous_les_verdicts_pass_ouvrent_la_porte(self):
+        code, out = self._run_cli(self._main_log(), self._v174_log())
+        self.assertEqual(code, 0, out)
+        self.assertIn("Tous les verdicts attendus sont présents et PASS", out)
+
+    def test_un_log_vide_ne_passe_pas(self):
+        """Le cœur du défaut : aucun verdict imprimé ≠ succès."""
+        code, out = self._run_cli("", "")
+        self.assertEqual(code, 1, out)
+        self.assertIn("verdict ABSENT", out)
+
+    def test_un_log_absent_ne_passe_pas(self):
+        code, out = self._run_cli(None, self._v174_log())
+        self.assertEqual(code, 1, out)
+        self.assertIn("log ABSENT", out)
+
+    def test_verdict_manquant_dans_un_log_par_ailleurs_vert(self):
+        text = "\n".join(
+            line for line in self._main_log().splitlines()
+            if not line.startswith("OUTILS RÉELS")
+        )
+        code, out = self._run_cli(text, self._v174_log())
+        self.assertEqual(code, 1, out)
+        self.assertIn("OUTILS RÉELS", out)
+
+    def test_non_testable_est_un_echec(self):
+        code, out = self._run_cli(self._main_log({"AUDIO RÉEL": "NON TESTABLE"}),
+                                  self._v174_log())
+        self.assertEqual(code, 1, out)
+        self.assertIn("AUDIO RÉEL", out)
+
+    def test_fail_est_un_echec(self):
+        code, out = self._run_cli(self._main_log(),
+                                  self._v174_log({"S6 CONTEXTE REEL APRES RECONNEXION": "FAIL"}))
+        self.assertEqual(code, 1, out)
+        self.assertIn("S6 CONTEXTE REEL APRES RECONNEXION", out)
+
+    def test_les_accents_ne_sont_pas_un_joker(self):
+        """« GEMINI LIVE REEL » sans accent ne doit pas compter comme le verdict attendu."""
+        text = self._main_log().replace("GEMINI LIVE RÉEL :", "GEMINI LIVE REEL :")
+        code, out = self._run_cli(text, self._v174_log())
+        self.assertEqual(code, 1, out)
+
+    def test_le_parseur_ignore_le_bruit_autour(self):
+        noisy = ("[clé] lue depuis la variable GEMINI_API_KEY (longueur 39).\n"
+                 "   [question] Où est-ce que j'habite déjà ?\n"
+                 + self._main_log())
+        code, out = self._run_cli(noisy, self._v174_log())
+        self.assertEqual(code, 0, out)
+
+
+class GateWiringTests(unittest.TestCase):
+    """La porte est-elle réellement branchée dans l'étape « Conclusion » ?"""
+
+    WORKFLOW = Path(ROOT) / ".github" / "workflows" / "validate-gemini-live.yml"
+
+    def _stepped_runs(self) -> dict[str, str]:
+        import yaml
+
+        data = yaml.safe_load(self.WORKFLOW.read_text(encoding="utf-8"))
+        steps = data["jobs"]["validate"]["steps"]
+        return {str(step.get("name", "")): str(step.get("run", "")) for step in steps}
+
+    def test_la_conclusion_appelle_la_porte(self):
+        conclusion = self._stepped_runs()["Conclusion"]
+        self.assertIn("check_live_verdicts.py", conclusion)
+        self.assertIn("--main-log", conclusion)
+        self.assertIn("--v174-log", conclusion)
+        self.assertIn("|| FAILED=1", conclusion,
+                      "un échec de la porte doit faire échouer le job")
+
+    def test_les_deux_garde_fous_precedents_sont_conserves(self):
+        conclusion = self._stepped_runs()["Conclusion"]
+        self.assertIn("grep -q ' : FAIL'", conclusion)
+        self.assertIn("grep -q 'NON TESTABLE'", conclusion)
+        self.assertIn("REAL_GEMINI_OUTCOME", conclusion)
+        self.assertIn("REAL_RECONNECT_OUTCOME", conclusion)
+
+
 if __name__ == "__main__":
     unittest.main()
