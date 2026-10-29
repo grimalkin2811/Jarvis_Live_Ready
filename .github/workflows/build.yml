@@ -148,7 +148,7 @@ jobs:
   build:
     name: Build & Release
     needs: [test]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 90
     permissions:
@@ -180,18 +180,23 @@ jobs:
           $v = $v.Trim()
           "version=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "Version depuis src/version.py: $v"
-          # Le tag doit correspondre à la version.
+          # Le tag doit correspondre à la version s'il s'agit d'une release taguée.
+          $ref = "${{ github.ref }}"
           $tag = "${{ github.ref_name }}"
-          Write-Host "Tag Git: $tag"
-          if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
-          $tag = $tag.Trim()
-          Write-Host "Tag sans 'v': $tag"
-          if ($tag -ne $v) {
-            Write-Host "ERROR: Tag v$v attendu, trouvé v$tag" -ForegroundColor Red
-            Write-Host "La version dans src/version.py doit correspondre au tag Git"
-            throw "Tag v$v attendu, trouvé v$tag"
+          if ($ref.StartsWith("refs/tags/v")) {
+            Write-Host "Tag Git: $tag"
+            if ($tag.StartsWith("v")) { $tag = $tag.Substring(1) }
+            $tag = $tag.Trim()
+            Write-Host "Tag sans 'v': $tag"
+            if ($tag -ne $v) {
+              Write-Host "ERROR: Tag v$v attendu, trouvé v$tag" -ForegroundColor Red
+              Write-Host "La version dans src/version.py doit correspondre au tag Git"
+              throw "Tag v$v attendu, trouvé v$tag"
+            }
+            Write-Host "Version et tag cohérents: $v" -ForegroundColor Green
+          } else {
+            Write-Host "Build de validation hors tag (ref: $ref). Version testée: $v" -ForegroundColor Cyan
           }
-          Write-Host "Version et tag cohérents: $v" -ForegroundColor Green
 
       - name: Construire l'application et le launcher
         shell: pwsh
@@ -612,7 +617,18 @@ jobs:
           "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Write-Host "SHA-256: $sha"
 
+      - name: Archiver les artefacts de build
+        uses: actions/upload-artifact@v4
+        with:
+          name: jarvis-windows-build
+          path: |
+            dist/JarvisSetup-*.exe
+            dist/Jarvis-v*-portable.zip
+            dist/Jarvis-v*-portable.zip.sha256
+          if-no-files-found: error
+
       - name: Créer la release GitHub
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref }}

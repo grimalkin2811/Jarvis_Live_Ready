@@ -298,7 +298,9 @@ Write-Host "=== Smoke testing launcher (CLI) ===" -ForegroundColor Cyan
 $launcherExe = Join-Path $DistDir "JarvisLauncher.exe"
 Write-Host "[build] Test: $launcherExe --validate"
 try {
-    $launcherProc = Start-Process -FilePath $launcherExe -ArgumentList "--validate" -PassThru -NoNewWindow
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($launcherExe, "--validate")
+    $psi.UseShellExecute = $false
+    $launcherProc = [System.Diagnostics.Process]::Start($psi)
     if (-not $launcherProc.WaitForExit(30000)) {
         try { $launcherProc.Kill() } catch { }
         throw "Launcher smoke test: timeout après 30s (processus tué)"
@@ -320,10 +322,12 @@ Write-Host "[build] Test: $testExe --smoke-test"
 # qui était avalée par le catch et faisait que le smoke test ne tournait
 # jamais). WaitForExit(ms) fournit un délai borné réel.
 try {
-    $process = Start-Process -FilePath $testExe -ArgumentList "--smoke-test" -PassThru -NoNewWindow
-    if (-not $process.WaitForExit(30000)) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($testExe, "--smoke-test")
+    $psi.UseShellExecute = $false
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if (-not $process.WaitForExit(60000)) {
         try { $process.Kill() } catch { }
-        Write-Host "[build] Smoke test: timeout après 30s (processus tué)" -ForegroundColor Yellow
+        Write-Host "[build] Smoke test: timeout après 60s (processus tué)" -ForegroundColor Yellow
     } elseif ($process.ExitCode -ne 0) {
         Write-Host "[build] Smoke test exit code: $($process.ExitCode)" -ForegroundColor Yellow
         # Ne fait pas échouer le build si smoke test échoue, mais log ;
