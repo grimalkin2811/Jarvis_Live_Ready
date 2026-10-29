@@ -24,3 +24,14 @@ def _cleanup_with_gc(self):
 
 
 tempfile.TemporaryDirectory.cleanup = _cleanup_with_gc
+
+
+# Correctif PR #50 : ``python -m unittest`` (discover ou modules nommés) ne
+# charge jamais conftest.py ; sans ceci, les tests de l'orbe, du menu et de la
+# mémoire écrivaient dans les VRAIES données de Jarvis. L'isolation n'est
+# appliquée que si le programme principal est la ligne de commande unittest —
+# jamais lors d'un import ``tests.xxx`` depuis un script de validation réelle.
+from tests._isolation import apply_test_isolation, running_under_unittest_cli  # noqa: E402
+
+if running_under_unittest_cli():
+    apply_test_isolation()

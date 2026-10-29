@@ -533,6 +533,59 @@ PROMPTS = [
 ]
 
 
+# =====================================================================
+# Backend PRIMAIRE : fixtures WAV versionnées (zéro requête TTS).
+#
+# Les phrases EXACTES des scénarios sont des fichiers PCM 16 kHz mono
+# versionnés (tts_fixtures/, contrôlés par manifest.json : sha256, format,
+# durées). Aucune requête TTS au runtime, entrées identiques à chaque
+# exécution, aucun quota Gemini consommé. Toute fixture douteuse est
+# signalée explicitement (jamais envoyée en silence) et le validateur
+# retombe sur les backends historiques pour les phrases manquantes.
+# =====================================================================
+
+FIXTURES_BACKEND_NAME = "fixtures"
+
+
+def synthesize_from_fixtures(prompts: list[str]) -> tuple[dict[str, bytes], list[str]]:
+    """Charge les fixtures audio versionnées pour les prompts demandés.
+
+    Retourne ``(cache, problèmes)`` : les prompts sans fixture valide
+    restent à la charge des backends de secours ; les problèmes sont
+    affichés (jamais silencieux) et rappelés dans les notes de verdict.
+    """
+    from scripts.validation import tts_fixtures as fx
+
+    try:
+        cache, problems = fx.load_fixtures(prompts)
+    except fx.FixtureError as exc:
+        return {}, [str(exc)]
+    return cache, problems
+
+
+def scenario_verdict(exc: BaseException) -> tuple[str, str]:
+    """Verdict d'un scénario interrompu par une exception (correctif PR #50).
+
+    « NON TESTABLE » est réservé aux PRÉREQUIS absents (clé refusée, quota
+    épuisé, réseau injoignable). Une absence de réponse dans le délai, une
+    erreur de session ou de protocole est un ÉCHEC (FAIL) : le scénario a été
+    exercé et n'a pas abouti. L'ancien code classait toute exception en
+    NON TESTABLE, ce qui masquait de vrais échecs.
+    """
+    from src.gemini_live import AuthError, _is_auth_error
+
+    text = redact(f"{type(exc).__name__}: {exc}")
+    low = text.lower()
+    if isinstance(exc, AuthError) or _is_auth_error(exc):
+        return "NON TESTABLE", f"prérequis absent : clé API refusée ({text[:160]})"
+    if any(marker in low for marker in ("resource_exhausted", "quota", " 429")):
+        return "NON TESTABLE", f"prérequis absent : quota de l'API épuisé ({text[:160]})"
+    if any(marker in low for marker in ("getaddrinfo", "name resolution", "network is unreachable",
+                                        "no route to host")):
+        return "NON TESTABLE", f"prérequis absent : réseau injoignable ({text[:160]})"
+    return "FAIL", text[:300]
+
+
 class ScenarioRunner:
     def __init__(self, lab: RealVoiceLab, prompt_cache: dict[str, bytes]):
         self.lab = lab
@@ -544,11 +597,38 @@ class ScenarioRunner:
         if wake:
             self.lab.wake()
         since = len(self.lab.turns)
+        # L'énoncé doit être émis pendant que la capture est RÉELLEMENT
+        # active (pas pendant la traîne audio du tour précédent / du rejeu).
+        self.lab.wait_mic_capturing()
+        sent_before = self.lab._mic_sent
         self.lab.speak_pcm(self.prompt_cache[prompt])
+        deadline = time.monotonic() + 5.0
+        while self.lab._mic_sent <= sent_before and time.monotonic() < deadline:
+            time.sleep(0.02)
+        if self.lab._mic_sent <= sent_before:
+            raise RuntimeError(
+                "aucun bloc micro transmis après l'énoncé (micro/porte anti-écho) : "
+                f"can_send={self.lab.gemini.can_send()} "
+                f"gate={self.lab.audio._mic_gate_open()}"
+            )
+        # v1.9.x : keeper arrêté (budget d'ouvertures épuisé) — échec
+        # immédiat avec cause précise au lieu du timeout complet.
+        if getattr(self.lab.gemini, "session_recovery_exhausted", False):
+            raise TimeoutError(
+                "récupération de session épuisée : le superviseur a arrêté "
+                "les reconnexions (cf. SESSION_RECOVERY_EXHAUSTED)"
+            )
         turn = self.lab.wait_for_new_turn(since, timeout)
         if turn is None:
             raise TimeoutError(f"aucune réponse reçue pour : {prompt!r}")
         safe_print(f"   [question] {prompt}")
+        # Contrôle anti-audio-faux : ce que la reconnaissance vocale de
+        # Gemini a RÉELLEMENT entendu doit correspondre à la phrase demandée
+        # (une fixture corrompue ou un TTS dérivant se voient ici, dans le
+        # log, tour par tour).
+        heard = (turn.get("user") or "").strip()
+        if heard:
+            safe_print(f"   [entendu]  {heard}")
         safe_print(f"   [réponse]  {turn.get('assistant') or '(sans transcription)'}")
         return turn
 
@@ -589,8 +669,8 @@ class ScenarioRunner:
                 f"awake après expiration = {self.lab.audio.awake}"
             )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S2 : deux tours rapides ------------------------------------------------
     def scenario_2_two_quick_turns(self) -> None:
@@ -612,8 +692,8 @@ class ScenarioRunner:
                     f"ou transcription incomplète) : {turn2.get('assistant')!r}"
                 )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S3 : trois tours ------------------------------------------------------------
     def scenario_3_three_turns(self) -> None:
@@ -652,8 +732,8 @@ class ScenarioRunner:
                     f"{name} : générations={gen0},{gen1},{gen2} nouveaux_tours={n_new_turns}"
                 )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S5 : reconnexion réelle forcée ---------------------------------------------
     def scenario_5_real_reconnection(self) -> None:
@@ -704,27 +784,262 @@ class ScenarioRunner:
                     f"{name} : reasons={reasons} audio_before_ready={len(audio_before_ready)}"
                 )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(f"{name} : {reason}")
 
     # -- S6 : contexte réel ------------------------------------------------------------
+    def _engine_failure_diagnostic(self) -> str:
+        """Preuves moteur pour un échec S6 : contexte restauré vs génération vide.
+
+        Un ``réponse=''`` seul ne permet pas de trancher entre « contexte non
+        restauré » et « bug serveur de génération vide » (googleapis/
+        python-genai#2117, cf. docs/RAPPORT_RECONNEXION_PAR_TOUR_v1.7.4.md
+        §11-§13). Le moteur trace déjà tout ce qu'il faut : on le rejoue ici
+        (lecture seule, borné) pour que CHAQUE échec réel soit
+        auto-classifiant sans nouvelle exécution.
+        """
+        events = self.lab.gemini_trace()
+        retries = [e for e in events if e.get("kind") == "EMPTY_GENERATION_RETRY"]
+        ready = [e for e in events if e.get("kind") == "SESSION_READY"]
+        seed_confirmed = any(
+            e.get("context_seed_confirmed") for e in ready
+        ) or any(e.get("kind") == "SEED_COMMIT_CONFIRMED" for e in events)
+        seeded = any(e.get("context_seeded") for e in ready) or any(
+            e.get("kind") == "CONTEXT_REPLAY_TOOL_ENTRIES" for e in events
+        )
+        empty_turns = [e for e in events if e.get("kind") == "TURN_COMPLETE"
+                       and e.get("has_user_text") and not e.get("has_model_content")]
+        hollow = [
+            e for e in events
+            if e.get("kind") == "MODEL_TURN_RECEIVED"
+            and not e.get("has_inline_audio")
+        ]
+        parts = [
+            f"rejeu_envoyé={bool(seeded)}",
+            f"rejeu_confirmé={bool(seed_confirmed)}",
+            f"relances_generation_vide={len(retries)}",
+            f"tours_avec_question_sans_réponse={len(empty_turns)}",
+            f"model_turn_sans_audio={len(hollow)}",
+        ]
+        if retries:
+            last = retries[-1]
+            parts.append(
+                f"dernière_relance=gen{last.get('session_generation')} "
+                f"attempt={last.get('attempt')}/{last.get('max_attempts')}"
+            )
+        if empty_turns:
+            last = empty_turns[-1]
+            parts.append(
+                "dernier_turn_complete="
+                + ", ".join(
+                    f"{k}={last[k]}"
+                    for k in ("interaction_status", "turn_complete_reason", "waiting_for_input")
+                    if k in last
+                )
+            )
+        return " ; ".join(parts)
+
+    @staticmethod
+    def _normalize_speech(text: str) -> str:
+        """Normalisation douce pour comparer attendu vs transcrit.
+
+        Minuscules, ponctuation et diacritiques retirés (l'ASR peut
+        transcrire avec ou sans accents). Suffisant pour tolérer
+        « Quel est mon prénom ? » / « quel est mon prenom », pas pour
+        excuser « mon frère ».
+        """
+        import unicodedata
+
+        lowered = unicodedata.normalize("NFD", (text or "")).lower()
+        sans_accent = "".join(ch for ch in lowered
+                              if not unicodedata.combining(ch))
+        return " ".join("".join(ch for ch in sans_accent if ch.isalnum()
+                                or ch.isspace()).split())
+
+    def _verify_context_without_asr(self, question: str,
+                                    timeout: float = TURN_TIMEOUT) -> dict | None:
+        """Vérifie le contexte par une relance TEXTE, sans aucune ASR.
+
+        Une question mal transcrite (« mon frère » au lieu de « mon prénom »)
+        ne dit rien de la mémoire du modèle : c'est l'entrée audio qui est en
+        cause. La relance texte traverse la MÊME session (aucune reconnexion,
+        aucun audio) : si elle restitue le fait mémorisé, le contexte est
+        prouvé indépendamment de la reconnaissance vocale.
+
+        Retourne ``None`` si le protocole ne permet pas cette vérification
+        (moteur sans entrée texte, session absente), sinon un dict
+        ``{"ok": bool, "reason": str, "answer": str}``.
+        """
+        # ``getattr`` en cascade : un harnais de test peut exposer la trace
+        # sans exposer le moteur. Dans ce cas la vérification indépendante
+        # n'est simplement pas disponible (-> None, donc NON TESTABLE) ; elle
+        # ne doit jamais lever et faire passer un test de contexte pour un
+        # échec d'infrastructure.
+        gemini = getattr(self.lab, "gemini", None)
+        submit = getattr(gemini, "submit_text_threadsafe", None) if gemini is not None else None
+        if submit is None:
+            return None
+        since = len(self.lab.turns)
+        try:
+            future = submit(question)
+            future.result(timeout=timeout)
+        except Exception as exc:
+            return {
+                "ok": False,
+                "answer": "",
+                "reason": f"envoi texte refusé ({type(exc).__name__}: {exc})",
+            }
+        turn = self.lab.wait_for_new_turn(since, timeout)
+        if turn is None:
+            return {"ok": False, "answer": "", "reason": "aucun tour après la relance texte"}
+        answer = (turn.get("assistant") or "").strip()
+        lowered = answer.lower()
+        recitation = "[appel outil]" in lowered or "[résultat outil]" in lowered
+        ok = "simon" in lowered and not recitation
+        return {
+            "ok": ok,
+            "answer": answer,
+            "reason": (
+                "réponse texte contenant le fait mémorisé" if ok else
+                "réponse texte sans le fait mémorisé"
+                + (" (récitation d'appel d'outil)" if recitation else "")
+            ),
+        }
+
     def scenario_6_real_context(self) -> None:
         """Le prénom donné AVANT S5 doit rester exploitable après cette
         reconnexion réelle (ne relance pas de wake : reste sur la session
         issue de S5, exactement le scénario demandé par la mission).
+
+        v1.9.x (run 40370419959) : les causes sont SÉPARÉES — une erreur de
+        transcription (« Quel est mon frère ? » entendu) et une récitation
+        d'appel d'outil (« [appel outil] recall(...)" prononcé au lieu d'un
+        toolCall natif) ne sont PAS des échecs de contexte et ne doivent pas
+        être rapportées comme tels. Le PASS exige la preuve complète :
+        transcription fidèle + réponse finale réellement reçue contenant le
+        fait mémorisé.
         """
         name = "S6 CONTEXTE REEL APRES RECONNEXION"
+        expected = PROMPTS[4]  # "Quel est mon prénom ?"
         try:
             safe_print("\n=== S6 : mémoire contextuelle réelle après reconnexion ===")
-            turn = self.say(PROMPTS[4])  # "Quel est mon prénom ?"
-            answer = (turn.get("assistant") or "").lower()
-            ok = "simon" in answer
-            self.verdicts[name] = "PASS" if ok else "FAIL"
+            turn = self.say(expected)
+            heard = (turn.get("user") or "").strip()
+            answer = (turn.get("assistant") or "").strip()
+            answer_lower = answer.lower()
+
+            # Cause 1 : la transcription d'ENTRÉE ne correspond pas à la
+            # question posée — le test de contexte n'a pas commencé dans des
+            # conditions valides (fixture inintelligible ou ASR).
+            transcription_fidele = (
+                self._normalize_speech(heard) == self._normalize_speech(expected)
+            )
+            # Cause 2 : le modèle a RÉCITÉ un appel d'outil (marqueur du
+            # contexte ou syntaxe d'appel) au lieu d'émettre un toolCall
+            # natif et de répondre — ce n'est pas une réponse finale.
+            recitation = (
+                "[appel outil]" in answer_lower
+                or "[résultat outil]" in answer_lower
+            )
+            tool_calls_recus = [
+                e for e in self.lab.gemini_trace()
+                if e.get("kind") == "TOOL_CALL_RECEIVED"
+            ]
+            tool_calls_executes = [
+                e for e in self.lab.gemini_trace()
+                if e.get("kind") == "TOOL_CALL_EXECUTED"
+            ]
+
+            # PASS seulement sur preuve COMPLÈTE : transcription fidèle +
+            # réponse finale réelle contenant le fait mémorisé. Une
+            # transcription inexacte ou une récitation interdisent le PASS,
+            # même si la chaîne « simon » apparaît par coïncidence.
+            #
+            # v1.9.0 (reprise de mission) : une transcription inexacte n'est
+            # PAS un échec de contexte — c'est un test qui n'a pas pu être
+            # conduit. Le verdict est alors NON TESTABLE, SAUF si le protocole
+            # permet de vérifier le contexte indépendamment de l'ASR : la
+            # relance en TEXTE (``submit_text_threadsafe``) traverse la même
+            # session sans aucune reconnaissance vocale. Dans ce cas le
+            # contexte est réellement prouvé et le PASS est légitime.
+            independent = None
+            if heard and not transcription_fidele:
+                independent = self._verify_context_without_asr(expected)
+
+            if transcription_fidele:
+                ok = "simon" in answer_lower and bool(heard) and not recitation
+                self.verdicts[name] = "PASS" if ok else "FAIL"
+            elif independent is not None and independent["ok"]:
+                # Contexte prouvé par une voie qui ne dépend pas de l'ASR.
+                self.verdicts[name] = "PASS"
+                self.notes.append(
+                    f"{name} : transcription audio inexacte (entendu={heard!r}) "
+                    "mais contexte VÉRIFIÉ INDÉPENDAMMENT par relance texte "
+                    f"(réponse={independent['answer']!r}) — le PASS ne dépend "
+                    "pas de la reconnaissance vocale."
+                )
+            else:
+                # Ni transcription exploitable, ni vérification indépendante :
+                # le scénario n'a pas été exercé dans des conditions valides.
+                self.verdicts[name] = "NON TESTABLE"
+
+            ok = self.verdicts[name] == "PASS"
             if not ok:
-                self.notes.append(f"{name} : réponse={turn.get('assistant')!r}")
+                causes = []
+                if heard and not transcription_fidele:
+                    causes.append(
+                        f"TRANSCRIPTION inexacte : attendu={expected!r}, "
+                        f"entendu={heard!r} — le test de contexte n'a pas "
+                        "démarré dans des conditions valides (ni contexte ni "
+                        "outil ne sont conclusibles)"
+                    )
+                    if independent is None:
+                        causes.append(
+                            "aucune vérification indépendante de l'ASR "
+                            "disponible (relance texte impossible) → "
+                            "NON TESTABLE, et non un échec de contexte"
+                        )
+                    else:
+                        causes.append(
+                            "relance TEXTE (sans ASR) non concluante : "
+                            f"{independent['reason']} ; "
+                            f"réponse={independent['answer']!r}"
+                        )
+                if not heard:
+                    causes.append(
+                        "aucune transcription utilisateur reçue — l'entrée "
+                        "audio n'a pas été comprise (fixture/ASR) : contexte "
+                        "non conclusible"
+                    )
+                if recitation:
+                    causes.append(
+                        "RÉCITATION d'appel d'outil : la réponse contient le "
+                        "marqueur de contexte d'outil au lieu d'une réponse "
+                        "finale (le modèle n'a PAS émis de toolCall natif : "
+                        f"reçus={len(tool_calls_recus)}, "
+                        f"exécutés={len(tool_calls_executes)})"
+                    )
+                if not answer:
+                    causes.append(
+                        "réponse finale ABSENTE (tour vide — relances "
+                        "éventuelles cf. diagnostic ci-dessous)"
+                    )
+                if not causes:
+                    causes.append(
+                        "réponse finale reçue mais sans le fait mémorisé "
+                        "attendu (Simon) — contexte non prouvé"
+                    )
+                self.notes.append(
+                    f"{name} : réponse={answer!r} ; entendu={heard!r} ; "
+                    f"outils_reçus={len(tool_calls_recus)} ; "
+                    f"causes=" + " ; ".join(causes)
+                    + f" [{self._engine_failure_diagnostic()}]"
+                )
         except Exception as exc:
-            self.verdicts[name] = "NON TESTABLE"
-            self.notes.append(f"{name} : {type(exc).__name__} — {exc}")
+            self.verdicts[name], reason = scenario_verdict(exc)
+            self.notes.append(
+                f"{name} : {reason} [{self._engine_failure_diagnostic()}]"
+            )
 
 
 def print_verdicts(verdicts: dict[str, str], notes: list[str]) -> None:
@@ -745,6 +1060,33 @@ def print_verdicts(verdicts: dict[str, str], notes: list[str]) -> None:
     safe_print("=" * 70)
 
 
+def resolve_model(argv: list[str] | None = None) -> str:
+    """Modèle Live réellement demandé : ``--model`` > ``GEMINI_MODEL`` > défaut.
+
+    Défaut corrigé (v1.9.0) : ce validateur ignorait complètement le modèle
+    choisi dans le workflow. L'entrée ``model`` de ``workflow_dispatch``
+    n'était transmise qu'au validateur principal ; S1-S6 continuaient donc de
+    tourner sur ``DEFAULT_MODEL``, quel que soit le modèle sélectionné. Un
+    essai « sur Gemini 3 » aurait ainsi testé le modèle 2.x sans que rien ne
+    le signale.
+
+    L'ordre de priorité (argument explicite, puis environnement, puis défaut)
+    est celui du validateur principal, pour que les deux scripts ne puissent
+    pas diverger.
+    """
+    args = list(sys.argv[1:] if argv is None else argv)
+    for index, token in enumerate(args):
+        if token == "--model" and index + 1 < len(args):
+            value = args[index + 1].strip()
+            if value:
+                return value
+        elif token.startswith("--model="):
+            value = token.split("=", 1)[1].strip()
+            if value:
+                return value
+    return os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+
+
 async def main() -> int:
     api_key = load_api_key()
     if not api_key:
@@ -755,17 +1097,40 @@ async def main() -> int:
         print_verdicts({}, ["aucune clé API disponible dans cet environnement."])
         return 2
 
-    model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL)
+    model = resolve_model()
     tts_model = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+    # Le modèle demandé est une information de diagnostic, pas un secret :
+    # il doit figurer dans le log du run pour qu'un résultat soit rattachable
+    # au modèle réellement utilisé.
+    safe_print(f"[modèle] Live demandé : {model}")
 
     notes: list[str] = []
     prompt_cache: dict[str, bytes] = {}
     modes_used: set[str] = set()
 
-    # 1) Backend PRIMAIRE : synthèse locale (pyttsx3), zéro quota Gemini.
+    # 0) Backend PRIMAIRE : fixtures WAV versionnées — zéro requête TTS,
+    #    zéro quota Gemini, entrées identiques à chaque exécution. Les
+    #    fixtures sont validées (sha256, format, durée) AVANT toute
+    #    ouverture de session Gemini.
     tts_backend = os.getenv("JARVIS_VALIDATE_TTS_BACKEND", "auto").strip().lower()
-    if tts_backend in ("auto", "local"):
-        local_result = synthesize_all_local(PROMPTS)
+    if tts_backend in ("auto", "fixtures"):
+        fixture_cache, fixture_problems = synthesize_from_fixtures(PROMPTS)
+        if fixture_cache:
+            prompt_cache.update(fixture_cache)
+            modes_used.add(FIXTURES_BACKEND_NAME)
+            safe_print(
+                f"[entrée] {len(fixture_cache)}/{len(PROMPTS)} phrase(s) depuis les "
+                "fixtures versionnées (zéro requête TTS)."
+            )
+        for problem in fixture_problems:
+            safe_print(f"[entrée] FIXTURE INVALIDE : {problem}")
+        if fixture_problems:
+            notes.extend(f"fixture : {p}" for p in fixture_problems)
+
+    # 1) Backend local (pyttsx3), zéro quota Gemini : ne sert que pour les
+    #    prompts sans fixture valide.
+    if tts_backend in ("auto", "local") and any(p not in prompt_cache for p in PROMPTS):
+        local_result = synthesize_all_local([p for p in PROMPTS if p not in prompt_cache])
         if local_result:
             prompt_cache.update(local_result)
             modes_used.add("local-tts")

@@ -16,7 +16,7 @@ from typing import Callable
 
 from google import genai
 
-from .. import notifications, paths
+from .. import json_state, notifications, paths
 from .config import BackgroundModelConfig
 from .discovery import LiveModelResolver
 from .executor import TaskExecutor
@@ -209,10 +209,10 @@ class TaskManager:
             payload = {"version": 1, "tasks": [task.to_dict() for task in self._tasks.values()]}
         try:
             with self._persistence_lock:
-                self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-                temporary = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
-                temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-                temporary.replace(self.storage_path)
+                # Écriture atomique partagée (json_state) : destination
+                # préservée en cas d'échec, temporaire toujours nettoyé.
+                text = json.dumps(payload, ensure_ascii=False, indent=2)
+                json_state.write_text_atomic(self.storage_path, text)
         except Exception as exc:
             print(f"[Tasks] Persistance indisponible : {exc}")
 
@@ -220,7 +220,7 @@ class TaskManager:
         if not self.storage_path.exists():
             return
         try:
-            payload = json.loads(self.storage_path.read_text(encoding="utf-8"))
+            payload = json.loads(json_state.read_text(self.storage_path))
             recovered = False
             for raw in payload.get("tasks", []):
                 task = BackgroundTask.from_dict(raw)

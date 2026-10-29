@@ -248,6 +248,25 @@ class ManualStopTests(unittest.TestCase):
         self.assertFalse(h.audio.speaking)
         self.assertTrue(h.audio.q.empty())
 
+    def test_stop_speaking_discards_buffered_audio_and_nothing_resumes(self) -> None:
+        """E08 : l'interruption vide file ET tampon déjà remis au lecteur ;
+        le tick de sortie suivant ne doit rejouer aucun ancien fragment."""
+        h = _Harness()
+        h.start_speaking()
+        chunk = np.full(2400, 12000, dtype=np.int16).tobytes()
+        h.audio.play(chunk)
+        h.audio.buffer.extend(chunk)  # déjà transféré vers la carte son
+        h.audio._queued_bytes = h.audio.output_pending_bytes() + len(chunk)
+        self.assertGreater(h.audio.output_pending_bytes(), 0)
+        self.assertTrue(h.audio.stop_speaking())
+        self.assertEqual(h.audio.output_pending_bytes(), 0)
+        self.assertEqual(bytes(h.audio.buffer), b"")
+        self.assertTrue(h.audio.q.empty())
+        outdata = bytearray(2048)
+        h.audio._out(outdata, 1024, None, None)
+        self.assertEqual(bytes(outdata), b"\x00" * len(outdata),
+                         "un fragment antérieur à l'interruption a repris")
+
     def test_stop_speaking_when_idle_is_harmless(self) -> None:
         h = _Harness()
         self.assertFalse(h.audio.stop_speaking())

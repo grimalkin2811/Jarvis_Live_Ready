@@ -10,7 +10,8 @@
 
 param(
     [switch]$SkipModels,
-    [string]$DistDir = "dist"
+    [string]$DistDir = "dist",
+    [string]$PythonExe
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,13 +41,20 @@ if ($Version -notmatch '^\d+\.\d+\.\d+') {
 }
 
 # --- Python de build ---
-$venvPython = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
-if (-not (Test-Path $venvPython)) {
-    $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe")
-}
-if (-not (Test-Path $venvPython)) {
-    Write-Host "[build] Aucun .venv trouvé : on utilise le python actif."
-    $venvPython = "python"
+if (-not [string]::IsNullOrWhiteSpace($PythonExe)) {
+    if (-not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
+        throw "PythonExe introuvable : $PythonExe"
+    }
+    $venvPython = (Resolve-Path -LiteralPath $PythonExe).Path
+} else {
+    $venvPython = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
+    if (-not (Test-Path $venvPython)) {
+        $venvPython = (Join-Path (Get-Location) ".venv\Scripts\python.exe")
+    }
+    if (-not (Test-Path $venvPython)) {
+        Write-Host "[build] Aucun .venv trouvé : on utilise le python actif."
+        $venvPython = "python"
+    }
 }
 Write-Host "Python build : $venvPython"
 & $venvPython --version
@@ -59,6 +67,13 @@ if ($LASTEXITCODE -ne 0) { throw "pip upgrade échoué" }
 if ($LASTEXITCODE -ne 0) { throw "pip install requirements échoué" }
 & $venvPython -m pip install pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller échoué" }
+
+# --- Cohérence PySide6 / Qt (PR #50) ---
+# PyInstaller collecte PySide6 dans CE même interpréteur : le binaire embarque
+# donc exactement les versions vérifiées ici (celles que la CI a testées).
+Write-Host "[build] Vérification des versions PySide6 / Qt embarquées..."
+& $venvPython scripts/check_qt_runtime.py --requirements requirements.txt --out (Join-Path $DistDir "qt_versions.json")
+if ($LASTEXITCODE -ne 0) { throw "Versions PySide6/Qt incohérentes avec requirements.txt : build refusé." }
 
 # --- Modèles OpenWakeWord ---
 if (-not $SkipModels) {
@@ -201,6 +216,13 @@ $versionJson = @"
 $versionJson | Out-File -FilePath (Join-Path $appDir "version.json") -Encoding utf8
 Write-Host "  version.json: OK"
 
+# Versions PySide6 / Qt vérifiées avant PyInstaller, embarquées DANS l'app
+# (PR #50) : une installation peut ainsi être comparée à ce qu'elle charge
+# réellement (Qt6Core.dll, Jarvis.exe --qt-versions) ; une installation qui ne
+# porte pas ce fichier a été construite avant ce contrôle.
+Copy-Item -LiteralPath (Join-Path $DistDir "qt_versions.json") -Destination (Join-Path $appDir "qt_versions.json") -Force
+Write-Host "  qt_versions.json: OK"
+
 # --- Archive portable ---
 Write-Host ""
 Write-Host "=== Creating portable ZIP ===" -ForegroundColor Cyan
@@ -276,7 +298,9 @@ Write-Host "=== Smoke testing launcher (CLI) ===" -ForegroundColor Cyan
 $launcherExe = Join-Path $DistDir "JarvisLauncher.exe"
 Write-Host "[build] Test: $launcherExe --validate"
 try {
-    $launcherProc = Start-Process -FilePath $launcherExe -ArgumentList "--validate" -PassThru -NoNewWindow
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($launcherExe, "--validate")
+    $psi.UseShellExecute = $false
+    $launcherProc = [System.Diagnostics.Process]::Start($psi)
     if (-not $launcherProc.WaitForExit(30000)) {
         try { $launcherProc.Kill() } catch { }
         throw "Launcher smoke test: timeout après 30s (processus tué)"
@@ -298,10 +322,12 @@ Write-Host "[build] Test: $testExe --smoke-test"
 # qui était avalée par le catch et faisait que le smoke test ne tournait
 # jamais). WaitForExit(ms) fournit un délai borné réel.
 try {
-    $process = Start-Process -FilePath $testExe -ArgumentList "--smoke-test" -PassThru -NoNewWindow
-    if (-not $process.WaitForExit(30000)) {
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($testExe, "--smoke-test")
+    $psi.UseShellExecute = $false
+    $process = [System.Diagnostics.Process]::Start($psi)
+    if (-not $process.WaitForExit(60000)) {
         try { $process.Kill() } catch { }
-        Write-Host "[build] Smoke test: timeout après 30s (processus tué)" -ForegroundColor Yellow
+        Write-Host "[build] Smoke test: timeout après 60s (processus tué)" -ForegroundColor Yellow
     } elseif ($process.ExitCode -ne 0) {
         Write-Host "[build] Smoke test exit code: $($process.ExitCode)" -ForegroundColor Yellow
         # Ne fait pas échouer le build si smoke test échoue, mais log ;

@@ -54,6 +54,26 @@ def _load_menu_bridge() -> None:
         pass
 
 
+def _run_qt_versions() -> int:
+    """Versions PySide6 / shiboken6 / Qt CHARGÉES par cet exécutable (PR #50).
+
+    Contrôle strict « attendu contre chargé » d'un build : la CI compare cette
+    sortie à la version de ``Qt6Core.dll`` embarquée et à ``qt_versions.json``
+    produit avant PyInstaller. Aucun effet de bord : ni configuration, ni
+    données, ni fenêtre (``qVersion()`` ne demande pas d'application Qt).
+    Code 0 si les versions sont cohérentes et dans la plage testée, 1 sinon.
+    """
+    import json
+
+    from src import qt_versions
+
+    result = qt_versions.check()
+    result["python"] = sys.version.split()[0]
+    result["frozen"] = bool(getattr(sys, "frozen", False))
+    print(json.dumps(result, ensure_ascii=False))
+    return 0 if result.get("ok") else 1
+
+
 def _run_smoke_test() -> int:
     """Test rapide pour CI : vérifie que l'exécutable démarre et que les
     dépendances critiques sont présentes.
@@ -129,6 +149,10 @@ def _run_smoke_test() -> int:
         # signifierait un Desktop Mode muet.
         ("UI.desktop.state", "desktop.state"),
         ("UI.desktop.config", "desktop.config"),
+        # Dashboard (1.9) — modules sans Qt : préférences, grille, état runtime.
+        ("src.runtime_status", "runtime_status"),
+        ("UI.dashboard.config", "dashboard.config"),
+        ("UI.dashboard.layout_model", "dashboard.layout_model"),
     ]
 
     for module_name, short in imports_to_test:
@@ -185,7 +209,7 @@ async def run_headless() -> None:
     from .audio import AudioIO
     from .config import load_config
     from .conversation import get_default_conversation_context
-    from .gemini_live import AuthError, GeminiLive
+    from .gemini_live import AuthError, GeminiLive, SessionRecoveryExhausted
     from .memory import MemoryManager, set_default_memory_manager
     from .scheduler import start_default_scheduler
 
@@ -305,6 +329,8 @@ async def run_headless() -> None:
             conversation=conversation,
             **voice_kwargs,
         )
+        # Pause prolongée du micro (porte anti-écho) : prévenir la Live API.
+        audio.mic_pause_hook = gemini.notify_mic_paused
 
         print(f"Jarvis Live - Bonjour {config.user}")
         audio.start()
@@ -322,6 +348,14 @@ async def run_headless() -> None:
                 print(f"\n[Jarvis] {exc}")
                 print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
                 break
+            except SessionRecoveryExhausted as exc:
+                # v1.9.x : les ouvertures de session meurent en rafale sans
+                # rien servir (ex. 1008 « entity not found » côté service).
+                # Terminer PROPREMENT avec un diagnostic, jamais boucler.
+                print(f"\n[Jarvis] {exc}")
+                print("[Jarvis] Service injoignable de façon persistante. Arrêt "
+                      "(relancez Jarvis quand le service répond de nouveau).")
+                break
             except Exception:
                 import traceback
                 if gemini.reconnect_requested:
@@ -334,12 +368,19 @@ async def run_headless() -> None:
                         audio.wake_model.reset()
                     except Exception:
                         pass
-                    print("[Jarvis] Reconnexion dans 5 secondes...")
-                    await asyncio.sleep(5)
+                    # Backoff croissant si les sessions meurent sans rien
+                    # servir (borné par le moteur, retombe à ~0 après une
+                    # session saine).
+                    delay = max(1.0, min(30.0, gemini.session_recovery_backoff_seconds()))
+                    print(f"[Jarvis] Reconnexion dans {delay:.0f} seconde(s)...")
+                    await asyncio.sleep(delay)
             else:
                 # Reconnexion immédiate et silencieuse après une fermeture normale
                 # pour préserver l'état éveillé et la fenêtre de 8 secondes de l'utilisateur.
-                await asyncio.sleep(0.1)
+                # SAUF si les sessions meurent sans rien servir : le budget du
+                # moteur impose alors un backoff croissant (v1.9.x).
+                delay = gemini.session_recovery_backoff_seconds()
+                await asyncio.sleep(delay if delay > 0 else 0.1)
             finally:
                 try:
                     await gemini.close()
@@ -393,6 +434,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Affiche la version et quitte.",
     )
+    group.add_argument(
+        "--qt-versions",
+        action="store_true",
+        help="Affiche (JSON) les versions PySide6/shiboken6/Qt réellement chargées par "
+             "cet exécutable et leur conformité à la plage testée, puis quitte.",
+    )
+    parser.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="Ouvre aussi le Dashboard (avec --ui/--desktop, ou seul : interface "
+             "enregistrée + Dashboard).",
+    )
     return parser
 
 
@@ -408,7 +461,19 @@ def main(argv=None) -> int:
     if getattr(args, "smoke_test", False):
         return _run_smoke_test()
 
+    # Versions Qt réellement chargées (contrôle de build, PR #50)
+    if getattr(args, "qt_versions", False):
+        return _run_qt_versions()
+
     # Journalisation : un exécutable distribué ne dépend pas d'une console.
+    open_dashboard = bool(getattr(args, "dashboard", False))
+    if open_dashboard and not (args.ui or args.desktop or getattr(args, "protocol", None)):
+        # « --dashboard » seul : l'interface enregistrée (orbe ou Desktop)
+        # démarre normalement, le Dashboard s'ouvre en plus.
+        if settings.get_interface_mode() == settings.DESKTOP_MODE:
+            args.desktop = True
+        else:
+            args.ui = True
     is_gui = args.ui or args.desktop
     try:
         logging_setup.setup_logging(console=not is_gui)
@@ -452,7 +517,7 @@ def main(argv=None) -> int:
             if cfg is None:
                 print("[Jarvis] Configuration annulée.")
                 return 1
-        return run_ui(mode)
+        return run_ui(mode, open_dashboard=open_dashboard)
 
     # Import local : asyncio n'est utile que pour le mode console, pas
     # pour --ui/--desktop (gain sur le chemin de démarrage de l'UI).

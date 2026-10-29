@@ -23,7 +23,7 @@ on:
         required: false
         default: "gemini-2.5-flash-native-audio-preview-12-2025"
       mode:
-        description: "auto (TTS puis Live), tts, live-tts ou text"
+        description: "auto (fixtures versionnees puis TTS puis Live), fixtures, tts, live-tts ou text"
         required: false
         default: "auto"
 
@@ -53,6 +53,7 @@ jobs:
       # logs depuis le sandbox : le bilan est donc PUBLIE en commentaire de
       # la PR (lisible via l'API github.com).
       - name: Validation Gemini Live reelle
+        id: real_gemini_validation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -103,12 +104,18 @@ jobs:
       # cf. tests/real_gemini_harness.py) : "google-genai numpy" suffit.
       # ---------------------------------------------------------------
       - name: Validation reconnexion-par-tour (v1.7.4) reelle
+        id: real_reconnect_validation
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           JARVIS_NO_MODEL_DOWNLOAD: "1"
         run: |
           set -o pipefail
-          python scripts/validate_reconnect_v174_real.py 2>&1 | tee validation_v174.log
+          # Le modèle sélectionné doit être transmis aux DEUX validateurs :
+          # sans ce --model, S1-S6 continuaient de tourner sur le modèle
+          # par défaut, quel que soit le choix de l'utilisateur (v1.9.0).
+          python scripts/validate_reconnect_v174_real.py \
+            --model "${{ inputs.model || 'gemini-2.5-flash-native-audio-preview-12-2025' }}" \
+            2>&1 | tee validation_v174.log
         continue-on-error: true
 
       - name: Bilan v1.7.4 en commentaire de PR
@@ -149,6 +156,9 @@ jobs:
 
       - name: Conclusion
         if: always()
+        env:
+          REAL_GEMINI_OUTCOME: ${{ steps.real_gemini_validation.outcome }}
+          REAL_RECONNECT_OUTCOME: ${{ steps.real_reconnect_validation.outcome }}
         run: |
           if [ ! -f validation.log ] && [ ! -f validation_v174.log ]; then
             echo "pas de log"; exit 1
@@ -162,6 +172,26 @@ jobs:
             echo 'VALIDATION (reconnexion v1.7.4) EN ECHEC (voir le commentaire de PR)'
             FAILED=1
           fi
+          if [ "${REAL_GEMINI_OUTCOME:-}" != "success" ]; then
+            echo "Validation Gemini Live réelle non concluante (étape: ${REAL_GEMINI_OUTCOME:-inconnue})."
+            FAILED=1
+          fi
+          if [ "${REAL_RECONNECT_OUTCOME:-}" != "success" ]; then
+            echo "Validation réelle de reconnexion non concluante (étape: ${REAL_RECONNECT_OUTCOME:-inconnue})."
+            FAILED=1
+          fi
+          if { [ -f validation.log ] && grep -q 'NON TESTABLE' validation.log; } || \
+             { [ -f validation_v174.log ] && grep -q 'NON TESTABLE' validation_v174.log; }; then
+            echo 'VALIDATION GEMINI RÉELLE NON TESTABLE (clé, quota ou réseau absent) — ce check ne vaut pas PASS.'
+            FAILED=1
+          fi
+          # Un run qui n'imprime AUCUN verdict (import cassé, dépendance
+          # manquante, plantage avant le bloc final) ne contient ni ' : FAIL'
+          # ni 'NON TESTABLE' : la porte s'ouvrirait sur du vide. Chaque
+          # verdict attendu doit donc être PRÉSENT, et valoir PASS.
+          python scripts/check_live_verdicts.py \
+            --main-log validation.log \
+            --v174-log validation_v174.log || FAILED=1
           if [ "$FAILED" = "1" ]; then exit 1; fi
-          echo 'Aucun FAIL — voir les verdicts dans les commentaires de PR.'
+          echo 'Toutes les validations Gemini réelles sont PASS — voir les verdicts dans les commentaires de PR.'
 

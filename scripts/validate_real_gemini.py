@@ -11,11 +11,18 @@ réel se comporte comme prévu.
 
 Scénarios et verdicts produits (format imposé) ::
 
-    GEMINI LIVE RÉEL : PASS / NON TESTABLE
-    AUDIO RÉEL : PASS / NON TESTABLE
-    RECONNEXION RÉELLE : PASS / NON TESTABLE
-    SESSION RESUMPTION RÉELLE : PASS / NON TESTABLE
-    OUTILS RÉELS : PASS / NON TESTABLE
+    GEMINI LIVE RÉEL : PASS / FAIL / NON TESTABLE
+    AUDIO RÉEL : PASS / FAIL / NON TESTABLE
+    RECONNEXION RÉELLE : PASS / FAIL / NON TESTABLE
+    SESSION RESUMPTION RÉELLE : PASS / FAIL / NON TESTABLE
+    OUTILS RÉELS : PASS / FAIL / NON TESTABLE
+
+NON TESTABLE = prérequis absent (clé refusée, quota épuisé, réseau
+injoignable), avec sa raison. Un délai dépassé en attendant la réponse, une
+erreur de session ou un contenu incorrect est un FAIL, diagnostic du moteur
+joint (session, tour, porte micro, interruptions classées, fin de trace).
+L'entrée audio passe par un micro simulé CONTINU, filtré par ``can_send()``
+comme le pont micro de production (correctif PR #50).
 
 Modes d'entrée (le premier est le chemin audio complet, sans micro) :
 
@@ -51,6 +58,18 @@ import time
 import wave
 from pathlib import Path
 
+# Windows console cp1252 safety: prevent UnicodeEncodeError on unicode characters
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src import gemini_live as gl  # noqa: E402
@@ -84,7 +103,11 @@ WIRE: list[dict] = []  # traçage des envois (patch du SDK, voir _install_wire_t
 def safe_print(*args, **kwargs) -> None:
     """Print qui ne peut JAMAIS laisser fuiter une clé API."""
     text = " ".join(str(a) for a in args)
-    print(_KEY_RE.sub("<clé masquée>", text), **kwargs, flush=True)
+    masked = _KEY_RE.sub("<clé masquée>", text)
+    try:
+        print(masked, **kwargs, flush=True)
+    except UnicodeEncodeError:
+        print(masked.encode("ascii", errors="replace").decode("ascii"), **kwargs, flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +136,12 @@ def _install_wire_tap() -> None:
         return await orig_cc(self, turns=turns, turn_complete=turn_complete)
 
     async def rt(self, **kwargs):
-        kind = "realtime_text" if kwargs.get("text") is not None else "realtime_audio"
+        if kwargs.get("text") is not None:
+            kind = "realtime_text"
+        elif kwargs.get("audio_stream_end"):
+            kind = "audio_stream_end"
+        else:
+            kind = "realtime_audio"
         WIRE.append({"ts": time.monotonic(), "kind": kind})
         return await orig_rt(self, **kwargs)
 
@@ -216,6 +244,32 @@ def _resample_to_16k(data: bytes, rate: int) -> bytes:
     return np.concatenate([samples, tail]).tobytes()
 
 
+def _pcm_with_tail(pcm: bytes, tail_seconds: float = 0.4) -> bytes:
+    """Ajoute le silence final attendu par la VAD serveur (comme les TTS)."""
+    import numpy as np
+
+    tail = np.zeros(int(SAMPLE_RATE * tail_seconds), dtype=np.int16)
+    return np.concatenate([np.frombuffer(pcm, dtype=np.int16), tail]).tobytes()
+
+
+def synthesize_from_fixtures(prompts: list[str]) -> tuple[dict[str, bytes], list[str]]:
+    """Charge les fixtures audio versionnées des prompts demandés.
+
+    Source PRIMAIRE des validations : zéro requête TTS, zéro quota Gemini,
+    entrées identiques à chaque exécution. Chaque fixture est validée
+    (sha256 manifeste, format 16 kHz mono s16le, durée plausible) AVANT
+    l'ouverture de toute session. Retourne ``(cache, problèmes)`` — les
+    problèmes sont affichés par l'appelant, jamais avalés.
+    """
+    from scripts.validation import tts_fixtures as fx
+
+    try:
+        cache, problems = fx.load_fixtures(prompts)
+    except fx.FixtureError as exc:
+        return {}, [str(exc)]
+    return {prompt: _pcm_with_tail(pcm) for prompt, pcm in cache.items()}, problems
+
+
 async def synthesize_all_via_live(client, model: str, prompts: list[str]) -> dict[str, bytes]:
     """Pré-synthétise les énoncés par une session Live (audio de sortie).
 
@@ -278,6 +332,26 @@ async def record_microphone(seconds: float) -> bytes:
 
 
 class RealRunner:
+    """Le VRAI ``GeminiLive`` + sa boucle de reconnexion, alimenté comme en production.
+
+    Correctif PR #50 (E11 : AUDIO / RECONNEXION / REPRISE « NON TESTABLE » sur le
+    PC de validation alors que S1 et les outils passaient) :
+
+    * micro CONTINU : un bloc de 100 ms toutes les 100 ms, filtré par
+      ``can_send()`` comme le pont micro de ``src/ui.py`` (bruit de fond faible,
+      énoncé injecté dans le flux). L'ancienne version envoyait l'énoncé puis
+      COUPAIT le flux (0,4 s de silence, aucun ``audio_stream_end``) : la VAD
+      du serveur pouvait ne jamais clore la parole ;
+    * la reconnexion est réellement attendue (nouvelle génération de session
+      ET session prête) — l'ancien code attendait un évènement resté levé
+      depuis la PREMIÈRE connexion, et comptait les rejeux trop tôt ;
+    * la réponse à une question est le tour qui CONTIENT une transcription
+      utilisateur (jamais la réponse du modèle au rejeu de contexte).
+    """
+
+    #: Bruit de fond du micro simulé (RMS int16), comme ``RealAcousticPath``.
+    NOISE_RMS = 12.0
+
     def __init__(self, api_key: str, model: str, record_dir: Path | None):
         self.conversation = ConversationContext(max_turns=20, max_tokens=4096)
         self.turn_log: list[dict] = []
@@ -286,9 +360,17 @@ class RealRunner:
         self._connected = asyncio.Event()
         self.connected = self._connected  # API publique pour les scénarios
         self._stop = asyncio.Event()
+        # v1.9.x : positionné si le keeper s'arrête AVANT toute session
+        # utilisable (budget de récupération épuisé) — start() échoue alors
+        # immédiatement avec un diagnostic, sans attendre TURN_TIMEOUT.
+        self._boot_failed = asyncio.Event()
         self._task: asyncio.Task | None = None
+        self._mic_task: asyncio.Task | None = None
+        self._mic_queue = bytearray()
         self._audio_chunks: list[bytes] = []
         self._record_dir = record_dir
+        self.errors: list[str] = []
+        self.mic_blocks_sent = 0
         #: Injection d'entrée alternative (selftest) : prompt -> PCM. En mode
         #: réel ce champ reste None et le mode CLI (tts/mic/text) s'applique.
         self.input_policy = None
@@ -317,6 +399,7 @@ class RealRunner:
         self._current["interrupted"] = True
 
     def _on_turn_complete(self) -> None:
+        self._current["turn_id"] = self.gemini.turn_id
         self.turn_log.append(self._current)
         self._current = {
             "user": "",
@@ -329,10 +412,29 @@ class RealRunner:
     # -- cycle de vie ----------------------------------------------------------
     async def start(self) -> None:
         self._task = asyncio.create_task(self._run())
-        await asyncio.wait_for(self._connected.wait(), timeout=TURN_TIMEOUT)
+        # Session utilisable OU échec de démarrage explicite (budget de
+        # récupération épuisé) — jamais TURN_TIMEOUT dans le vide.
+        deadline = time.monotonic() + TURN_TIMEOUT
+        while not (self._connected.is_set() or self._boot_failed.is_set()):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"aucune session utilisable après {TURN_TIMEOUT:.0f} s "
+                    f"(erreurs : {self.errors[-1] if self.errors else 'aucune détaillée'})"
+                )
+            await asyncio.sleep(0.05)
+        if self._boot_failed.is_set() and not self._connected.is_set():
+            raise RuntimeError(self.errors[-1] if self.errors else
+                               "démarrage impossible (cf. erreurs de session)")
+        self._mic_task = asyncio.create_task(self._mic_loop())
 
     async def stop(self) -> None:
         self._stop.set()
+        if self._mic_task is not None:
+            self._mic_task.cancel()
+            try:
+                await self._mic_task
+            except BaseException:
+                pass
         try:
             await self.gemini._shutdown_session()
         except Exception:
@@ -357,48 +459,115 @@ class RealRunner:
                 await gemini.receive_loop()
             except asyncio.CancelledError:
                 break
+            except gl.SessionRecoveryExhausted as exc:
+                # v1.9.x (run 40370419959 : 45 sessions en rafale) : le budget
+                # du moteur est épuisé — on ARRÊTE le keeper. Les asks en vol
+                # échoueront en TurnTimeout dont le diagnostic porte la trace
+                # SESSION_RECOVERY_EXHAUSTED : échec explicite, jamais une
+                # boucle de reconnexions sans fin.
+                description = describe_exception(exc)
+                self.errors.append(f"récupération épuisée : {description}")
+                safe_print(f"   [session] ARRÊT : {description}")
+                self._connected.clear()
+                self._boot_failed.set()
+                break
             except Exception as exc:
-                safe_print(f"   [session] erreur : {type(exc).__name__}")
+                description = describe_exception(exc)
+                self.errors.append(description)
+                safe_print(f"   [session] erreur : {description}")
                 if not gemini.reconnect_requested:
-                    await asyncio.sleep(1.0)
+                    # Backoff croissant tant que les sessions meurent sans
+                    # rien servir (le moteur retombe à ~0 après une session
+                    # saine) — plus aucune rafale 1-connexion/s.
+                    await asyncio.sleep(
+                        max(1.0, gemini.session_recovery_backoff_seconds())
+                    )
             finally:
                 try:
                     await gemini.close()
                 except Exception:
                     pass
 
+    async def _mic_loop(self) -> None:
+        """Micro simulé CONTINU : chemin du pont micro de production."""
+        import numpy as np
+
+        rng = np.random.default_rng(20261016)
+        step = int(SAMPLE_RATE * CHUNK_MS / 1000)  # échantillons par bloc
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
+        while not self._stop.is_set():
+            block = rng.normal(0.0, self.NOISE_RMS, step)
+            if self._mic_queue:
+                take = bytes(self._mic_queue[: step * 2])
+                del self._mic_queue[: step * 2]
+                speech = np.frombuffer(take, dtype=np.int16).astype(np.float64)
+                block[: speech.size] += speech
+            pcm = np.clip(block, -32768, 32767).astype(np.int16).tobytes()
+            gemini = self.gemini
+            if gemini.can_send():
+                self.mic_blocks_sent += 1
+                try:
+                    await gemini.send_audio(
+                        pcm,
+                        capture_generation=gemini.session_generation,
+                        capture_turn_epoch=gemini.turn_epoch,
+                    )
+                except Exception:
+                    pass  # session en cours de fermeture : la boucle reconnecte
+            deadline += CHUNK_MS / 1000
+            await asyncio.sleep(max(0.0, deadline - loop.time()))
+
     # -- interactions ------------------------------------------------------------
     async def _wait_sendable(self, timeout: float = TURN_TIMEOUT) -> None:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if self.gemini.can_send():
+            # v1.9.x : le keeper s'est arrêté (budget épuisé) — échec
+            # immédiat avec cause précise, pas 60 s d'attente inutile.
+            if self.gemini.session_recovery_exhausted:
+                raise TurnTimeout(
+                    "récupération de session épuisée : plus aucune session "
+                    "n'est ouverte (cf. SESSION_RECOVERY_EXHAUSTED)",
+                    self.diagnostic(),
+                )
+            if self.gemini.can_send() and not self.gemini.speaking and not self._mic_queue:
                 return
             await asyncio.sleep(0.05)
-        raise TimeoutError("session non prête à recevoir de l'audio")
+        raise TurnTimeout(f"Jarvis indisponible {timeout:.0f} s avant la question", self.diagnostic())
 
-    async def speak_pcm(self, pcm: bytes) -> dict:
-        """Envoie de l'audio réel par morceaux, puis attend la fin du tour."""
+    async def _wait_answer(self, before: int, predicate, what: str) -> dict:
+        deadline = time.monotonic() + TURN_TIMEOUT
+        while time.monotonic() < deadline:
+            for turn in self.turn_log[before:]:
+                if predicate(turn):
+                    return turn
+            await asyncio.sleep(0.05)
+        raise TurnTimeout(f"aucune réponse {TURN_TIMEOUT:.0f} s après {what}", self.diagnostic())
+
+    async def speak_pcm(self, pcm) -> dict:
+        """Injecte l'énoncé dans le flux micro continu, puis attend SA réponse.
+
+        ``pcm`` : octets, ou fonction qui les produit AU MOMENT de l'injection
+        (l'auto-test y programme l'énoncé du faux serveur).
+        """
         await self._wait_sendable()
         self._turn_done.clear()
         self._audio_chunks.clear()
-        step = int(SAMPLE_RATE * 2 * CHUNK_MS / 1000)
-        for i in range(0, len(pcm), step):
-            await self.gemini.send_audio(pcm[i : i + step])
-            await asyncio.sleep(CHUNK_MS / 1000)
-        await asyncio.wait_for(self._turn_done.wait(), timeout=TURN_TIMEOUT)
-        return self.turn_log[-1] if self.turn_log else {}
+        before = len(self.turn_log)
+        self._mic_queue.extend(pcm() if callable(pcm) else pcm)
+        return await self._wait_answer(before, lambda turn: bool(turn.get("user")), "l'énoncé")
 
     async def speak_text(self, text: str) -> dict:
         await self._wait_sendable()
         self._turn_done.clear()
-        await self.gemini.session.send_realtime_input(text=text)
-        await asyncio.wait_for(self._turn_done.wait(), timeout=TURN_TIMEOUT)
-        return self.turn_log[-1] if self.turn_log else {}
+        before = len(self.turn_log)
+        await self.gemini.submit_text(text)
+        return await self._wait_answer(before, lambda turn: bool(turn.get("user")), "le texte")
 
     async def ask(self, prompt: str, mode: str, client=None, tts_model: str = "") -> dict:
         safe_print(f"   [question] {prompt}")
         if self.input_policy is not None:
-            turn = await self.speak_pcm(self.input_policy(prompt))
+            turn = await self.speak_pcm(lambda: self.input_policy(prompt))
         elif mode == "text":
             turn = await self.speak_text(prompt)
         else:
@@ -423,11 +592,296 @@ class RealRunner:
             handle.writeframes(b"".join(self._audio_chunks))
         safe_print(f"   [audio]    réponse écrite : {path}")
 
-    async def drop_connection(self, keep_handle: bool) -> None:
-        """Coupure brutale (équivalent perte réseau), avec ou sans le handle."""
+    async def drop_connection(self, keep_handle: bool) -> int:
+        """Coupure brutale (équivalent perte réseau), avec ou sans le handle.
+
+        Retourne la génération de session AVANT la coupure (cf. ``wait_reconnected``).
+        """
+        generation = self.gemini.session_generation
+        self._connected.clear()
         if not keep_handle:
             self.gemini.resumption_handle = None
         await self.gemini._shutdown_session()  # le runner reconnecte aussitôt
+        return generation
+
+    async def wait_reconnected(self, generation_before: int, timeout: float = TURN_TIMEOUT) -> None:
+        """Attend une NOUVELLE session, prête à recevoir l'audio."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if (
+                self._connected.is_set()
+                and self.gemini.session_generation > generation_before
+                and self.gemini.can_send()
+            ):
+                return
+            await asyncio.sleep(0.05)
+        raise TurnTimeout(f"reconnexion non aboutie en {timeout:.0f} s", self.diagnostic())
+
+    def diagnostic(self) -> str:
+        """État du moteur et fin de trace, sans contenu échangé (masqué à l'affichage)."""
+        import json
+
+        gemini = self.gemini
+        keep = {"INTERRUPTION", "TURN_OPEN", "TURN_CLOSE", "TURN_COMPLETE", "TURN_KEPT_OPEN",
+                "EMPTY_GENERATION_RETRY", "EMPTY_TURN_COMPLETE_IN_PROGRESS", "RESPONSE_STALLED",
+                "SESSION_CONNECT", "SESSION_RESUME", "SESSION_READY", "SEED_COMMIT_TIMEOUT",
+                "SEED_COMMIT_CONFIRMED", "SESSION_RESUME_REJECTED", "AUDIO_STREAM_END",
+                "SERVER_VAD", "TEXT_TURN_TIMEOUT",
+                "TOOL_CALL_EXECUTED", "TOOL_RESPONSE_SENT", "TOOL_CALL_FALLBACK_DASHBOARD",
+                "TOOL_CALL_RECEIVED", "TOOL_CALL_VALIDATED", "TOOL_CALL_UNKNOWN_TOOL",
+                "TOOL_RESULT_TURN_COMPLETED", "FINAL_TEXT_RECEIVED",
+                "SESSION_RECOVERY_FAILURE", "SESSION_RECOVERY_EXHAUSTED"}
+        fields = ("origin", "classification", "reason", "interrupted_generation", "interaction_status",
+                  "waiting_for_input", "turn_complete_reason", "has_model_content")
+        traces = [
+            {"kind": e["kind"], "turn": e.get("turn_id"), **{k: e[k] for k in fields if k in e}}
+            for e in gemini.trace_events() if e.get("kind") in keep
+        ][-14:]
+        try:
+            allowed, reason = gemini._can_send_now()
+        except Exception:  # pragma: no cover - diagnostic seulement
+            allowed, reason = None, "?"
+        state = {
+            "moteur": gemini.engine_snapshot(),
+            "porte_micro": {"ouverte": allowed, "raison": reason},
+            "blocs_micro_envoyes": self.mic_blocks_sent,
+            "tours_observes": len(self.turn_log),
+            "recuperation_sessions": {
+                "echecs_consecutifs": self.gemini._recovery_failures,
+                "epuise": self.gemini.session_recovery_exhausted,
+                "backoff_s": self.gemini.session_recovery_backoff_seconds(),
+            },
+            "erreurs_session": self.errors[-3:],
+            "traces": traces,
+        }
+        return json.dumps(state, ensure_ascii=False, default=str)[:3000]
+
+
+class TurnTimeout(TimeoutError):
+    """Délai dépassé côté harnais, avec l'état du moteur à cet instant."""
+
+    def __init__(self, message: str, diagnostic: str) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
+#: Chaîne d'événements attendue pour un aller-retour d'outil complet.
+#: (libellé lisible, type d'événement moteur, clé portant le nom de l'outil)
+TOOL_CHAIN_STEPS = (
+    ("réception", "TOOL_CALL_RECEIVED", "names"),
+    ("validation", "TOOL_CALL_VALIDATED", "name"),
+    ("exécution", "TOOL_CALL_EXECUTED", "name"),
+    ("envoi du résultat", "TOOL_RESPONSE_SENT", "names"),
+    ("clôture du tour outil", "TOOL_RESULT_TURN_COMPLETED", None),
+)
+
+
+def _event_mentions_tool(event: dict, key: str | None, tool_name: str) -> bool:
+    """Vrai si l'événement nomme bien l'outil suivi (jamais un autre)."""
+    if key is None:
+        return True
+    value = event.get(key)
+    if isinstance(value, str):
+        return value == tool_name
+    if isinstance(value, (list, tuple)):
+        return tool_name in value
+    return False
+
+
+def _tool_roundtrip_chain(runner, since_ts: float, tool_name: str) -> dict:
+    """Chaîne de preuves OBSERVABLES du round-trip d'un outil, dans l'ordre.
+
+    Remplace le verdict proxy (« l'outil est nommé et le code apparaît dans la
+    réponse ») par la vérification étape par étape exigée pour S4 : chaque
+    maillon doit être présent, nommer LE bon outil, et apparaître dans l'ordre
+    chronologique. Les événements antérieurs à ``since_ts`` sont ignorés : la
+    trace couvre toute la session, un outil exécuté par un scénario précédent
+    ne doit jamais créditer S4.
+
+    Retourne ``{"observed": [libellés], "missing": [libellés], "details": [...]}``.
+    """
+    events = [
+        e for e in runner.gemini.trace_events()
+        if isinstance(e.get("ts"), (int, float)) and e["ts"] >= since_ts
+    ]
+    events.sort(key=lambda e: e["ts"])
+
+    cursor = 0
+    observed: list[str] = []
+    missing: list[str] = []
+    details: list[str] = []
+    for label, kind, key in TOOL_CHAIN_STEPS:
+        found_at = None
+        for index in range(cursor, len(events)):
+            event = events[index]
+            if event.get("kind") != kind:
+                continue
+            if not _event_mentions_tool(event, key, tool_name):
+                continue
+            found_at = index
+            break
+        if found_at is None:
+            missing.append(label)
+            details.append(f"{label} ({kind}) ABSENT")
+            continue
+        cursor = found_at + 1
+        observed.append(label)
+        details.append(f"{label} ({kind}) ok")
+
+    return {"observed": observed, "missing": missing, "details": details}
+
+
+def _s4_verdict(answer: str, chain: dict) -> tuple[bool, list[str]]:
+    """Décide du verdict S4 à partir de la chaîne de preuves.
+
+    Le PASS exige DEUX choses : la suite complète des événements observables
+    du round-trip, ET le code de validation réellement restitué dans la
+    réponse. Aucune des deux ne peut être déduite de l'autre.
+    """
+    answer_ok = VALIDATION_CODE.lower() in (answer or "").lower()
+    reasons: list[str] = []
+    if chain["missing"]:
+        reasons.append(
+            "chaîne de round-trip INCOMPLÈTE — maillons observés="
+            f"{chain['observed']} ; MANQUANTS={chain['missing']} "
+            "(la preuve exigée est la suite complète réception -> validation "
+            "-> exécution -> envoi -> clôture du tour)."
+        )
+    if not answer_ok:
+        reasons.append(
+            f"le code {VALIDATION_CODE} n'a pas été retrouvé dans la réponse."
+        )
+    return (answer_ok and not chain["missing"]), reasons
+
+
+def _tool_failure_diagnostic(runner: "RealRunner", turn: dict) -> str:
+    """Distinction explicite des 4 causes possibles d'un échec S4.
+
+    1. « aucun appel d'outil reçu » : pas de TOOL_CALL_EXECUTED côté moteur
+       (le serveur n'a jamais envoyé de tool_call — décision du modèle ou
+       question mal entendue : cf. transcription ci-jointe) ;
+    2. « appel reçu mais outil non exécuté » : impossible côté code (tout
+       tool_call déclenche l'exécution ou trace son erreur) — si le câble
+       ne montre pas de tool_response, chercher l'erreur de session ;
+    3. « réponse de l'outil envoyée » : TOOL_RESPONSE_SENT + câble ;
+    4. « réponse finale du modèle absente » : TOOL_RESPONSE_SENT sans
+       assistant non vide (relances vides, tour clos en échec…).
+    """
+    events = runner.gemini.trace_events()
+    executed = [e for e in events if e.get("kind") == "TOOL_CALL_EXECUTED"]
+    sent = [e for e in events if e.get("kind") == "TOOL_RESPONSE_SENT"]
+    wire_responses = [e for e in WIRE if e.get("kind") == "tool_response"]
+    retries = [e for e in events if e.get("kind") == "EMPTY_GENERATION_RETRY"]
+    heard = (turn.get("user") or "").strip()
+    parts = [
+        f"question_entendue={heard!r}",
+        f"appels_outil_executes={len(executed)}"
+        + (f" {[e.get('name') for e in executed]}" if executed else " (aucun tool_call du serveur)"),
+        f"reponses_outil_envoyees={len(sent)}",
+        f"tool_response_sur_cable={len(wire_responses)}",
+        f"relances_generation_vide={len(retries)}",
+    ]
+    try:
+        allowed, reason = runner.gemini._can_send_now()
+        parts.append(f"porte_micro={allowed}:{reason}")
+    except Exception:
+        pass
+    return "S4 diagnostic : " + " ; ".join(parts) + " — fin de trace : " + runner.diagnostic()[:800]
+
+
+def describe_exception(exc: BaseException) -> str:
+    """Classe, message, code/statut d'API et cause chaînée — masqués, bornés."""
+    parts, seen, current = [], set(), exc
+    while current is not None and id(current) not in seen and len(parts) < 3:
+        seen.add(id(current))
+        details = [f"{attr}={getattr(current, attr)}" for attr in ("code", "status")
+                   if getattr(current, attr, None) not in (None, "")]
+        message = " ".join(str(current).split())[:200]
+        parts.append(f"{type(current).__name__}: {message}" + (f" [{', '.join(details)}]" if details else ""))
+        current = current.__cause__ or current.__context__
+    return _KEY_RE.sub("<clé masquée>", " <- ".join(parts))
+
+
+def _service_kill_cause(runner) -> str | None:
+    """Cause de coupure service si les preuves moteur l'établissent.
+
+    Distingue (run #93 / 40413544606) une session tuée par le SERVICE
+    (1008 « Requested entity was not found », budget de récupération
+    épuisé) d'un défaut audio : le canal audio peut parfaitement
+    fonctionner pendant que la session meurt.
+    """
+    if getattr(runner.gemini, "session_recovery_exhausted", False):
+        return (
+            "budget de récupération épuisé : "
+            f"{getattr(runner.gemini, '_recovery_failures', '?')} ouvertures "
+            "consécutives tuées sans tour servi"
+        )
+    errors = " | ".join(getattr(runner, "errors", [])[-3:]).lower()
+    if "1008" in errors or "entity was not found" in errors:
+        return "session tuée par le service (1008 Requested entity was not found)"
+    try:
+        rejected = [
+            e for e in runner.gemini.trace_events()
+            if e.get("kind") == "SESSION_RESUME_REJECTED"
+        ]
+    except Exception:
+        rejected = []
+    if rejected:
+        return "handle de reprise refusé par le serveur (SESSION_RESUME_REJECTED)"
+    return None
+
+
+def _attribute_transport_death(verdicts: dict, notes: list, runner, exc: BaseException) -> bool:
+    """Attribue un échec S2 à une coupure de TRANSPORT, pas à l'audio.
+
+    Faux négatif corrigé (run #93, artefact écouté et conforme) : la session
+    est morte (1008) PENDANT la réponse du modèle — l'audio déjà reçu
+    atteste que le canal audio fonctionnait. Un tour tué par le service
+    avant sa fin ne prouve NI un défaut audio NI la réussite de
+    l'aller-retour : AUDIO RÉEL est NON TESTABLE si de l'audio a été reçu
+    (preuve de réception), FAIL si aucun audio n'est arrivé (réception en
+    échec). RECONNEXION RÉELLE reste FAIL : le chemin de reconnexion est
+    précisément ce qui a été tué. Retourne True si l'attribution a été faite.
+    """
+    if not isinstance(exc, TurnTimeout):
+        return False
+    kill = _service_kill_cause(runner)
+    if kill is None:
+        return False
+    received = sum(len(chunk) for chunk in getattr(runner, "_audio_chunks", []))
+    verdicts["AUDIO RÉEL"] = "NON TESTABLE" if received else "FAIL"
+    verdicts["RECONNEXION RÉELLE"] = "FAIL"
+    notes.append(
+        f"S2 : coupure de TRANSPORT pendant le tour ({kill}) — audio modèle "
+        f"reçu avant coupure : {received} octets"
+        + (" (audible, cf. artefact) : aller-retour complet non conclusible "
+           "→ AUDIO RÉEL NON TESTABLE." if received else
+           " : AUCUN audio reçu → réception audio en échec (FAIL).")
+        + f" Diagnostic : {runner.diagnostic()[:300]}"
+    )
+    return True
+
+
+def classify_failure(exc: BaseException) -> tuple[str, str]:
+    """Verdict d'un scénario interrompu par une exception.
+
+    « NON TESTABLE » est réservé aux PRÉREQUIS absents (clé refusée, quota,
+    réseau injoignable) : un délai dépassé en attendant la réponse de Jarvis,
+    une erreur de session ou de protocole est un ÉCHEC (FAIL), produit ou
+    harnais, jamais un non-testable. L'ancien code classait TOUT en
+    NON TESTABLE (validation réelle du 2026-10-16 : E11).
+    """
+    text = describe_exception(exc).lower()
+    if isinstance(exc, gl.AuthError) or gl._is_auth_error(exc):
+        return "NON TESTABLE", "prérequis absent : clé API refusée"
+    if any(marker in text for marker in ("resource_exhausted", "quota", " 429", "code=429")):
+        return "NON TESTABLE", "prérequis absent : quota de l'API épuisé"
+    if any(marker in text for marker in ("getaddrinfo", "name resolution", "nodename nor servname",
+                                         "network is unreachable", "no route to host")):
+        return "NON TESTABLE", "prérequis absent : réseau injoignable"
+    reason = describe_exception(exc)
+    diagnostic = getattr(exc, "diagnostic", "")
+    return "FAIL", reason + (f" — diagnostic : {diagnostic}" if diagnostic else "")
 
 
 # ---------------------------------------------------------------------------
@@ -436,109 +890,240 @@ class RealRunner:
 
 
 async def run_scenarios(runner: RealRunner, mode: str, client, tts_model: str) -> tuple[dict, list]:
-    """S1-S4. Identique en mode réel et en selftest (seule l'entrée change)."""
+    """S1-S4. Identique en mode réel et en selftest (seule l'entrée change).
+
+    Chaque verdict dit ce qui a été RÉELLEMENT exercé : PASS (vérifié), FAIL
+    (exercé et incorrect — produit ou harnais, diagnostic joint) ou
+    NON TESTABLE (prérequis absent : clé, quota, réseau), cf. ``classify_failure``.
+    """
     verdicts: dict[str, str] = {}
     notes: list[str] = []
+
+    def failed(names: tuple[str, ...], label: str, exc: BaseException) -> None:
+        verdict, reason = classify_failure(exc)
+        for name in names:
+            verdicts[name] = verdict
+        notes.append(f"{label} : {reason}")
+
+    async def backoff_after_failure(label: str, seconds: float) -> None:
+        # Les échecs d'ouverture de session (1008 « entity not found », gigue
+        # réseau) se produisent souvent en rafale : un délai croissant avant
+        # le scénario suivant laisse le service se stabiliser SANS requalifier
+        # l'échec (pas de relance interne du scénario). Ignoré en selftest.
+        if mode == "selftest":
+            return
+        safe_print(f"[pause] {label} en échec — backoff {seconds:.0f}s avant le scénario suivant.")
+        await asyncio.sleep(seconds)
 
     # ---- S1 : GEMINI LIVE RÉEL (connexion + premier tour audio) -------------
     try:
         safe_print("\n=== S1 : connexion + premier tour audio ===")
         turn = await runner.ask("Bonjour Jarvis, tu m'entends bien ?", mode, client, tts_model)
-        ok = bool(turn.get("assistant") or turn.get("user"))
+        ok = bool(turn.get("assistant") and turn.get("user"))
         verdicts["GEMINI LIVE RÉEL"] = "PASS" if ok else "FAIL"
         if not ok:
-            notes.append("S1 : aucune transcription reçue (ni user ni assistant).")
+            notes.append(f"S1 : tour incomplet (transcription utilisateur={bool(turn.get('user'))}, "
+                         f"réponse={bool(turn.get('assistant'))}) — diagnostic : {runner.diagnostic()}")
     except Exception as exc:
-        verdicts["GEMINI LIVE RÉEL"] = "NON TESTABLE"
-        notes.append(f"S1 : {type(exc).__name__} — {exc}")
+        failed(("GEMINI LIVE RÉEL",), "S1", exc)
+        await backoff_after_failure("S1", 5.0)
 
     # ---- S2 : AUDIO RÉEL + RECONNEXION RÉELLE (le correctif) -----------------
     try:
         safe_print("\n=== S2 : seed committé après reconnexion (correctif v1.7.1) ===")
-        await runner.ask("Mon prénom est Simon.", mode, client, tts_model)
-        mark = len(WIRE)
-        await runner.drop_connection(keep_handle=False)
-        await asyncio.wait_for(runner.connected.wait(), timeout=TURN_TIMEOUT)
-        runner.connected.clear()
-        seed_sends = [e for e in wire_since(mark) if e["kind"] == "client_content"]
-        safe_print(
-            f"   [câble] {len(seed_sends)} clientContent après reconnexion "
-            f"(turn_complete={[e['turn_complete'] for e in seed_sends]})"
-        )
-        turn = await runner.ask("Quel est mon prénom ?", mode, client, tts_model)
-        answer = (turn.get("assistant") or "").lower()
-        audio_ok = "simon" in answer
-        verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
-        verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok else "FAIL"
-        if not audio_ok:
-            notes.append(
-                "S2 : le rappel audio après seed a échoué — vérifier le protocole "
-                "sur ce modèle (cf. scripts/dump_wire_protocol.py, journal E2/E8)."
+        try:
+            await runner.ask("Mon prénom est Simon.", mode, client, tts_model)
+        except Exception as exc:
+            if _attribute_transport_death(verdicts, notes, runner, exc):
+                # Session tuée par le service pendant la réponse : la suite
+                # de S2 (coupure volontaire + reprise) n'a aucun sens sans
+                # session — l'attribution est déjà posée (cf. helper).
+                await backoff_after_failure("S2", 10.0)
+            else:
+                raise
+        else:
+            mark = len(WIRE)
+            generation = await runner.drop_connection(keep_handle=False)
+            await runner.wait_reconnected(generation)
+            seed_sends = [e for e in wire_since(mark) if e["kind"] == "client_content"]
+            safe_print(
+                f"   [câble] session {generation} → {runner.gemini.session_generation} : "
+                f"{len(seed_sends)} clientContent après reconnexion "
+                f"(turn_complete={[e['turn_complete'] for e in seed_sends]}), "
+                f"rejeu confirmé par le serveur={runner.gemini.context_seed_confirmed}"
             )
-        if not seed_sends:
-            notes.append("S2 : AUCUN clientContent observé après reconnexion sans handle.")
+            turn = await runner.ask("Quel est mon prénom ?", mode, client, tts_model)
+            answer = (turn.get("assistant") or "").lower()
+            audio_ok = "simon" in answer
+            if mode == "text":
+                verdicts["AUDIO RÉEL"] = "NON TESTABLE"
+                notes.append("S2 : mode texte — aucun audio n'a été envoyé; le verdict audio reste NON TESTABLE.")
+            else:
+                verdicts["AUDIO RÉEL"] = "PASS" if audio_ok else "FAIL"
+            verdicts["RECONNEXION RÉELLE"] = "PASS" if audio_ok and seed_sends else "FAIL"
+            if not audio_ok:
+                notes.append(
+                    "S2 : le rappel audio après seed a échoué — vérifier le protocole "
+                    f"sur ce modèle (cf. scripts/dump_wire_protocol.py, journal E2/E8). Diagnostic : "
+                    f"{runner.diagnostic()}"
+                )
+            if not seed_sends:
+                notes.append("S2 : AUCUN clientContent observé après reconnexion sans handle.")
     except Exception as exc:
-        verdicts["AUDIO RÉEL"] = "NON TESTABLE"
-        verdicts["RECONNEXION RÉELLE"] = "NON TESTABLE"
-        notes.append(f"S2 : {type(exc).__name__} — {exc}")
+        if not _attribute_transport_death(verdicts, notes, runner, exc):
+            failed(("AUDIO RÉEL", "RECONNEXION RÉELLE"), "S2", exc)
+        await backoff_after_failure("S2", 10.0)
 
     # ---- S3 : SESSION RESUMPTION RÉELLE ---------------------------------------
     try:
         safe_print("\n=== S3 : reprise de session par handle ===")
         await runner.ask("J'habite à Tours.", mode, client, tts_model)
         # Le sessionResumptionUpdate arrive juste après le turnComplete :
-        # on laisse une seconde au serveur pour le délivrer.
-        await asyncio.sleep(1.0 if client is not None else 0.05)
+        # on laisse au serveur le temps de le délivrer (borné).
+        deadline = time.monotonic() + (5.0 if client is not None else 0.5)
+        while not runner.gemini.resumption_handle and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
         if not runner.gemini.resumption_handle:
-            verdicts["SESSION RESUMPTION RÉELLE"] = "NON TESTABLE"
-            notes.append("S3 : aucun handle de reprise reçu (update sessionResumptionUpdate absent).")
+            verdicts["SESSION RESUMPTION RÉELLE"] = "FAIL"
+            notes.append("S3 : aucun handle de reprise reçu (sessionResumptionUpdate absent) alors que la "
+                         "reprise est configurée — diagnostic : " + runner.diagnostic())
         else:
-            mark = len(WIRE)
-            await runner.drop_connection(keep_handle=True)
-            await asyncio.wait_for(runner.connected.wait(), timeout=TURN_TIMEOUT)
-            runner.connected.clear()
-            reseed = [e for e in wire_since(mark) if e["kind"] == "client_content"]
+            mark_wire = len(WIRE)
+            mark_ts = time.monotonic()
+            generation = await runner.drop_connection(keep_handle=True)
+            await runner.wait_reconnected(generation)
+            reseed = [e for e in wire_since(mark_wire) if e["kind"] == "client_content"]
+            # Preuves prises sur l'horodatage des traces (et non sur la
+            # génération) : le repli « checkpoint périmé » est tracé AVANT
+            # l'ouverture de la nouvelle session, donc avec l'ancienne
+            # génération — un filtre « generation > N » l'aurait rendu
+            # invisible (angle mort exact du verdict S3 des runs réels
+            # 2026-10).
+            recent = [
+                e for e in runner.gemini.trace_events()
+                if e.get("ts", 0) >= mark_ts
+            ]
+            resumed = any(e["kind"] == "SESSION_RESUME" for e in recent)
+            stale = [
+                e for e in recent
+                if e["kind"] == "SESSION_RESUME_STALE_CHECKPOINT"
+            ]
+            rejected = [
+                e for e in recent
+                if e["kind"] == "SESSION_RESUME_REJECTED"
+            ]
+            fallback = bool(stale or rejected)
             safe_print(
-                f"   [câble] reprise avec handle : {len(reseed)} clientContent "
-                "(0 attendu : le serveur restaure l'historique lui-même)"
+                f"   [câble] reprise avec handle : session reprise={resumed}, {len(reseed)} clientContent "
+                f"(0 attendu si reprise serveur ; 1+ attendu en repli documenté — "
+                f"checkpoint périmé={bool(stale)}, handle refusé={bool(rejected)})"
             )
             turn = await runner.ask("Où est-ce que j'habite déjà ?", mode, client, tts_model)
             answer = (turn.get("assistant") or "").lower()
-            ok = "tours" in answer and len(reseed) == 0
+            # Le contexte doit rester intact, et le câble doit être JUSTIFIÉ :
+            # * zéro rejeu + preuve de reprise serveur (SESSION_RESUME) ;
+            # * ou un rejeu + preuve que la reprise était impossible
+            #   (checkpoint périmé détecté avant connexion, ou handle refusé
+            #   par le serveur — repli documenté E12/1008, le rejeu est alors
+            #   ce qui PRÉSERVE le contexte, pas un doublon).
+            # Un rejeu SANS preuve reste un doublon potentiel (échec).
+            replay_ok = (len(reseed) == 0 and resumed and not fallback) or (
+                len(reseed) >= 1 and fallback
+            )
+            resume_ok = resumed or fallback
+            ok = "tours" in answer and resume_ok and replay_ok
             verdicts["SESSION RESUMPTION RÉELLE"] = "PASS" if ok else "FAIL"
+            safe_print(
+                f"   [contexte] checkpoint périmé={bool(stale)}, handle refusé={bool(rejected)}, "
+                f"rejeux={len(reseed)}, réponse exploitable={'tours' in answer}"
+            )
             if "tours" not in answer:
-                notes.append("S3 : le rappel après reprise par handle a échoué.")
-            if reseed:
-                notes.append("S3 : un rejeu a été envoyé malgré le handle (doublon potentiel).")
+                notes.append("S3 : le rappel après reprise par handle a échoué — diagnostic : "
+                             + runner.diagnostic())
+            if fallback and len(reseed) >= 1:
+                reason = "checkpoint périmé" if stale else "handle refusé par le serveur"
+                notes.append(
+                    f"S3 : reprise refusée ({reason}) — repli documenté : session neuve + "
+                    "rejeu complet, contexte préservé (pas un doublon)."
+                )
+            elif reseed:
+                last_error = runner.errors[-1] if runner.errors else ""
+                notes.append(
+                    "S3 : un rejeu a été envoyé sans preuve de reprise impossible "
+                    "(checkpoint couvrant + handle accepté) (doublon potentiel)."
+                    + (f" Dernière erreur session : {last_error}" if last_error else "")
+                )
+            if not resumed and not fallback:
+                notes.append(
+                    "S3 : ni reprise confirmée, ni repli tracé (SESSION_RESUME / "
+                    "SESSION_RESUME_STALE_CHECKPOINT / SESSION_RESUME_REJECTED absents) — "
+                    "état de reprise indémontrable."
+                )
     except Exception as exc:
-        verdicts["SESSION RESUMPTION RÉELLE"] = "NON TESTABLE"
-        notes.append(f"S3 : {type(exc).__name__} — {exc}")
+        if getattr(runner.gemini, "session_recovery_exhausted", False):
+            # Aucune session disponible : le scénario n'a pas pu être
+            # exercé — NON TESTABLE (prérequis absent), cause précise.
+            # Le job CI échoue toujours (NON TESTABLE → exit 1) : c'est une
+            # attribution honnête, pas un masquage.
+            verdicts["SESSION RESUMPTION RÉELLE"] = "NON TESTABLE"
+            notes.append(
+                "S3 : NON TESTABLE — aucune session disponible (budget de "
+                "récupération épuisé : sessions tuées par le service, cf. "
+                "S2/SESSION_RECOVERY_EXHAUSTED). Scénario non exercé."
+            )
+        else:
+            failed(("SESSION RESUMPTION RÉELLE",), "S3", exc)
 
     # ---- S4 : OUTILS RÉELS ------------------------------------------------------
     try:
         safe_print("\n=== S4 : appel d'outil réel + suivi ===")
+        # Bornage temporel : la trace moteur couvre TOUTE la session (S1/S2/S3
+        # ont pu exécuter d'autres outils). Le round-trip de S4 doit être
+        # prouvé sur SES propres événements, jamais sur ceux d'un tour
+        # précédent.
+        s4_mark = time.monotonic()
         turn = await runner.ask(
             "Utilise l'outil validation_ping et répète-moi exactement le code qu'il retourne.",
             mode, client, tts_model,
         )
         tools = turn.get("tools", [])
         answer = (turn.get("assistant") or "")
-        tool_ok = "validation_ping" in tools and VALIDATION_CODE.lower() in answer.lower()
+        # Le verdict ne repose plus sur un proxy (« l'outil est nommé et le
+        # code apparaît ») mais sur la chaîne d'événements OBSERVABLES du
+        # round-trip : réception -> validation -> exécution -> envoi du
+        # résultat -> clôture du tour porteur. Chaque maillon manquant est
+        # rapporté nommément.
+        chain = _tool_roundtrip_chain(runner, s4_mark, "validation_ping")
+        tool_ok, fail_reasons = _s4_verdict(answer, chain)
         if tool_ok:
             follow = await runner.ask(
                 "Quel était le code retourné par l'outil, déjà ?",
                 mode, client, tts_model,
             )
-            tool_ok = VALIDATION_CODE.lower() in (follow.get("assistant") or "").lower()
+            follow_ok = VALIDATION_CODE.lower() in (follow.get("assistant") or "").lower()
+            if not follow_ok:
+                fail_reasons.append(
+                    f"le code {VALIDATION_CODE} n'a pas été restitué au tour de "
+                    "suivi : le résultat d'outil n'est pas resté exploitable "
+                    "dans le contexte."
+                )
+            tool_ok = follow_ok
         verdicts["OUTILS RÉELS"] = "PASS" if tool_ok else "FAIL"
         if not tool_ok:
-            notes.append(
-                f"S4 : outils={tools} — le code {VALIDATION_CODE} n'a pas été retrouvé "
-                "dans la réponse (ni dans le suivi)."
-            )
+            notes.extend(f"S4 : {reason}" for reason in fail_reasons)
+            notes.append(f"S4 : outils={tools} — diagnostic complet ci-dessous.")
+            notes.append(_tool_failure_diagnostic(runner, turn))
     except Exception as exc:
-        verdicts["OUTILS RÉELS"] = "NON TESTABLE"
-        notes.append(f"S4 : {type(exc).__name__} — {exc}")
+        if getattr(runner.gemini, "session_recovery_exhausted", False):
+            verdicts["OUTILS RÉELS"] = "NON TESTABLE"
+            notes.append(
+                "S4 : NON TESTABLE — aucune session disponible (budget de "
+                "récupération épuisé : sessions tuées par le service). "
+                "Scénario non exercé : ni l'appel validation_ping ni son "
+                "roundtrip ne peuvent être conclus."
+            )
+        else:
+            failed(("OUTILS RÉELS",), "S4", exc)
 
     return verdicts, notes
 
@@ -549,10 +1134,11 @@ async def main() -> int:
     parser.add_argument("--tts-model", default="gemini-2.5-flash-preview-tts")
     parser.add_argument(
         "--mode",
-        choices=["auto", "tts", "live-tts", "mic", "text"],
+        choices=["auto", "fixtures", "tts", "live-tts", "mic", "text"],
         default="auto",
-        help="auto : TTS generateContent si disponible, sinon synthèse via "
-        "une session Live (jetons éphémères)",
+        help="auto : fixtures versionnées (zéro TTS), repli TTS generateContent "
+        "puis session Live (jetons éphémères) ; fixtures : échoue si une "
+        "phrase n'a pas de fixture valide",
     )
     parser.add_argument("--record", default=None, help="dossier où écrire les réponses audio (.wav)")
     parser.add_argument(
@@ -593,12 +1179,38 @@ async def main() -> int:
     if args.mode == "mic":
         notes.append("mode --mic : l'opérateur doit parler distinctement chaque question.")
 
-    # Préparation des entrées audio : TTS generateContent, ou synthèse via
-    # une session Live (jeton éphémère sans accès generateContent). Tout est
-    # synthétisé AVANT les scénarios : l'expiration du jeton en cours de run
-    # ne peut plus interrompre la partie test.
+    # Préparation des entrées audio : fixtures WAV versionnées (zéro TTS,
+    # zéro quota) — TTS generateContent, ou synthèse via une session Live
+    # (jeton éphémère sans accès generateContent) en repli. Tout est
+    # préparé AVANT les scénarios : aucune dépendance instable en cours de
+    # run, et les entrées sont identiques d'une exécution à l'autre.
     input_mode = args.mode
     prompt_cache: dict[str, bytes] = {}
+    if input_mode in ("auto", "tts", "live-tts", "fixtures"):
+        fixture_cache, fixture_problems = synthesize_from_fixtures(ALL_PROMPTS)
+        for problem in fixture_problems:
+            safe_print(f"[entrée] FIXTURE INVALIDE : {problem}")
+        if fixture_problems:
+            notes.extend(f"fixture : {p}" for p in fixture_problems)
+        if len(fixture_cache) == len(ALL_PROMPTS):
+            prompt_cache = fixture_cache
+            input_mode = "fixtures"
+            safe_print(
+                f"[entrée] {len(fixture_cache)} phrase(s) depuis les fixtures "
+                "versionnées (zéro requête TTS, zéro quota Gemini)."
+            )
+        elif input_mode == "fixtures":
+            safe_print(
+                "[entrée] fixtures incomplètes ou invalides (cf. ci-dessus) — "
+                "mode fixtures exigé : échec explicite, aucun audio douteux envoyé."
+            )
+            print_verdicts({}, notes)
+            return 3
+        else:
+            safe_print(
+                "[entrée] fixtures incomplètes — repli sur la synthèse TTS "
+                "Gemini pour les phrases manquantes (quota limité)."
+            )
     if input_mode in ("auto", "tts", "live-tts"):
         try:
             if input_mode in ("auto", "tts"):
@@ -630,12 +1242,42 @@ async def main() -> int:
     patchers = _install_validation_tool()
     for patcher in patchers:
         patcher.start()
-    try:
-        await runner.start()
-        verdicts, scenario_notes = await run_scenarios(
-            runner, input_mode, client, args.tts_model
+    # Précondition S4 (v1.9.x) : l'outil de validation doit être ENREGISTRÉ
+    # dans la session qui exécute le test — fonction exécutable ET
+    # déclaration envoyée au serveur. Une absence ici expliquerait un
+    # « aucun tool_call reçu » sans même ouvrir de session.
+    declared_names = [d.get("name") for d in gl.TOOL_DECLARATIONS]
+    precondition = (
+        "validation_ping" in gl.TOOL_FUNCTIONS
+        and "validation_ping" in declared_names
+    )
+    if not precondition:
+        safe_print(
+            "[S4] PRÉCONDITION INVALIDE : validation_ping absent des outils "
+            f"installés (fonctions={sorted(gl.TOOL_FUNCTIONS)[:5]}…, "
+            f"déclarations={declared_names})"
         )
-        notes.extend(scenario_notes)
+    verdicts: dict[str, str] = {}
+    try:
+        try:
+            await runner.start()
+        except Exception as exc:
+            # Aucune session : rien n'a pu être exercé. Prérequis absent
+            # (clé, quota, réseau) → NON TESTABLE ; autre cause → FAIL.
+            verdict, reason = classify_failure(exc)
+            if runner.errors and verdict == "FAIL":
+                verdict, reason = classify_failure(RuntimeError(runner.errors[-1]))
+            verdicts = {name: verdict for name in VERDICT_NAMES}
+            notes.append(f"connexion initiale impossible : {reason}")
+        else:
+            verdicts, scenario_notes = await run_scenarios(
+                runner, input_mode, client, args.tts_model
+            )
+            notes.extend(scenario_notes)
+            notes.append(
+                "précondition S4 : outil validation_ping enregistré="
+                f"{precondition} (fonction + déclaration envoyée au serveur)"
+            )
     finally:
         for patcher in patchers:
             patcher.stop()
@@ -724,16 +1366,18 @@ def _install_fake_wire_tap(server) -> None:
     FakeLiveSession.send_tool_response = tr
 
 
+VERDICT_NAMES = (
+    "GEMINI LIVE RÉEL",
+    "AUDIO RÉEL",
+    "RECONNEXION RÉELLE",
+    "SESSION RESUMPTION RÉELLE",
+    "OUTILS RÉELS",
+)
+
+
 def print_verdicts(verdicts: dict[str, str], notes: list[str] | None = None) -> None:
-    order = [
-        "GEMINI LIVE RÉEL",
-        "AUDIO RÉEL",
-        "RECONNEXION RÉELLE",
-        "SESSION RESUMPTION RÉELLE",
-        "OUTILS RÉELS",
-    ]
     safe_print("\n" + "=" * 60)
-    for name in order:
+    for name in VERDICT_NAMES:
         verdict = verdicts.get(name, "NON TESTABLE")
         safe_print(f"{name} : {verdict}")
     if notes:
@@ -757,7 +1401,9 @@ def _install_validation_tool():
                 "Outil de validation de la connexion : retourne un code de test. "
                 "Appelle-le quand on te le demande et répète le code retourné."
             ),
-            "parameters": {"type": "OBJECT", "properties": {}, "required": []},
+            # Forme OpenAPI restreinte identique au produit (le SDK
+            # normalise le type vers son enum — même câble, lisible).
+            "parameters": {"type": "object", "properties": {}, "required": []},
         }
     ]
     return mock.patch.object(
@@ -766,4 +1412,7 @@ def _install_validation_tool():
 
 
 if __name__ == "__main__":
+    # Diagnostic AUDIO RÉEL : tracer chaque envoi d'entrée (taille + niveau
+    # estimé) — distingue un envoi absent d'un envoi à niveau nul.
+    os.environ.setdefault("JARVIS_AUDIO_TRACE", "1")
     raise SystemExit(asyncio.run(main()))

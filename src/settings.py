@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
-from . import paths
+from . import json_state, paths
 
 #: Nom du fichier de configuration géré par l'assistant de premier lancement.
 CONFIG_FILENAME = "config.json"
@@ -135,19 +135,26 @@ def load_file_config(path: str | os.PathLike | None = None) -> dict:
     if not target.is_file():
         return {}
     try:
-        with target.open("r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        # Lecture partagée (json_state) : compatible avec une écriture
+        # atomique concurrente (aucun verrou de partage Windows).
+        payload = json.loads(json_state.read_text(target))
         return payload if isinstance(payload, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
 def save_file_config(payload: dict, path: str | os.PathLike | None = None) -> Path:
-    """Écrit la configuration dans le fichier JSON (crée le dossier)."""
+    """Écrit la configuration dans le fichier JSON (crée le dossier).
+
+    Écriture atomique : la configuration existante n'est jamais tronquée ni
+    laissée corrompue en cas d'interruption. Contrairement à ``save_dict``,
+    les erreurs ``OSError`` **remontent** (l'assistant de configuration doit
+    échouer bruyamment plutôt que de continuer avec une configuration non
+    sauvegardée).
+    """
     target = config_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    with target.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
+    text = json.dumps(payload, indent=2, ensure_ascii=False)
+    json_state.write_text_atomic(target, text)
     return target
 
 

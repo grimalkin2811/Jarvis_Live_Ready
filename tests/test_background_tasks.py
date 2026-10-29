@@ -230,7 +230,10 @@ def test_explicit_live_quota_fails_one_task_once_and_manager_survives(make_manag
 
 
 def test_global_task_timeout_releases_slot(make_manager):
-    config = BackgroundModelConfig(task_timeout_seconds=0.05)
+    # task_timeout_seconds doit être assez court pour tuer la tâche lente
+    # (delay=1s) mais assez long pour que la tâche suivante (delay=0.01s)
+    # puisse s'exécuter sur des runners CI lents (overhead routing ~50-200ms).
+    config = BackgroundModelConfig(task_timeout_seconds=0.5)
     manager = make_manager(executor=FakeExecutor(delay=1), config=config)
     timed = manager.create_task("slow", "D")
     failed = wait_for(manager, timed.id, {TaskStatus.FAILED})

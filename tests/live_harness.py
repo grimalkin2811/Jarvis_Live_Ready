@@ -401,6 +401,8 @@ class FakeLiveSession:
         self.initial_phase = True  # aucun realtime_input depuis le setup
         self.protocol_warnings: list[str] = []
         self.last_handle: str | None = None
+        #: Vrai si la session a été reprise par handle (aucun rejeu de contexte).
+        self.resumed = False
         # Utterances programmées par le test : liste [(texte, chunks_restants)]
         self._utterances: list[tuple[str, int]] = []
         self._active: tuple[str, int] | None = None
@@ -509,6 +511,7 @@ class FakeLiveSession:
         # turnComplete=true : le contenu devient historique committé.
         committed_now = self.pending
         self.pending = []
+        was_initial_phase = self.initial_phase
         self.initial_phase = False
         self.committed.extend(committed_now)
 
@@ -522,7 +525,11 @@ class FakeLiveSession:
             # une inférence (le « récapitulatif » observé par pipecat).
             trigger = bool(committed_now) and committed_now[-1].get("role") != "model"
         if trigger:
-            await self._generate(recap=True)
+            # Message TEXTE envoyé hors rejeu de contexte (entrée écrite du
+            # Dashboard) : sur option, l'oracle y répond comme à un tour vocal.
+            # Désactivé par défaut : comportement historique (récapitulatif).
+            answer_text_turn = self.server.text_turns_use_oracle and (not was_initial_phase or self.resumed)
+            await self._generate(recap=not answer_text_turn)
 
     async def send_realtime_input(
         self,
@@ -616,6 +623,17 @@ class FakeLiveSession:
         # tour).  ``tool_continuation`` n'est qu'un override optionnel du texte
         # produit, pas une condition de continuation.
         continuation, self.server.tool_continuation = self.server.tool_continuation, None
+        if self.server.empty_tool_continuations_remaining > 0:
+            # Bug serveur simulé sur la réponse AU RÉSULTAT d'outil : un
+            # ``model_turn`` creux puis ``turn_complete`` sans contenu.
+            # Jarvis doit relancer (chemin normal borné), pas clore un tour
+            # vide ni absorber indéfiniment.
+            self.server.empty_tool_continuations_remaining -= 1
+            empty_content = _ServerContent()
+            empty_content.model_turn = _ModelTurn([_Part(text="(continuation vide simulee)")])
+            await self._emit(_Message(empty_content))
+            await self._emit(msg_turn_complete())
+            return
         await self._generate(answer_override=continuation)
 
     # -- pilotage depuis les tests ----------------------------------------------
@@ -683,6 +701,16 @@ class FakeLiveSession:
                         )
                     )
                 )
+                # Protocole Live API réel (validation 2026-10-25, S4 « OUTILS
+                # RÉELS ») : la génération qui PORTE le ``tool_call`` se
+                # termine par son PROPRE ``turn_complete`` dès l'appel — la
+                # réponse du modèle à ``send_tool_response`` arrive ENSUITE,
+                # sur un nouveau cycle de génération de la même session. Ne
+                # pas émettre ce ``turn_complete`` masquait en tests le défaut
+                # réel : Jarvis clôturait le tour de l'utilisateur sans la
+                # réponse et risquait une relance « génération vide » en
+                # plein aller-retour d'outil.
+                await self._emit(msg_turn_complete())
                 return  # la génération reprend à la réception du tool_response
             answer, _ok = self.server.oracle.answer(question, visible)
         self.model_outputs.append(answer)
@@ -744,6 +772,9 @@ class _FakeLive:
         self.server.generation += 1
         session = FakeLiveSession(self.server, uuid.uuid4().hex[:8], self.server.generation)
         session.committed = [dict(c) for c in restored]
+        # Session reprise par handle : le serveur a restauré l'historique,
+        # Jarvis ne rejoue donc AUCUN contexte (pas de seed à venir).
+        session.resumed = bool(handle)
         self.server.sessions.append(session)
         return _FakeCtx(session)
 
@@ -795,6 +826,14 @@ class FakeLiveServer:
         self.next_tool_script: tuple[str, str, dict[str, Any]] | None = None
         #: Réponse forcée après un tool_response (continuation du tour).
         self.tool_continuation: str | None = None
+        #: Simule le bug serveur « génération vide » SUR LA CONTINUATION
+        #: d'outil uniquement (réponse du modèle au ``send_tool_response``) :
+        #: les N prochaines continuations d'outil renvoient un ``model_turn``
+        #: creux + ``turn_complete`` sans contenu committé. Distinct de
+        #: ``empty_generations_remaining`` (qui vise la génération déclenchée
+        #: par un tour utilisateur) : il teste l'interaction relance ↔
+        #: aller-retour d'outil.
+        self.empty_tool_continuations_remaining = 0
         #: Coupe le prochain tour du modèle après le premier fragment.
         self.interrupt_next_turn = False
         #: N'envoie jamais de session_resumption_update (simule une coupure
@@ -812,6 +851,11 @@ class FakeLiveServer:
         #: génération consommée ; 0 par défaut (aucun effet sur les tests
         #: existants).
         self.empty_generations_remaining = 0
+        #: Sémantique 2.x : un ``clientContent`` texte clos (hors rejeu de
+        #: contexte) reçoit une VRAIE réponse de l'oracle au lieu du
+        #: récapitulatif — modélise l'entrée écrite du Dashboard. Faux par
+        #: défaut (aucun effet sur les tests existants).
+        self.text_turns_use_oracle = False
         self._live: list[FakeLiveSession] = []
 
     def _register(self, session: FakeLiveSession) -> None:
