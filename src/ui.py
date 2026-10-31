@@ -357,287 +357,31 @@ def _on_thinking(presence_hook) -> None:
         presence_hook("thinking")
 
 
-def _run_voice_loop(
-    config,
-    presence_hook,
-    voice_hook,
-    stop_event: threading.Event,
-    desktop_hook=None,
-) -> None:
-    """Boucle vocale, identique à src.main.main() mais exécutée dans un thread.
-
-    Elle possède sa propre boucle asyncio, comme l'exige Gemini aio.live.
-
-    Les imports du backend vocal sont faits ICI (et non au niveau module) :
-    ils pèsent ~450 ms (sounddevice, google genai, sqlite…) et ne sont
-    nécessaires qu'une fois l'UI affichée. En cas d'échec, l'UI reste
-    utilisable et le message indique que la voix est indisponible.
-    """
+def _run_voice_loop(runtime, stop_event: threading.Event) -> None:
+    """Run the shared, Qt-independent runtime on the existing voice thread."""
     import asyncio
 
-    # v1.9 : faits publiés pour le Dashboard (état réel, jamais supposé).
-    from .runtime_status import RUNTIME, EngineState, redact_secrets
-
-    RUNTIME.set_engine_state(EngineState.STARTING, "chargement des composants")
+    if stop_event.is_set():
+        runtime.request_stop()
     try:
-        from .audio import AudioIO
-        from .conversation import get_default_conversation_context
-        from .gemini_live import AuthError, GeminiLive
-        from .memory import MemoryManager, set_default_memory_manager
-        from .scheduler import start_default_scheduler
-    except Exception as exc:
-        print(f"[Jarvis] Backend vocal indisponible : {exc}")
-        RUNTIME.set_engine_state(EngineState.FAILED, f"backend vocal indisponible : {exc}")
-        return
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    gemini = None
-    audio = None
-    task_manager = None
-
-    def mic(pcm: bytes) -> None:
-        if gemini is not None and gemini.can_send():
-            # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
-            # thread audio, au moment exact de la capture : send_audio() les
-            # comparera à ses propres valeurs AU MOMENT DE L'EXÉCUTION (sur
-            # la boucle asyncio) pour détecter un bloc devenu périmé entre
-            # temps — reconnexion (generation) ou tour clos entre-temps
-            # (turn_epoch) (v1.7.3).
-            capture_generation = gemini.session_generation
-            capture_turn_epoch = gemini.turn_epoch
-            asyncio.run_coroutine_threadsafe(
-                gemini.send_audio(
-                    pcm,
-                    capture_generation=capture_generation,
-                    capture_turn_epoch=capture_turn_epoch,
-                ),
-                loop,
-            )
-
-    def on_barge_in() -> None:
-        """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
-        if gemini is not None:
-            gemini.request_interrupt()
-
-    def stop_speaking() -> None:
-        """Interruption manuelle (bouton du menu radial / touche S / Dashboard)."""
-        _manual_stop(audio, gemini)
-
-    def desktop(event: str, **payload) -> None:
-        """Publie un évènement Desktop (no-op si le mode n'est pas actif)."""
-        if desktop_hook is None:
-            return
-        try:
-            desktop_hook(event, payload)
-        except Exception:
-            pass
-
-    def on_interrupted() -> None:
-        # L'évènement est publié AVANT ``clear_output()`` : ce dernier émet
-        # « listening » (réouverture du micro), et l'ordre visible doit être
-        # « interrompu » puis « à l'écoute », pas l'inverse.
-        desktop("interrupted")
-        audio.clear_output()
-
-    async def _main():
-        nonlocal gemini, audio, task_manager
-        # Tant que le modèle wake word n'est pas chargé, l'UI affiche un état
-        # « initialisation » : l'utilisateur sait qu'il ne doit pas parler
-        # dans le vide.
-        if presence_hook is not None:
-            presence_hook("loading")
-
-        memory_manager = MemoryManager(
-            config.memory_database_path,
-            enabled=config.memory_enabled,
-            max_results=config.memory_max_results,
-            min_importance=config.memory_min_importance,
-        )
-        set_default_memory_manager(memory_manager)
-        RUNTIME.update(
-            memory_state=(
-                "disabled" if not memory_manager.enabled
-                else "ok" if memory_manager.available else "failed"
-            )
-        )
-
-        # Contexte conversationnel partagé par Blob Mode et Desktop Mode : il
-        # appartient au backend vocal, pas à l'interface. Basculer d'un mode à
-        # l'autre ne le touche donc jamais ; seul un (re)démarrage le vide.
-        conversation = get_default_conversation_context()
-        conversation.start_new_conversation(reason="démarrage interface")
-
-        # Rappels persistants + routines planifiees (thread de fond).
-        try:
-            start_default_scheduler()
-        except Exception as exc:
-            print(f"[Scheduler] Demarrage impossible : {exc}")
-
-        # v1.8 : le Task Manager possède son propre thread et sa propre boucle.
-        try:
-            from .background_tasks import configure_default_task_manager
-
-            task_manager = configure_default_task_manager(config.api_key)
-            RUNTIME.update(tasks_state="ok", tasks_detail="")
-        except Exception as exc:
-            print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
-            RUNTIME.update(tasks_state="failed", tasks_detail=str(exc))
-
-        audio = AudioIO(
-            mic,
-            presence_hook=presence_hook,
-            voice_hook=voice_hook,
-            mic_enabled=menu_state.LIVE.get_mic_enabled,
-            wake_threshold=menu_state.LIVE.get_wake_threshold,
-            volume_provider=menu_state.LIVE.get_tts_volume,
-            listen_mode_provider=menu_state.LIVE.get_listen_mode,
-            barge_in_provider=menu_state.LIVE.get_barge_in,
-            post_response_provider=menu_state.LIVE.get_post_response_listen,
-            on_barge_in=on_barge_in,
-            output_level_hook=lambda level: desktop("level", value=level, source="output"),
-        )
-        # Le menu radial (thread Qt) peut désormais couper la réponse en
-        # cours ; le pont est retiré à l'arrêt pour ne pas garder de
-        # référence morte.
-        menu_state.LIVE.set_stop_speaking_handler(stop_speaking)
-        RUNTIME.update(
-            wake_word="loaded" if getattr(audio, "wake_model", None) is not None else "unavailable",
-            wake_word_detail=getattr(audio, "wake_framework", "") or "",
-        )
-        gemini = GeminiLive(
-            config.api_key,
-            config.model,
-            config.user,
-            on_audio=audio.play,
-            on_turn_complete=audio.extend_listening,
-            on_interrupted=on_interrupted,
-            on_turn_open=audio.note_turn_open,
-            on_turn_resolved=audio.note_turn_resolved,
-            on_speaking=lambda: _on_speaking(audio, presence_hook),
-            on_thinking=lambda: _on_thinking(presence_hook),
-            # v1.7.0 — évènements réels du pipeline pour le Desktop Mode.
-            # La transcription est celle du contexte conversationnel 1.6.0 :
-            # aucun second système n'est introduit.
-            on_tool_start=lambda name: desktop("tool_start", name=name),
-            on_tool_end=lambda name, ok=True: desktop("tool_end", name=name, success=ok),
-            on_user_transcript=lambda text, final=False: desktop(
-                "transcript", text=text, final=final
-            ),
-            on_assistant_transcript=lambda text: desktop("response", text=text),
-            memory_manager=memory_manager,
-            conversation=conversation,
-            **menu_state.voice_backend_kwargs(),
-        )
-        # Pause prolongée de la porte anti-écho : clore le flux côté Gemini
-        # (audioStreamEnd) pour que sa VAD ne reste pas au milieu d'une parole.
-        audio.mic_pause_hook = gemini.notify_mic_paused
-
-        # Le Dashboard peut converser par écrit avec CETTE session (même
-        # contexte, même moteur) : point d'entrée thread-safe enregistré
-        # pour la durée de vie de la boucle vocale.
-        RUNTIME.register_text_handler(gemini.submit_text_threadsafe)
-        RUNTIME.update(model=str(config.model or ""))
-
-        print(f"Jarvis Live - Bonjour {config.user}")
-        try:
-            audio.start()
-        except Exception as exc:
-            RUNTIME.update(audio_state="failed", audio_detail=f"démarrage audio impossible : {exc}")
-            RUNTIME.set_engine_state(EngineState.FAILED, "pipeline audio indisponible")
-            raise
-        RUNTIME.update(audio_state="ok", audio_detail="flux micro et haut-parleurs démarrés")
-        print("Pret. Parle dans le micro.")
-
-        while not stop_event.is_set():
-            gemini.reconnect_requested = False
-            try:
-                RUNTIME.set_engine_state(EngineState.CONNECTING, "ouverture de la session Live")
-                await gemini.connect()
-                RUNTIME.set_engine_state(
-                    EngineState.READY,
-                    "",
-                    model=str(gemini.model or ""),
-                    session_generation=int(getattr(gemini, "session_generation", 0) or 0),
-                )
-                await gemini.receive_loop()
-            except asyncio.CancelledError:
-                break
-            except AuthError as exc:
-                print(f"\n[Jarvis] {exc}")
-                print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
-                RUNTIME.record_error(str(exc))
-                RUNTIME.set_engine_state(EngineState.AUTH_ERROR, "clé Gemini API refusée")
-                break
-            except Exception as exc:
-                if gemini.reconnect_requested:
-                    # Fermeture volontaire (changement de voix) : on
-                    # reconnexionne immédiatement, en silence.
-                    pass
-                else:
-                    print("\n[Jarvis] Connexion perdue ou erreur:")
-                    traceback.print_exc()
-                    RUNTIME.record_error(redact_secrets(f"{exc.__class__.__name__}: {exc}", limit=300))
-                    RUNTIME.note_reconnect_attempt()
-                    RUNTIME.set_engine_state(EngineState.RECONNECTING, "nouvelle tentative dans 5 s")
-                    audio.awake = False
-                    # Le Desktop Mode a un état ERROR explicite : l'utilisateur
-                    # voit qu'il s'est passé quelque chose, sans pop-up.
-                    desktop("error", reason="connexion")
-                    if presence_hook is not None:
-                        presence_hook("hidden")
-                    try:
-                        audio.wake_model.reset()
-                    except Exception:
-                        pass
-                    print("[Jarvis] Reconnexion dans 5 secondes...")
-                    await asyncio.sleep(5)
-            else:
-                await asyncio.sleep(0.1)
-            finally:
-                try:
-                    await gemini.close()
-                except Exception:
-                    pass
-            if gemini.reconnect_requested and not stop_event.is_set():
-                continue
-
-    try:
-        loop.run_until_complete(_main())
-    finally:
-        try:
-            menu_state.LIVE.set_stop_speaking_handler(None)
-        except Exception:
-            pass
-        try:
-            RUNTIME.unregister_text_handler()
-            if RUNTIME.snapshot().get("engine_state") not in (EngineState.AUTH_ERROR, EngineState.FAILED):
-                RUNTIME.set_engine_state(EngineState.STOPPED, "boucle vocale terminée")
-        except Exception:
-            pass
-        try:
-            from .scheduler import get_default_scheduler
-
-            get_default_scheduler().stop()
-        except Exception:
-            pass
-        if task_manager is not None:
-            try:
-                task_manager.close(wait=False)
-            except Exception:
-                pass
-        if audio is not None:
-            audio.stop()
-        loop.close()
+        asyncio.run(runtime.run())
+    except Exception:
+        # CoreRuntime has already published FAILED and logged the exception.
+        traceback.print_exc()
 
 
 def _start_voice(config, presence_hook, voice_hook, stop_event, desktop_hook=None) -> threading.Thread:
-    thread = threading.Thread(
-        target=_run_voice_loop,
-        args=(config, presence_hook, voice_hook, stop_event, desktop_hook),
-        daemon=True,
-    )
+    from .core import CoreRuntime, RuntimeHooks
+
+    runtime = CoreRuntime(config, RuntimeHooks(
+        presence=presence_hook, voice_level=voice_hook, desktop=desktop_hook,
+        controls=menu_state.LIVE, voice_options=menu_state.voice_backend_kwargs(),
+        reason="démarrage interface",
+    ))
+    thread = threading.Thread(target=_run_voice_loop, args=(runtime, stop_event),
+                              name="jarvis-voice", daemon=True)
+    # The UI only requests lifecycle operations; it never assembles a backend.
+    thread.jarvis_runtime = runtime
     thread.start()
     return thread
 
@@ -1017,7 +761,12 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
             return
         shutdown_done = True
         stop_event.set()
+        runtime = getattr(voice_thread, "jarvis_runtime", None)
+        if runtime is not None:
+            runtime.request_stop()
         voice_thread.join(timeout=3.0)
+        if voice_thread.is_alive():
+            print("[Jarvis] Arrêt du runtime vocal encore en cours.")
         notification_bridge.close()
         INTERFACE_MODE.set_handler(None)
         DESKTOP_EVENTS.set_handler(None)

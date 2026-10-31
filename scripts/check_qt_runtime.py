@@ -1,6 +1,6 @@
 """Contrôle des versions PySide6 / Qt avant PyInstaller (PR #50).
 
-Appelé par ``scripts/build_windows.ps1`` après ``pip install -r requirements.txt``
+Appelé par ``scripts/build_windows.ps1`` après installation du verrou Windows
 et AVANT PyInstaller, qui collecte PySide6 dans ce même interpréteur : le
 binaire publié embarque donc exactement les versions vérifiées ici.
 

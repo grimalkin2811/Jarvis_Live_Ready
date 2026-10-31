@@ -63,10 +63,13 @@ Write-Host "Python build : $venvPython"
 Write-Host "[build] Installation des dépendances..."
 & $venvPython -m pip install --upgrade pip
 if ($LASTEXITCODE -ne 0) { throw "pip upgrade échoué" }
-& $venvPython -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) { throw "pip install requirements échoué" }
-& $venvPython -m pip install pyinstaller
-if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller échoué" }
+# Le bundle est un contrat Windows x64 / Python 3.11 (python311.dll).
+& $venvPython -c "import struct,sys; sys.exit(0 if sys.platform == 'win32' and sys.version_info[:2] == (3,11) and struct.calcsize('P') == 8 else 1)"
+if ($LASTEXITCODE -ne 0) { throw "Build verrouillé réservé à Windows x64 / Python 3.11." }
+& $venvPython -m pip install --require-hashes -r requirements-lock/windows-py311.txt
+if ($LASTEXITCODE -ne 0) { throw "pip install du verrou Windows échoué" }
+& $venvPython -m pip check
+if ($LASTEXITCODE -ne 0) { throw "Dépendances Windows incohérentes" }
 
 # --- Cohérence PySide6 / Qt (PR #50) ---
 # PyInstaller collecte PySide6 dans CE même interpréteur : le binaire embarque

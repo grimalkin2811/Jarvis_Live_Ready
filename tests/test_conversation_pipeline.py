@@ -775,11 +775,15 @@ class ModeAndRestartTests(_PipelineCase):
         self.assertTrue(ConversationContext().is_empty())
 
     def test_les_points_d_entree_ouvrent_une_conversation_neuve(self) -> None:
+        # L'assemblage a été déplacé dans le runtime commun : les deux
+        # interfaces doivent y déléguer, et c'est lui qui initialise le
+        # contexte éphémère transmis au fournisseur.
         for name in ("src/main.py", "src/ui.py"):
             source = (REPO_ROOT / name).read_text(encoding="utf-8")
-            self.assertIn("get_default_conversation_context", source, name)
-            self.assertIn("start_new_conversation", source, name)
-            self.assertIn("conversation=conversation", source, name)
+            self.assertIn("CoreRuntime", source, name)
+        source = (REPO_ROOT / "src/core/runtime.py").read_text(encoding="utf-8")
+        self.assertIn("start_new_conversation", source)
+        self.assertIn("conversation=conversation", source)
 
 
 if __name__ == "__main__":

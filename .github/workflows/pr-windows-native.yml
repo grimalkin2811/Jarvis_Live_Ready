@@ -21,6 +21,7 @@ on:
     paths:
       - "UI/dashboard/**"
       - "requirements.txt"
+      - "requirements-lock/windows-py311.txt"
       - "packaging/**"
       - "scripts/build_windows.ps1"
       - "scripts/check_qt_runtime.py"
@@ -53,7 +54,8 @@ jobs:
       - name: Dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          python -m pip install --require-hashes -r requirements-lock/windows-py311.txt
+          python -m pip check
 
       - name: Profil de première ouverture (5 processus neufs, Qt natif)
         run: python scripts/dashboard_first_open_profile.py --natif --repetitions 5 --reouvertures 5 --json profil.json

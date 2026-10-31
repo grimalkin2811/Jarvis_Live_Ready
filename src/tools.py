@@ -1112,7 +1112,9 @@ def shutdown_pc(delay_seconds=30, confirm=False):
         )
     try:
         delay = max(0, min(3600, int(delay_seconds)))
-        _run(["shutdown", "/s", "/t", str(delay)])
+        result = _run(["shutdown", "/s", "/t", str(delay)])
+        if result.returncode != 0:
+            return _err(result.stderr or result.stdout or "Commande d'arrêt refusée.")
         return _ok(action="shutdown", delai_secondes=delay)
     except Exception as exc:
         return _err(exc)
@@ -1128,7 +1130,9 @@ def restart_pc(delay_seconds=30, confirm=False):
         )
     try:
         delay = max(0, min(3600, int(delay_seconds)))
-        _run(["shutdown", "/r", "/t", str(delay)])
+        result = _run(["shutdown", "/r", "/t", str(delay)])
+        if result.returncode != 0:
+            return _err(result.stderr or result.stdout or "Commande de redémarrage refusée.")
         return _ok(action="restart", delai_secondes=delay)
     except Exception as exc:
         return _err(exc)

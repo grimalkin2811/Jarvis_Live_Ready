@@ -1252,7 +1252,11 @@ def inspecter_scripts(x: Execution) -> None:
     else:
         ko.append("requirements.txt ne plafonne pas PySide6 < 6.12")
     build = lire("scripts/build_windows.ps1")
-    (constats if "requirements.txt" in build else ko).append("build_windows.ps1 installe requirements.txt")
+    lock_build = "requirements-lock/windows-py311.txt" in build and "--require-hashes" in build
+    legacy_build = "-m pip install -r requirements.txt" in build
+    (constats if lock_build or legacy_build else ko).append(
+        "build_windows.ps1 installe les dépendances (verrou Windows ou requirements.txt)"
+    )
     setup = lire("setup.bat")
     (constats if "requirements.txt" in setup else ko).append("setup.bat installe requirements.txt")
     lanceur = lire("Jarvis.bat")
@@ -2102,7 +2106,7 @@ def calculer_ecarts(x: Execution) -> None:
     lignes = []
     if valid:
         lignes.append(f"Environnement de test (PR) : Python {valid.get('python')}, PySide6 {valid.get('PySide6 (importé)')}, "
-                      f"Qt {valid.get('Qt')} — identique à la CI (Python 3.11, requirements.txt + requirements-dev.txt).")
+                      f"Qt {valid.get('Qt')} — comparer au verrou ou aux dépendances CI de la révision testée (Python 3.11).")
     if dev:
         dev_pyside = (dev.get("paquets") or {}).get("PySide6") or dev.get("PySide6 (importé)")
         lignes.append(f"Développement (.venv) : Python {dev.get('python')}, PySide6 {dev_pyside}"
@@ -2112,14 +2116,14 @@ def calculer_ecarts(x: Execution) -> None:
         qt = inst.get("Qt6Core.dll") or "?"
         lignes.append(f"Installation quotidienne : {inst.get('python_embarque')}, Qt6Core {qt}"
                       + (" — Qt 6.12.0 embarqué : exposé au défaut si reproduit (B07)" if str(qt).startswith(PYSIDE_EXCLUE)
-                         else "") + ". Elle sera remplacée par le build de la PR (build_windows.ps1 → requirements.txt).")
+                         else "") + ". Elle sera remplacée par le build de la PR (build_windows.ps1).")
     elif WINDOWS:
         lignes.append("Aucune installation quotidienne détectée : Jarvis est utilisé depuis le dépôt (.venv).")
     b08 = x.ctl("B08", "")
     if b08.statut in (P.REUSSI, P.ECHEC):
-        lignes.append("Packaging de la PR : scripts/build_windows.ps1 installe requirements.txt (PySide6 < 6.12) "
-                      "puis PyInstaller — le prochain exécutable embarquera la même série PySide6 que l'environnement "
-                      f"de test ; inspection : {b08.statut}.")
+        lignes.append("Packaging de la PR : scripts/build_windows.ps1 installe les dépendances, puis contrôle "
+                      "les versions Qt avant PyInstaller ; comparer le verrou et l'environnement de test. "
+                      f"Inspection : {b08.statut}.")
     x.rapport.ecarts[:0] = lignes
 
 

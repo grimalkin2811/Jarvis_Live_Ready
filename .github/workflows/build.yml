@@ -34,7 +34,8 @@ jobs:
       - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          python -m pip install --require-hashes -r requirements-lock/windows-py311.txt
+          python -m pip check
 
       - name: Lancer les tests
         shell: bash
@@ -139,7 +140,7 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Installer ruff
-        run: pip install ruff
+        run: pip install ruff==0.17.3
       - name: Lint (code applicatif)
         run: ruff check --output-format=github src launcher run_jarvis.py version.py
       - name: Lint (tests & UI)

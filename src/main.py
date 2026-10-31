@@ -204,20 +204,13 @@ def _run_smoke_test() -> int:
 
 
 async def run_headless() -> None:
-    import asyncio
-
-    from .audio import AudioIO
+    """Run the same backend as the GUI, without creating a Qt application."""
     from .config import load_config
-    from .conversation import get_default_conversation_context
-    from .gemini_live import AuthError, GeminiLive, SessionRecoveryExhausted
-    from .memory import MemoryManager, set_default_memory_manager
-    from .scheduler import start_default_scheduler
+    from .core import CoreRuntime, RuntimeHooks
 
     try:
         config = load_config()
     except Exception as exc:
-        # En distribution, on lance l'assistant de première configuration
-        # plutôt que de faire planter l'application.
         try:
             cfg = first_run.run_wizard(gui=False)
         except Exception:
@@ -230,175 +223,21 @@ async def run_headless() -> None:
         config = load_config()
 
     _load_menu_bridge()
-
-    loop = asyncio.get_running_loop()
-    gemini = None
-    audio = None
-    scheduler = None
-    task_manager = None
-
-    def mic(pcm: bytes) -> None:
-        if gemini is not None and gemini.can_send():
-            # ``session_generation``/``turn_epoch`` sont lus ICI, sur le
-            # thread audio, au moment exact de la capture : send_audio() les
-            # comparera à ses propres valeurs AU MOMENT DE L'EXÉCUTION (sur
-            # la boucle asyncio) pour détecter un bloc devenu périmé entre
-            # temps — reconnexion (generation) ou tour clos entre-temps
-            # (turn_epoch) (v1.7.3).
-            capture_generation = gemini.session_generation
-            capture_turn_epoch = gemini.turn_epoch
-            asyncio.run_coroutine_threadsafe(
-                gemini.send_audio(
-                    pcm,
-                    capture_generation=capture_generation,
-                    capture_turn_epoch=capture_turn_epoch,
-                ),
-                loop,
-            )
-
-    def on_barge_in() -> None:
-        """L'utilisateur a coupé la parole à Jarvis : Gemini doit s'arrêter."""
-        if gemini is not None:
-            gemini.request_interrupt()
-
-    try:
-        memory_manager = MemoryManager(
-            config.memory_database_path,
-            enabled=config.memory_enabled,
-            max_results=config.memory_max_results,
-            min_importance=config.memory_min_importance,
-        )
-        set_default_memory_manager(memory_manager)
-
-        # Contexte conversationnel : volontairement vierge à chaque démarrage
-        # de Jarvis (la mémoire persistante, elle, reste disponible).
-        conversation = get_default_conversation_context()
-        conversation.start_new_conversation(reason="démarrage console")
-
-        # Rappels persistants + routines planifiees (thread de fond).
+    voice_options = {}
+    if MENU_LIVE is not None:
         try:
-            scheduler = start_default_scheduler()
-        except Exception as exc:
-            print(f"[Scheduler] Demarrage impossible : {exc}")
-
-        # v1.8 : boucle dédiée, distincte de la boucle Gemini Live principale.
-        # Une panne de ce sous-système ne doit jamais empêcher la voix de démarrer.
-        try:
-            from .background_tasks import configure_default_task_manager
-
-            task_manager = configure_default_task_manager(config.api_key)
-        except Exception as exc:
-            print(f"[Tasks] Demarrage impossible (conversation disponible) : {exc}")
-
-        audio = AudioIO(
-            mic,
-            volume_provider=MENU_LIVE.get_tts_volume if MENU_LIVE else None,
-            listen_mode_provider=MENU_LIVE.get_listen_mode if MENU_LIVE else None,
-            mic_enabled=MENU_LIVE.get_mic_enabled if MENU_LIVE else None,
-            wake_threshold=MENU_LIVE.get_wake_threshold if MENU_LIVE else None,
-            barge_in_provider=MENU_LIVE.get_barge_in if MENU_LIVE else None,
-            post_response_provider=(
-                MENU_LIVE.get_post_response_listen if MENU_LIVE else None
-            ),
-            on_barge_in=on_barge_in,
-        )
-        voice_kwargs = {}
-        if MENU_LIVE is not None:
-            try:
-                from UI.menu_state import voice_backend_kwargs
-
-                voice_kwargs = voice_backend_kwargs()
-            except Exception:
-                voice_kwargs = {
-                    "response_mode_provider": MENU_RESPONSE_MODE,
-                    "voice_provider": MENU_LIVE.get_voice_name,
-                    "voice_version_provider": MENU_LIVE.get_voice_version,
-                    "speech_pace_provider": MENU_LIVE.get_speech_pace,
-                }
-        gemini = GeminiLive(
-            config.api_key,
-            config.model,
-            config.user,
-            on_audio=audio.play,
-            on_turn_complete=audio.extend_listening,
-            on_interrupted=audio.clear_output,
-            on_speaking=audio.begin_speaking,
-            on_turn_open=audio.note_turn_open,
-            on_turn_resolved=audio.note_turn_resolved,
-            memory_manager=memory_manager,
-            conversation=conversation,
-            **voice_kwargs,
-        )
-        # Pause prolongée du micro (porte anti-écho) : prévenir la Live API.
-        audio.mic_pause_hook = gemini.notify_mic_paused
-
-        print(f"Jarvis Live - Bonjour {config.user}")
-        audio.start()
-        print("Pret. Parle dans le micro. Ctrl+C pour arreter.")
-        print('[Jarvis] Dis "stop" pendant une reponse pour l\'interrompre.')
-
-        while True:
-            gemini.reconnect_requested = False
-            try:
-                await gemini.connect()
-                await gemini.receive_loop()
-            except (asyncio.CancelledError, KeyboardInterrupt):
-                break
-            except AuthError as exc:
-                print(f"\n[Jarvis] {exc}")
-                print("[Jarvis] Impossible de continuer sans une clé valide. Arrêt.")
-                break
-            except SessionRecoveryExhausted as exc:
-                # v1.9.x : les ouvertures de session meurent en rafale sans
-                # rien servir (ex. 1008 « entity not found » côté service).
-                # Terminer PROPREMENT avec un diagnostic, jamais boucler.
-                print(f"\n[Jarvis] {exc}")
-                print("[Jarvis] Service injoignable de façon persistante. Arrêt "
-                      "(relancez Jarvis quand le service répond de nouveau).")
-                break
-            except Exception:
-                import traceback
-                if gemini.reconnect_requested:
-                    pass
-                else:
-                    print("\n[Jarvis] Connexion perdue ou erreur:")
-                    traceback.print_exc()
-                    audio.awake = False
-                    try:
-                        audio.wake_model.reset()
-                    except Exception:
-                        pass
-                    # Backoff croissant si les sessions meurent sans rien
-                    # servir (borné par le moteur, retombe à ~0 après une
-                    # session saine).
-                    delay = max(1.0, min(30.0, gemini.session_recovery_backoff_seconds()))
-                    print(f"[Jarvis] Reconnexion dans {delay:.0f} seconde(s)...")
-                    await asyncio.sleep(delay)
-            else:
-                # Reconnexion immédiate et silencieuse après une fermeture normale
-                # pour préserver l'état éveillé et la fenêtre de 8 secondes de l'utilisateur.
-                # SAUF si les sessions meurent sans rien servir : le budget du
-                # moteur impose alors un backoff croissant (v1.9.x).
-                delay = gemini.session_recovery_backoff_seconds()
-                await asyncio.sleep(delay if delay > 0 else 0.1)
-            finally:
-                try:
-                    await gemini.close()
-                except Exception:
-                    pass
-    finally:
-        if scheduler is not None:
-            try:
-                scheduler.stop()
-            except Exception:
-                pass
-        if task_manager is not None:
-            try:
-                task_manager.close(wait=False)
-            except Exception:
-                pass
-        if audio is not None:
-            audio.stop()
+            from UI.menu_state import voice_backend_kwargs
+            voice_options = voice_backend_kwargs()
+        except Exception:
+            voice_options = {
+                "response_mode_provider": MENU_RESPONSE_MODE,
+                "voice_provider": MENU_LIVE.get_voice_name,
+                "voice_version_provider": MENU_LIVE.get_voice_version,
+                "speech_pace_provider": MENU_LIVE.get_speech_pace,
+            }
+    runtime = CoreRuntime(config, RuntimeHooks(controls=MENU_LIVE, voice_options=voice_options,
+                                               reason="démarrage console"))
+    await runtime.run()
 
 
 def build_parser() -> argparse.ArgumentParser:

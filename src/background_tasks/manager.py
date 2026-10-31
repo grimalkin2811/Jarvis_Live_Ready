@@ -205,12 +205,13 @@ class TaskManager:
                 pass
 
     def _save(self) -> None:
-        with self._lock:
-            payload = {"version": 1, "tasks": [task.to_dict() for task in self._tasks.values()]}
         try:
+            # Serialize snapshot creation as well as the write: otherwise a
+            # delayed older snapshot could overwrite a newer one. Never acquire
+            # _persistence_lock while holding _lock at call sites.
             with self._persistence_lock:
-                # Écriture atomique partagée (json_state) : destination
-                # préservée en cas d'échec, temporaire toujours nettoyé.
+                with self._lock:
+                    payload = {"version": 1, "tasks": [task.to_dict() for task in self._tasks.values()]}
                 text = json.dumps(payload, ensure_ascii=False, indent=2)
                 json_state.write_text_atomic(self.storage_path, text)
         except Exception as exc:

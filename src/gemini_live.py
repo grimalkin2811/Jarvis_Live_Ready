@@ -18,6 +18,7 @@ from .conversation import (
     to_gemini_contents,
 )
 from .logging_setup import get_logger
+from .core.action_boundary import ActionProposal, reject_unverified_action
 from .memory import MemoryManager
 from .modes import get_default_mode_manager
 from .tools import TOOL_DECLARATIONS, TOOL_FUNCTIONS
@@ -3177,11 +3178,15 @@ class GeminiLive:
                             if transcript:
                                 args["request"] = transcript
 
+                        rejection = reject_unverified_action(ActionProposal(c.name, args))
                         if fn is None:
                             result = {
                                 "success": False,
                                 "error": "Outil inconnu"
                             }
+                        elif rejection:
+                            result = {"success": False, "error": rejection, "authorization_required": True}
+                            self._record_trace("TOOL_CALL_AUTHORIZATION_REFUSED", name=c.name)
                         else:
                             # v1.7.0 : début/fin d'outil explicites pour le
                             # retour visuel (« Action : music_play »).
