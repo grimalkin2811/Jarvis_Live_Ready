@@ -76,9 +76,14 @@ class CoreRuntime:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._stop_requested = threading.Event()
+        self._stop_lock = threading.Lock()
         self._started = False
         self._text_handler = None
         self._cleanup_failed = False
+        self._cleanup_started = False
+        self._provider_needs_close = False
+        self._accept_mic = threading.Event()
+        self._mic_tasks: set[asyncio.Task] = set()
 
     def _notify(self, callback, *args) -> None:
         if callback is not None:
@@ -92,12 +97,12 @@ class CoreRuntime:
 
     def _mic(self, pcm: bytes) -> None:
         provider, loop = self.provider, self._loop
-        if provider is None or loop is None or self._stop_requested.is_set() or not provider.can_send():
+        if (provider is None or loop is None or self._stop_requested.is_set()
+                or not self._accept_mic.is_set() or not provider.can_send()):
             return
         # Capture the generation and epoch on the audio thread, not later on
         # the asyncio thread. This preserves stale-audio protection.
-        coro = provider.send_audio(pcm, capture_generation=provider.session_generation,
-                                   capture_turn_epoch=provider.turn_epoch)
+        coro = self._send_mic(provider, pcm, provider.session_generation, provider.turn_epoch)
         try:
             future = asyncio.run_coroutine_threadsafe(coro, loop)
         except RuntimeError:
@@ -113,6 +118,26 @@ class CoreRuntime:
                     log.exception("Microphone audio submission failed")
         future.add_done_callback(completed)
 
+    async def _send_mic(self, provider, pcm: bytes, generation: int, epoch: int) -> None:
+        task = asyncio.current_task()
+        self._mic_tasks.add(task)
+        try:
+            if self._accept_mic.is_set() and not self._stop_requested.is_set():
+                await provider.send_audio(pcm, capture_generation=generation, capture_turn_epoch=epoch)
+        finally:
+            self._mic_tasks.discard(task)
+
+    async def _drain_mic(self) -> None:
+        self._accept_mic.clear()
+        # Allow submissions already queued by the audio thread to observe the
+        # closed gate before taking the snapshot of in-flight coroutines.
+        await asyncio.sleep(0)
+        tasks = tuple(self._mic_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     def _barge_in(self) -> None:
         if self.provider is not None:
             self.provider.request_interrupt()
@@ -125,13 +150,44 @@ class CoreRuntime:
 
     def request_stop(self) -> None:
         """Request shutdown from any thread, including while receive() waits."""
-        self._stop_requested.set()
+        with self._stop_lock:
+            if self._stop_requested.is_set():
+                return
+            self._stop_requested.set()
         loop, task = self._loop, self._task
         if loop is not None and task is not None:
             try:
-                loop.call_soon_threadsafe(task.cancel)
+                # A stop may arrive during synchronous initialization. By the
+                # time this callback runs, cleanup may already have started;
+                # do not cancel the cleanup coroutine or an enclosing caller.
+                def cancel_if_running():
+                    if self._task is task and not self._cleanup_started and not task.done():
+                        task.cancel()
+                loop.call_soon_threadsafe(cancel_if_running)
             except RuntimeError:
                 log.debug("Runtime loop already closed")
+
+    async def _close_provider_session(self) -> None:
+        try:
+            await self.provider.close()
+            self._provider_needs_close = False
+        except Exception:
+            self._cleanup_failed = True
+            log.exception("Provider session close failed")
+
+    async def _dispose_provider(self) -> None:
+        if self.provider is None:
+            return
+        await self._drain_mic()
+        if self._provider_needs_close:
+            await self._close_provider_session()
+        shutdown = getattr(self.provider, "shutdown", None)
+        if shutdown is not None:
+            try:
+                await shutdown()
+            except Exception:
+                self._cleanup_failed = True
+                log.exception("Provider client shutdown failed")
 
     async def run(self) -> None:
         if self._started:
@@ -160,6 +216,25 @@ class CoreRuntime:
             log.exception("Runtime failed")
             raise
         finally:
+            self._cleanup_started = True
+            self._stop_requested.set()
+            # A second cancellation must not abandon an in-flight close and
+            # leave the owner lock or other resources behind.
+            cleanup_task = asyncio.create_task(self._dispose_provider())
+            cancelled_during_cleanup = False
+            while True:
+                try:
+                    await asyncio.shield(cleanup_task)
+                    break
+                except asyncio.CancelledError:
+                    if cleanup_task.cancelled():
+                        self._cleanup_failed = True
+                        break
+                    cancelled_during_cleanup = True
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Provider cleanup failed")
+                    break
             if self._text_handler is not None:
                 self.status.unregister_text_handler(self._text_handler)
             controls = self.hooks.controls
@@ -178,6 +253,18 @@ class CoreRuntime:
             with CoreRuntime._owner_lock:
                 if CoreRuntime._owner is self:
                     CoreRuntime._owner = None
+            if cancelled_during_cleanup:
+                raise asyncio.CancelledError
+
+    @staticmethod
+    def _stop_threaded_service(name: str, service: Any, stop: Callable[[], None]) -> None:
+        # Preserve the reference even if a service drops it during a bounded
+        # join, so a timed-out worker cannot look stopped.
+        thread = getattr(service, "_thread", None)
+        stop()
+        thread = thread or getattr(service, "_thread", None)
+        if thread is not None and thread.is_alive():
+            raise RuntimeError(f"{name} thread still running after shutdown")
 
     async def _run_pipeline(self, factories: RuntimeFactories) -> None:
         cfg, hooks, services = self.config, self.hooks, self.services
@@ -191,12 +278,14 @@ class CoreRuntime:
         conversation.start_new_conversation(reason=hooks.reason)
         try:
             scheduler = factories.scheduler()
-            services.register("scheduler", scheduler, close=scheduler.stop)
+            services.register("scheduler", scheduler,
+                              close=lambda: self._stop_threaded_service("scheduler", scheduler, scheduler.stop))
         except Exception as exc:
             log.warning("Scheduler unavailable: %s", redact_secrets(str(exc), limit=300))
         try:
             manager = factories.tasks(cfg.api_key)
-            services.register("tasks", manager, close=lambda: manager.close(wait=True))
+            services.register("tasks", manager, close=lambda: self._stop_threaded_service(
+                "tasks", manager, lambda: manager.close(wait=True)))
             self.status.update(tasks_state="ok", tasks_detail="")
         except Exception as exc:
             log.warning("Background tasks unavailable: %s", redact_secrets(str(exc), limit=300))
@@ -239,6 +328,7 @@ class CoreRuntime:
             on_assistant_transcript=lambda text: self._desktop("response", text=text),
             memory_manager=memory, conversation=conversation, **hooks.voice_options)
         self.provider = services.register("provider", provider)
+        self._provider_needs_close = True
         audio.mic_pause_hook = provider.notify_mic_paused
         self._text_handler = provider.submit_text_threadsafe
         self.status.register_text_handler(self._text_handler)
@@ -247,20 +337,17 @@ class CoreRuntime:
             audio.start()
         except Exception as exc:
             self.status.update(audio_state="failed", audio_detail=f"démarrage audio impossible : {exc}")
-            try:
-                await provider.close()
-            except Exception:
-                self._cleanup_failed = True
-                log.exception("Provider close after audio startup failure failed")
             raise
         self.status.update(audio_state="ok", audio_detail="flux micro et haut-parleurs démarrés")
         self.events.publish(RuntimeEvent("audio_started"))
 
         while not self._stop_requested.is_set():
+            self._provider_needs_close = True
             provider.reconnect_requested = False
             try:
                 self.status.set_engine_state(EngineState.CONNECTING, "ouverture de la session")
                 await provider.connect()
+                self._accept_mic.set()
                 self.status.set_engine_state(EngineState.READY, "", model=str(provider.model or ""),
                                              session_generation=int(getattr(provider, "session_generation", 0) or 0))
                 self.events.publish(RuntimeEvent("connected"))
@@ -296,8 +383,5 @@ class CoreRuntime:
                 delay = provider.session_recovery_backoff_seconds()
                 await asyncio.sleep(delay if delay > 0 else 0.1)
             finally:
-                try:
-                    await provider.close()
-                except Exception:
-                    self._cleanup_failed = True
-                    log.exception("Provider session close failed")
+                await self._drain_mic()
+                await self._close_provider_session()

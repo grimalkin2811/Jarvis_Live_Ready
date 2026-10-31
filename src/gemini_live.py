@@ -3309,12 +3309,22 @@ class GeminiLive:
                 pass
 
     async def close(self) -> None:
+        pending = []
         for name in ("_watcher_task", "_stall_task"):
             task = getattr(self, name)
             setattr(self, name, None)
             if task is not None and task is not asyncio.current_task() and not task.done():
                 task.cancel()
+                pending.append(task)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
         # Le contexte survit à la session (reconnexion, changement de voix,
         # changement d'interface) : seul le pont de reset est détaché.
         self.conversation.unbind_session(self._handle_context_reset)
         await self._shutdown_session()
+
+    async def shutdown(self) -> None:
+        """Dispose the client once at runtime shutdown, not on reconnect."""
+        close_client = getattr(getattr(self.client, "aio", None), "aclose", None)
+        if close_client is not None:
+            await close_client()

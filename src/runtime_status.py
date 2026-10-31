@@ -25,11 +25,14 @@ exception ne remonte vers la boucle vocale, les hooks sont appelés hors verrou.
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import re
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
+
+log = logging.getLogger("jarvis.runtime_status")
 
 # ---------------------------------------------------------------------------
 # États du moteur
@@ -246,8 +249,8 @@ class RuntimeStatusBoard:
             try:
                 hook(dict(snapshot))
             except Exception:
-                # Une interface ne doit jamais faire tomber la boucle vocale.
-                pass
+                # Isoler les autres abonnés tout en rendant le défaut visible.
+                log.exception("Runtime status subscriber failed")
 
     # -- lecture ---------------------------------------------------------------
 

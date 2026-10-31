@@ -558,7 +558,9 @@ class Scheduler:
             return False
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
-                return True
+                # A previous stop can time out while a callback is blocked.
+                # Do not clear its stop signal or launch a second worker.
+                return not self._stop.is_set()
             self._stop.clear()
             self._thread = threading.Thread(target=self._loop, name="jarvis-scheduler", daemon=True)
             self._thread.start()
@@ -568,9 +570,11 @@ class Scheduler:
         self._stop.set()
         with self._lock:
             thread = self._thread
-            self._thread = None
         if thread is not None:
             thread.join(timeout=2.0)
+        with self._lock:
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
 
     @property
     def running(self) -> bool:

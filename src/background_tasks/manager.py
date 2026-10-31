@@ -100,8 +100,11 @@ class TaskManager:
     def start(self) -> None:
         with self._lock:
             if self._thread and self._thread.is_alive():
+                if self._closing:
+                    raise RuntimeError("Le gestionnaire de tâches est en cours d'arrêt.")
                 return
             self._closing = False
+            self._init_error = None
             self._ready.clear()
             self._thread = threading.Thread(target=self._run_loop, name="jarvis-background-tasks", daemon=True)
             self._thread.start()
@@ -109,6 +112,8 @@ class TaskManager:
             raise RuntimeError("La boucle des tâches d'arrière-plan n'a pas démarré.")
         if self._init_error is not None:
             raise RuntimeError(f"Initialisation du Task Manager impossible: {self._init_error}") from self._init_error
+        if self._closing:
+            raise RuntimeError("Le gestionnaire de tâches a été arrêté pendant son démarrage.")
 
     async def _initialize_loop_resources(self) -> None:
         # Cette coroutine est exécutée par run_until_complete :
@@ -147,15 +152,16 @@ class TaskManager:
         asyncio.set_event_loop(loop)
         self._loop = loop
         try:
-            loop.run_until_complete(self._initialize_loop_resources())
-        except BaseException as exc:
-            self._init_error = exc
-            self._ready.set()
-            loop.close()
-            return
-        self._ready.set()
-        try:
-            loop.run_forever()
+            try:
+                loop.run_until_complete(self._initialize_loop_resources())
+            except BaseException as exc:
+                self._init_error = exc
+            finally:
+                self._ready.set()
+            # close() may have been requested while initialization was in
+            # progress, before loop.run_forever() could be stopped.
+            if self._init_error is None and not self._closing:
+                loop.run_forever()
         finally:
             pending = asyncio.all_tasks(loop)
             for item in pending:
@@ -173,10 +179,16 @@ class TaskManager:
     def close(self, wait: bool = False) -> None:
         self._closing = True
         loop = self._loop
-        if loop and loop.is_running():
-            for future in list(self._futures.values()):
-                future.cancel()
-            loop.call_soon_threadsafe(loop.stop)
+        for future in list(self._futures.values()):
+            future.cancel()
+        # The loop can be between initialization and run_forever. Scheduling
+        # stop even in that gap closes the race; during initialization the
+        # worker instead observes _closing immediately after _ready is set.
+        if loop and self._ready.is_set() and not loop.is_closed():
+            try:
+                loop.call_soon_threadsafe(loop.stop)
+            except RuntimeError:
+                pass  # the worker closed the loop concurrently
         if wait and self._thread:
             self._thread.join(timeout=3.0)
 
