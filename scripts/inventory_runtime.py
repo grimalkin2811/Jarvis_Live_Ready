@@ -49,6 +49,10 @@ class Inventory(ast.NodeVisitor):
         func = node.func
         name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else ''
         service = SERVICES.get(name)
+        if name == '_resolve' and len(node.args) >= 2 and isinstance(node.args[1], ast.Constant):
+            self.rows.append((self.path, node.lineno, '.'.join(self.scope) or '<module>',
+                              node.args[1].value, name, 'registre injecté ou fallback autonome',
+                              'injection explicite si présente ; getter historique sinon'))
         if service:
             if name.startswith('get_default_'):
                 origin, risk = 'getter global historique', 'instance partagée ou création paresseuse ; setter peut diverger'
@@ -86,13 +90,15 @@ def main():
     print('# Inventaire statique des dépendances et états de processus\n')
     print('Généré par `python scripts/inventory_runtime.py`. Les fonctions/méthodes indiquent le consommateur.')
     print('La recherche AST couvre ces noms et constructions explicites, pas les appels dynamiques, alias ou callbacks indirects ; '
-          'voir les tableaux de responsabilités et exceptions dans `validation-cloture-lot-01-5.md`.')
+          'voir les tableaux de responsabilités et exceptions dans `validation-finale-lot-01-5.md`.')
     print('Un getter historique reste une compatibilité à migrer, pas une preuve que le registre possède le service.\n')
     print('| Fichier:ligne | Consommateur | Service | Appel | Origine | Risque | Migration / raison de conservation |')
     print('|---|---|---|---|---|---|---|')
     for path, line, scope, service, name, origin, risk in rows:
         if origin == 'registre injecté':
             disposition = 'migré ; disponibilité et arrêt à gérer'
+        elif origin == 'registre injecté ou fallback autonome':
+            disposition = 'injecté pour les appels Core ; compatibilité hors Core'
         elif path == 'src/core/runtime.py':
             disposition = 'compatibilité des factories ; supprimer après migration des propriétaires'
         elif path == 'src/tools.py':
