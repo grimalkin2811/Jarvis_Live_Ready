@@ -704,7 +704,7 @@ class RoutineManager:
                 return _err(self.last_error or "Sauvegarde impossible.")
         return _ok(nom=routine["name"], supprimee=True)
 
-    def run_routine(self, name, dry_run=False) -> dict:
+    def run_routine(self, name, dry_run=False, *, tool_functions=None) -> dict:
         """Exécute les étapes d'une routine, séquentiellement."""
         if not self.enabled:
             return _err("Routines désactivées.")
@@ -727,7 +727,7 @@ class RoutineManager:
         if dry_run:
             return _ok(nom=routine_name, simulation=True, etapes=steps_to_text(steps))
 
-        functions, _ = _registry()
+        functions = tool_functions if tool_functions is not None else _registry()[0]
         results = []
         succeeded = 0
         notification_handled = False

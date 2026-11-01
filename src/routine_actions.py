@@ -12,12 +12,16 @@ import os
 from .scheduler import get_default_scheduler
 
 
-def notify_user(message, title="Jarvis") -> dict:
+def _scheduler(services):
+    return get_default_scheduler() if services is None else services.require("scheduler")
+
+
+def notify_user(message, title="Jarvis", *, _services=None) -> dict:
     """Affiche une notification locale immédiatement, sans appel à Gemini."""
-    return get_default_scheduler().notify(title, message)
+    return _scheduler(_services).notify(title, message)
 
 
-def show_reminder_briefing(period="today") -> dict:
+def show_reminder_briefing(period="today", *, _services=None) -> dict:
     """Résume les vrais rappels Jarvis, sans agenda ou compte supplémentaire."""
     now = dt.datetime.now()
     midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -37,7 +41,7 @@ def show_reminder_briefing(period="today") -> dict:
             "error": "Période inconnue : today, tomorrow ou week.",
         }
 
-    scheduler = get_default_scheduler()
+    scheduler = _scheduler(_services)
     result = scheduler.reminder_occurrences(start, end)
     if not result.get("success"):
         return result
@@ -62,7 +66,7 @@ def show_reminder_briefing(period="today") -> dict:
     return outcome
 
 
-def check_battery_alert() -> dict:
+def check_battery_alert(*, _services=None) -> dict:
     """Alerte à 20 % ou moins, débranché ; au plus une alerte par heure."""
     from .tools import get_battery_status
 
@@ -82,7 +86,7 @@ def check_battery_alert() -> dict:
             "notification": False,
             "raison": "Batterie OK ou PC branché.",
         }
-    return get_default_scheduler().notify(
+    return _scheduler(_services).notify(
         "Batterie faible",
         f"Batterie à {level} %. Pensez à brancher le chargeur. "
         "Jarvis ne modifie pas vos réglages d'alimentation.",
@@ -91,7 +95,7 @@ def check_battery_alert() -> dict:
     )
 
 
-def check_disk_alert() -> dict:
+def check_disk_alert(*, _services=None) -> dict:
     """Alerte sous 10 % libres sur le disque utilisateur ; une fois par jour."""
     from .tools import get_disk_usage
 
@@ -104,7 +108,7 @@ def check_disk_alert() -> dict:
             "notification": False,
             "raison": "Espace disque suffisant.",
         }
-    return get_default_scheduler().notify(
+    return _scheduler(_services).notify(
         "Espace disque",
         f"Le disque de votre dossier utilisateur n'a plus que "
         f"{status['libre_go']} Go libres ({status['libre_pourcent']} %). "

@@ -41,7 +41,7 @@ def _storage():
     return directory
 
 
-def _sources():
+def _sources(services=None):
     from .memory import get_default_memory_manager
     from .routines import get_default_routine_manager
     from .scheduler import get_default_scheduler
@@ -49,11 +49,11 @@ def _sources():
     from .activity import get_default_activity_log
     from . import tools
     return {
-        "memory.db": Path(get_default_memory_manager().database_path),
-        "schedule.db": Path(get_default_scheduler().database_path),
-        "todo.db": Path(get_default_todo_manager().database_path),
-        "activity.db": Path(get_default_activity_log().database_path),
-        "routines.json": Path(get_default_routine_manager().path),
+        "memory.db": Path((services.require("memory") if services is not None else get_default_memory_manager()).database_path),
+        "schedule.db": Path((services.require("scheduler") if services is not None else get_default_scheduler()).database_path),
+        "todo.db": Path((services.require("todo") if services is not None else get_default_todo_manager()).database_path),
+        "activity.db": Path((services.require("activity") if services is not None else get_default_activity_log()).database_path),
+        "routines.json": Path((services.require("routines") if services is not None else get_default_routine_manager()).path),
         "notes.json": Path(tools.NOTES_FILE),
     }
 
@@ -71,7 +71,7 @@ def _sqlite_snapshot(source, destination):
             reader.backup(writer, pages=256, progress=progress)
 
 
-def backup_data(confirm=False):
+def backup_data(confirm=False, *, _services=None):
     if confirm is not True:
         return _error("Accord requis : copie locale non chiffrée de données personnelles.")
     target = None
@@ -81,7 +81,7 @@ def backup_data(confirm=False):
         with tempfile.TemporaryDirectory(dir=directory) as temporary:
             entries = {}
             total = 0
-            for name, source in _sources().items():
+            for name, source in (_sources() if _services is None else _sources(_services)).items():
                 if not source.exists():
                     continue
                 if source.is_symlink() or not source.is_file() or source.stat().st_size > MAX_BYTES:

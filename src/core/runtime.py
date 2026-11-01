@@ -8,6 +8,7 @@ source consumed by the Dashboard.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -73,6 +74,16 @@ def _default_modes():
     return get_default_mode_manager()
 
 
+def _default_activity():
+    from ..activity import get_default_activity_log
+    return get_default_activity_log()
+
+
+def _default_music():
+    from ..music import get_default_music_manager
+    return get_default_music_manager()
+
+
 class CoreRuntime:
     """Owns a single voice backend and its resources for one application run."""
 
@@ -94,6 +105,11 @@ class CoreRuntime:
         self.services.register_lazy("todo", _default_todo)
         self.services.register_lazy("routines", _default_routines)
         self.services.register_lazy("modes", _default_modes)
+        self.services.register_lazy("activity", _default_activity)
+        self.services.register_lazy("music", _default_music)
+        self._tool_bindings = None
+        self._deferred_cleanup = False
+        self._deferred_cleanup_lock = threading.Lock()
         self.audio = None
         self.provider = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -177,6 +193,8 @@ class CoreRuntime:
             if self._stop_requested.is_set():
                 return
             self._stop_requested.set()
+            if self._tool_bindings is not None:
+                self._tool_bindings.reject_new()
         loop, task = self._loop, self._task
         if loop is not None and task is not None:
             try:
@@ -241,6 +259,8 @@ class CoreRuntime:
         finally:
             self._cleanup_started = True
             self._stop_requested.set()
+            if self._tool_bindings is not None:
+                self._tool_bindings.reject_new()
             # A second cancellation must not abandon an in-flight close and
             # leave the owner lock or other resources behind.
             cleanup_task = asyncio.create_task(self._dispose_provider())
@@ -263,7 +283,11 @@ class CoreRuntime:
             controls = self.hooks.controls
             if controls is not None:
                 self._notify(controls.set_stop_speaking_handler, None)
-            failures = self.services.close()
+            # Cancelling asyncio.to_thread does not stop its worker. Do not
+            # close resources or admit a new owner while an invocation uses them.
+            drained = self._tool_bindings is None or self._tool_bindings.drain(timeout=2.0)
+            self._deferred_cleanup = not drained
+            failures = self.services.close() if drained else ["outils encore actifs"]
             if failures or self._cleanup_failed:
                 self.status.record_error("Nettoyage incomplet du runtime : " + ", ".join(failures or ["provider"]))
                 self.status.set_engine_state(EngineState.FAILED, "nettoyage incomplet")
@@ -274,10 +298,30 @@ class CoreRuntime:
             self._task = None
             self._loop = None
             with CoreRuntime._owner_lock:
-                if CoreRuntime._owner is self:
+                if CoreRuntime._owner is self and not self._deferred_cleanup:
                     CoreRuntime._owner = None
             if cancelled_during_cleanup:
                 raise asyncio.CancelledError
+
+    def complete_deferred_cleanup(self) -> bool:
+        """Retry cleanup after a timed-out worker has actually returned.
+
+        Returns False while the worker remains active or if cleanup fails.
+        This explicit retry never blocks waiting for the worker.
+        """
+        with self._deferred_cleanup_lock:
+            if not self._deferred_cleanup:
+                return True
+            if not self._tool_bindings.drain(timeout=0):
+                return False
+            failures = self.services.close()
+            self._deferred_cleanup = False
+            with CoreRuntime._owner_lock:
+                if CoreRuntime._owner is self:
+                    CoreRuntime._owner = None
+            if failures:
+                self.status.record_error("Nettoyage différé incomplet : " + ", ".join(failures))
+            return not failures
 
     @staticmethod
     def _stop_threaded_service(name: str, service: Any, stop: Callable[[], None]) -> None:
@@ -342,6 +386,24 @@ class CoreRuntime:
             audio.begin_speaking()
             self._notify(hooks.presence, "speaking")
 
+        from ..tools import RuntimeToolBindings
+        with self._stop_lock:
+            self._tool_bindings = RuntimeToolBindings(services)
+            if self._stop_requested.is_set():
+                self._tool_bindings.reject_new()
+        services.register("tools", self._tool_bindings)
+        # Third-party legacy factories may have a fixed pre-injection signature.
+        # Do not break them; only advertise optional dependencies they accept.
+        try:
+            parameters = inspect.signature(factories.provider).parameters
+            accepts_keywords = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+            injection = {name: value for name, value in {
+                "tool_functions": self._tool_bindings.functions, "services": services,
+            }.items() if accepts_keywords or (name in parameters and parameters[name].kind in (
+                inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY))}
+        except (TypeError, ValueError):
+            injection = {}
+
         provider = factories.provider(
             cfg.api_key, cfg.model, cfg.user, on_audio=audio.play,
             on_turn_complete=audio.extend_listening, on_interrupted=interrupted,
@@ -351,7 +413,7 @@ class CoreRuntime:
             on_tool_end=lambda name, ok=True: self._desktop("tool_end", name=name, success=ok),
             on_user_transcript=lambda text, final=False: self._desktop("transcript", text=text, final=final),
             on_assistant_transcript=lambda text: self._desktop("response", text=text),
-            memory_manager=memory, conversation=conversation, **hooks.voice_options)
+            memory_manager=memory, conversation=conversation, **injection, **hooks.voice_options)
         self.provider = services.register("provider", provider)
         self._provider_needs_close = True
         audio.mic_pause_hook = provider.notify_mic_paused

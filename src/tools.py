@@ -88,6 +88,13 @@ DATA_DIR = str(paths.data_dir())
 NOTES_FILE = os.environ.get("JARVIS_NOTES_FILE", str(paths.notes_file()))
 
 
+def _resolve(services, name, legacy_getter):
+    """Use explicit Core services; legacy getters are only for standalone calls."""
+    if services is None:
+        return legacy_getter()
+    return services.require(name)
+
+
 # ===========================================================================
 # LISTES BLANCHES
 # ===========================================================================
@@ -706,13 +713,13 @@ def _music_manager():
     return get_default_music_manager()
 
 
-def music_search(query, limit=8):
+def music_search(query, limit=8, *, _services=None):
     """Recherche Deezer (artistes, morceaux, albums, playlists)."""
     try:
         lim = max(1, min(int(limit or 8), 20))
     except (TypeError, ValueError):
         lim = 8
-    return _music_manager().search(str(query or ""), limit=lim)
+    return _resolve(_services, "music", _music_manager).search(str(query or ""), limit=lim)
 
 
 def music_play(
@@ -722,14 +729,13 @@ def music_play(
     album="",
     playlist="",
     kind="",
-    personal=False,
-):
+    personal=False, *, _services=None):
     """Lance une lecture Deezer (morceau, artiste, album, playlist ou musique libre).
 
     Gemini peut fournir soit ``kind`` + le slot correspondant, soit une
     ``query`` libre (« Around the World de Daft Punk »).
     """
-    manager = _music_manager()
+    manager = _resolve(_services, "music", _music_manager)
     kind_norm = _normalize_name(kind or "")
     personal = bool(personal)
 
@@ -782,97 +788,97 @@ def _looks_like_command(text: str) -> bool:
     return any(norm == s or norm.startswith(s + " ") for s in starters)
 
 
-def music_play_track(track, artist=""):
+def music_play_track(track, artist="", *, _services=None):
     """Joue un morceau Deezer (raccourci explicite)."""
-    return _music_manager().play_track(str(track or ""), artist=artist or None)
+    return _resolve(_services, "music", _music_manager).play_track(str(track or ""), artist=artist or None)
 
 
-def music_play_artist(artist):
+def music_play_artist(artist, *, _services=None):
     """Joue un artiste Deezer."""
-    return _music_manager().play_artist(str(artist or ""))
+    return _resolve(_services, "music", _music_manager).play_artist(str(artist or ""))
 
 
-def music_play_album(album, artist=""):
+def music_play_album(album, artist="", *, _services=None):
     """Joue un album Deezer."""
-    return _music_manager().play_album(str(album or ""), artist=artist or None)
+    return _resolve(_services, "music", _music_manager).play_album(str(album or ""), artist=artist or None)
 
 
-def music_play_playlist(playlist, personal=False):
+def music_play_playlist(playlist, personal=False, *, _services=None):
     """Joue une playlist Deezer (personnelle si personal=true)."""
-    return _music_manager().play_playlist(str(playlist or ""), personal=bool(personal))
+    return _resolve(_services, "music", _music_manager).play_playlist(str(playlist or ""), personal=bool(personal))
 
 
-def music_pause():
+def music_pause(*, _services=None):
     """Met en pause la lecture Deezer / média en cours."""
-    return _music_manager().pause()
+    return _resolve(_services, "music", _music_manager).pause()
 
 
-def music_resume():
+def music_resume(*, _services=None):
     """Reprend la lecture Deezer / média en cours."""
-    return _music_manager().resume()
+    return _resolve(_services, "music", _music_manager).resume()
 
 
-def music_next():
+def music_next(*, _services=None):
     """Passe au morceau Deezer suivant."""
-    return _music_manager().next()
+    return _resolve(_services, "music", _music_manager).next()
 
 
-def music_previous():
+def music_previous(*, _services=None):
     """Revient au morceau Deezer précédent."""
-    return _music_manager().previous()
+    return _resolve(_services, "music", _music_manager).previous()
 
 
-def music_stop():
+def music_stop(*, _services=None):
     """Arrête la lecture musicale."""
-    return _music_manager().stop()
+    return _resolve(_services, "music", _music_manager).stop()
 
 
-def music_current():
+def music_current(*, _services=None):
     """Indique le morceau en cours si connu."""
-    return _music_manager().get_current_track()
+    return _resolve(_services, "music", _music_manager).get_current_track()
 
 
-def music_list_playlists(limit=30):
+def music_list_playlists(limit=30, *, _services=None):
     """Liste les playlists personnelles Deezer via OAuth (contrat historique)."""
     try:
         lim = max(1, min(int(limit or 30), 50))
     except (TypeError, ValueError):
         lim = 30
-    return _music_manager().get_playlists(personal=True, limit=lim)
+    return _resolve(_services, "music", _music_manager).get_playlists(personal=True, limit=lim)
 
 
-def music_playlist_save(name, playlist_id="", url=""):
+def music_playlist_save(name, playlist_id="", url="", *, _services=None):
     """Enregistre un alias Deezer local, par URL/ID ou par import OAuth explicite."""
-    return _music_manager().save_local_playlist(
+    return _resolve(_services, "music", _music_manager).save_local_playlist(
         str(name or ""),
         playlist_id=str(playlist_id or "").strip() or None,
         url=str(url or "").strip() or None,
     )
 
 
-def music_playlist_import(name):
+def music_playlist_import(name, *, _services=None):
     """Importe une playlist personnelle OAuth dans les associations locales."""
-    return _music_manager().import_local_playlist(str(name or ""))
+    return _resolve(_services, "music", _music_manager).import_local_playlist(str(name or ""))
 
 
-def music_playlist_remove(name):
+def music_playlist_remove(name, *, _services=None):
     """Supprime uniquement l'association locale de Jarvis, pas Deezer."""
-    return _music_manager().remove_local_playlist(str(name or ""))
+    return _resolve(_services, "music", _music_manager).remove_local_playlist(str(name or ""))
 
 
-def music_playlist_list():
+def music_playlist_list(*, _services=None):
     """Liste les playlists Deezer enregistrées localement, sans OAuth ni réseau."""
-    return _music_manager().get_local_playlists()
+    return _resolve(_services, "music", _music_manager).get_local_playlists()
 
 
-def music_status():
+def music_status(*, _services=None):
     """État de l'intégration Deezer (auth, app, provider)."""
-    return _music_manager().status()
+    return _resolve(_services, "music", _music_manager).status()
 
 
-def music_disconnect():
+def music_disconnect(*, _services=None):
     """Oublie le token Deezer local."""
-    return _music_manager().disconnect()
+    return _resolve(_services, "music", _music_manager).disconnect()
 
 
 # ===========================================================================
@@ -1807,9 +1813,9 @@ def pick_random(options):
 # ===========================================================================
 
 
-def remember(content, category="other", importance=3):
+def remember(content, category="other", importance=3, *, _services=None):
     """Ajoute ou met à jour un souvenir durable dans la mémoire locale."""
-    return get_default_memory_manager().add_memory(
+    return _resolve(_services, "memory", get_default_memory_manager).add_memory(
         content,
         category=category,
         importance=importance,
@@ -1817,24 +1823,24 @@ def remember(content, category="other", importance=3):
     )
 
 
-def recall(query="", limit=5):
+def recall(query="", limit=5, *, _services=None):
     """Recherche les souvenirs pertinents pour une requête."""
-    return get_default_memory_manager().search_memories(query, limit=limit)
+    return _resolve(_services, "memory", get_default_memory_manager).search_memories(query, limit=limit)
 
 
-def list_memories(limit=50, category=None):
+def list_memories(limit=50, category=None, *, _services=None):
     """Liste les souvenirs enregistrés, pour inspection par l'utilisateur."""
-    return get_default_memory_manager().list_memories(limit=limit, category=category)
+    return _resolve(_services, "memory", get_default_memory_manager).list_memories(limit=limit, category=category)
 
 
-def search_memories(query, limit=10):
+def search_memories(query, limit=10, *, _services=None):
     """Recherche explicite dans la mémoire locale."""
-    return get_default_memory_manager().search_memories(query, limit=limit)
+    return _resolve(_services, "memory", get_default_memory_manager).search_memories(query, limit=limit)
 
 
-def update_memory(memory_id, content=None, category=None, importance=None):
+def update_memory(memory_id, content=None, category=None, importance=None, *, _services=None):
     """Modifie un souvenir existant."""
-    return get_default_memory_manager().update_memory(
+    return _resolve(_services, "memory", get_default_memory_manager).update_memory(
         memory_id,
         content=content,
         category=category,
@@ -1842,19 +1848,19 @@ def update_memory(memory_id, content=None, category=None, importance=None):
     )
 
 
-def delete_memory(memory_id):
+def delete_memory(memory_id, *, _services=None):
     """Supprime logiquement un souvenir précis."""
-    return get_default_memory_manager().delete_memory(memory_id)
+    return _resolve(_services, "memory", get_default_memory_manager).delete_memory(memory_id)
 
 
-def forget(query, confirm=False, limit=10):
+def forget(query, confirm=False, limit=10, *, _services=None):
     """Oublie les souvenirs liés à une requête après confirmation."""
-    return get_default_memory_manager().forget(query, limit=limit, confirm=confirm)
+    return _resolve(_services, "memory", get_default_memory_manager).forget(query, limit=limit, confirm=confirm)
 
 
-def clear_memory(confirm=False):
+def clear_memory(confirm=False, *, _services=None):
     """Efface toute la mémoire durable après confirmation."""
-    return get_default_memory_manager().clear_memory(confirm=confirm)
+    return _resolve(_services, "memory", get_default_memory_manager).clear_memory(confirm=confirm)
 
 
 # ===========================================================================
@@ -1862,9 +1868,9 @@ def clear_memory(confirm=False):
 # ===========================================================================
 
 
-def create_routine(name, steps, description="", schedule=""):
+def create_routine(name, steps, description="", schedule="", *, _services=None):
     """Crée une routine : un enchaînement d'outils nommé et rejouable."""
-    return get_default_routine_manager().create_routine(
+    return _resolve(_services, "routines", get_default_routine_manager).create_routine(
         name,
         steps,
         description=description,
@@ -1872,24 +1878,27 @@ def create_routine(name, steps, description="", schedule=""):
     )
 
 
-def run_routine(name):
+def run_routine(name, *, _services=None):
     """Exécute une routine existante."""
-    return get_default_routine_manager().run_routine(name)
+    manager = _resolve(_services, "routines", get_default_routine_manager)
+    if _services is None:
+        return manager.run_routine(name)
+    return manager.run_routine(name, tool_functions=_services.require("tools").functions)
 
 
-def list_routines():
+def list_routines(*, _services=None):
     """Liste les routines enregistrées."""
-    return get_default_routine_manager().list_routines()
+    return _resolve(_services, "routines", get_default_routine_manager).list_routines()
 
 
-def describe_routine(name):
+def describe_routine(name, *, _services=None):
     """Détaille les étapes et la planification d'une routine."""
-    return get_default_routine_manager().describe_routine(name)
+    return _resolve(_services, "routines", get_default_routine_manager).describe_routine(name)
 
 
-def update_routine(name, steps=None, description=None, schedule=None, enabled=None):
+def update_routine(name, steps=None, description=None, schedule=None, enabled=None, *, _services=None):
     """Modifie une routine : étapes, description, planification ou activation."""
-    return get_default_routine_manager().update_routine(
+    return _resolve(_services, "routines", get_default_routine_manager).update_routine(
         name,
         steps=steps,
         description=description,
@@ -1898,9 +1907,9 @@ def update_routine(name, steps=None, description=None, schedule=None, enabled=No
     )
 
 
-def delete_routine(name, confirm=False):
+def delete_routine(name, confirm=False, *, _services=None):
     """Supprime une routine après confirmation."""
-    return get_default_routine_manager().delete_routine(name, confirm=confirm)
+    return _resolve(_services, "routines", get_default_routine_manager).delete_routine(name, confirm=confirm)
 
 
 def list_routine_tools():
@@ -1915,64 +1924,64 @@ def list_routine_tools():
 # ===========================================================================
 
 
-def activate_focus_mode(duration_minutes=None, close_distractions=True):
+def activate_focus_mode(duration_minutes=None, close_distractions=True, *, _services=None):
     """Active le mode focus : révisions protégées contre les distractions."""
-    return get_default_mode_manager().activate_focus_mode(
+    return _resolve(_services, "modes", get_default_mode_manager).activate_focus_mode(
         duration_minutes=duration_minutes,
         close_distractions=close_distractions,
     )
 
 
-def activate_game_mode(duration_minutes=None, close_background=True):
+def activate_game_mode(duration_minutes=None, close_background=True, *, _services=None):
     """Active le mode jeu : plus de perfs, aucune interaction visuelle."""
-    return get_default_mode_manager().activate_game_mode(
+    return _resolve(_services, "modes", get_default_mode_manager).activate_game_mode(
         duration_minutes=duration_minutes,
         close_background=close_background,
     )
 
 
-def disable_jarvis_mode():
+def disable_jarvis_mode(*, _services=None):
     """Désactive le mode focus/jeu et revient au comportement normal."""
-    return get_default_mode_manager().disable_mode()
+    return _resolve(_services, "modes", get_default_mode_manager).disable_mode()
 
 
-def get_jarvis_mode():
+def get_jarvis_mode(*, _services=None):
     """Indique si Jarvis est en mode normal, focus ou jeu."""
-    return get_default_mode_manager().status()
+    return _resolve(_services, "modes", get_default_mode_manager).status()
 
 
-def list_mode_applications(mode="game"):
+def list_mode_applications(mode="game", *, _services=None):
     """Liste les applications que le mode (jeu ou focus) ferme, et celles
     disponibles au catalogue, avec l'état de sélection de chacune.
 
     Utiliser avant de modifier la liste : l'utilisateur dit par exemple
     « quelles applications le mode jeu ferme-tu ? ».
     """
-    return get_default_mode_manager().list_mode_apps(mode)
+    return _resolve(_services, "modes", get_default_mode_manager).list_mode_apps(mode)
 
 
-def set_mode_applications(mode, applications):
+def set_mode_applications(mode, applications, *, _services=None):
     """Remplace la liste COMPLÈTE des applications fermées par un mode.
 
     ``applications`` : noms séparés par des virgules (« Discord, Spotify »)
     ou liste. Les noms inconnus sont conservés (application sur mesure).
     """
-    return get_default_mode_manager().set_mode_apps(mode, applications)
+    return _resolve(_services, "modes", get_default_mode_manager).set_mode_apps(mode, applications)
 
 
-def toggle_mode_application(mode, application, enabled=None):
+def toggle_mode_application(mode, application, enabled=None, *, _services=None):
     """Ajoute ou retire UNE application de la liste d'un mode.
 
     ``enabled=None`` inverse l'état (« dans le mode jeu, ne ferme plus
     Opera GX ») ; True/False fixe l'état. Ne touche que le mode demandé :
     la liste de l'autre mode reste intacte.
     """
-    return get_default_mode_manager().toggle_mode_app(mode, application, enabled)
+    return _resolve(_services, "modes", get_default_mode_manager).toggle_mode_app(mode, application, enabled)
 
 
-def reset_mode_applications(mode):
+def reset_mode_applications(mode, *, _services=None):
     """Rétablit la liste d'origine (comportement v1.x) d'un mode."""
-    return get_default_mode_manager().reset_mode_apps(mode)
+    return _resolve(_services, "modes", get_default_mode_manager).reset_mode_apps(mode)
 
 
 # ===========================================================================
@@ -2211,7 +2220,7 @@ def close_dashboard():
 # ===========================================================================
 
 
-def reset_conversation():
+def reset_conversation(*, _services=None):
     """Démarre une nouvelle conversation (contexte conversationnel vidé).
 
     N'efface NI la mémoire persistante, NI la configuration, NI les routines,
@@ -2219,11 +2228,15 @@ def reset_conversation():
     """
     from .conversation import get_default_conversation_context
 
-    context = get_default_conversation_context()
+    context = _resolve(_services, "conversation", get_default_conversation_context)
     before = context.snapshot()
     info = context.start_new_conversation(reason="outil reset_conversation")
     try:
-        notify_user("Conversation réinitialisée. La mémoire persistante est conservée.")
+        message = "Conversation réinitialisée. La mémoire persistante est conservée."
+        if _services is None:
+            notify_user(message)
+        else:
+            notify_user(message, _services=_services)
     except Exception:
         pass
     return _ok(
@@ -2235,11 +2248,11 @@ def reset_conversation():
     )
 
 
-def get_conversation_state():
+def get_conversation_state(*, _services=None):
     """Etat du contexte conversationnel (diagnostic, sans contenu des echanges)."""
     from .conversation import get_default_conversation_context
 
-    snapshot = get_default_conversation_context().snapshot()
+    snapshot = _resolve(_services, "conversation", get_default_conversation_context).snapshot()
     return _ok(
         action="get_conversation_state",
         conversation_id=snapshot["conversation_id"],
@@ -2257,9 +2270,9 @@ def get_conversation_state():
 # ===========================================================================
 
 
-def set_reminder(text, when="", recurrence="", routine=""):
+def set_reminder(text, when="", recurrence="", routine="", *, _services=None):
     """Programme un rappel durable, conservé après un redémarrage."""
-    return get_default_scheduler().add_reminder(
+    return _resolve(_services, "scheduler", get_default_scheduler).add_reminder(
         text,
         when=when or None,
         recurrence=recurrence,
@@ -2267,14 +2280,14 @@ def set_reminder(text, when="", recurrence="", routine=""):
     )
 
 
-def list_reminders(limit=20):
+def list_reminders(limit=20, *, _services=None):
     """Liste les rappels en attente."""
-    return get_default_scheduler().list_reminders(limit=limit)
+    return _resolve(_services, "scheduler", get_default_scheduler).list_reminders(limit=limit)
 
 
-def cancel_reminder(reminder_id=None, confirm=False):
+def cancel_reminder(reminder_id=None, confirm=False, *, _services=None):
     """Annule un rappel (ou tous, avec confirmation)."""
-    return get_default_scheduler().cancel_reminder(reminder_id=reminder_id, confirm=confirm)
+    return _resolve(_services, "scheduler", get_default_scheduler).cancel_reminder(reminder_id=reminder_id, confirm=confirm)
 
 
 
@@ -2359,13 +2372,13 @@ def create_text_file(text, filename="", request=""):
 # TÂCHES D'ARRIÈRE-PLAN (v1.8)
 # ===========================================================================
 
-def _task_manager():
+def _task_manager(*, _services=None):
     from .background_tasks import get_default_task_manager
-    return get_default_task_manager()
+    return _resolve(_services, "tasks", get_default_task_manager)
 
 
-def _find_background_task(task_id="", query="", *, completed_only=False):
-    manager = _task_manager()
+def _find_background_task(task_id="", query="", *, completed_only=False, _services=None):
+    manager = _task_manager(_services=_services)
     if str(task_id or "").strip():
         return manager.get_task(str(task_id).strip())
     candidates = manager.list_completed_tasks() if completed_only else manager.list_tasks()
@@ -2375,10 +2388,10 @@ def _find_background_task(task_id="", query="", *, completed_only=False):
     return candidates[0] if candidates else None
 
 
-def start_background_task(description, title="", priority="normal"):
+def start_background_task(description, title="", priority="normal", *, _services=None):
     """Démarre réellement une tâche, puis rend la main sans attendre son résultat."""
     try:
-        task = _task_manager().create_task(title, description, priority)
+        task = _task_manager(_services=_services).create_task(title, description, priority)
         return _ok(
             id=task.id, title=task.title, status=task.status.value,
             message=f"D'accord, je lance « {task.title} » en arrière-plan.",
@@ -2387,10 +2400,10 @@ def start_background_task(description, title="", priority="normal"):
         return _err(f"Impossible de lancer la tâche : {exc}")
 
 
-def list_background_tasks(view="all"):
+def list_background_tasks(view="all", *, _services=None):
     """Consulte la source de vérité du Task Manager."""
     try:
-        manager = _task_manager()
+        manager = _task_manager(_services=_services)
         normalized = _normalize_name(view)
         if normalized in {"active", "actives", "en cours", "running"}:
             tasks = manager.list_active_tasks()
@@ -2410,43 +2423,43 @@ def list_background_tasks(view="all"):
         return _err(exc)
 
 
-def get_background_task_result(task_id="", query=""):
+def get_background_task_result(task_id="", query="", *, _services=None):
     try:
-        task = _find_background_task(task_id, query, completed_only=not bool(task_id))
+        task = _find_background_task(task_id, query, completed_only=not bool(task_id), _services=_services)
         if task is None:
             return _err("Tâche introuvable.")
-        result = _task_manager().get_task_result(task.id, mark_seen=True)
+        result = _task_manager(_services=_services).get_task_result(task.id, mark_seen=True)
         return _ok(task=result)
     except Exception as exc:
         return _err(exc)
 
 
-def cancel_background_task(task_id="", query=""):
+def cancel_background_task(task_id="", query="", *, _services=None):
     try:
-        task = _find_background_task(task_id, query)
+        task = _find_background_task(task_id, query, _services=_services)
         if task is None:
             return _err("Tâche active introuvable.")
-        if not _task_manager().cancel_task(task.id):
+        if not _task_manager(_services=_services).cancel_task(task.id):
             return _err("Cette tâche est déjà terminée et ne peut plus être annulée.")
         return _ok(id=task.id, title=task.title, status="CANCELLED")
     except Exception as exc:
         return _err(exc)
 
 
-def retry_background_task(task_id="", query=""):
+def retry_background_task(task_id="", query="", *, _services=None):
     try:
-        task = _find_background_task(task_id, query)
+        task = _find_background_task(task_id, query, _services=_services)
         if task is None:
             return _err("Tâche introuvable.")
-        retried = _task_manager().retry_task(task.id)
+        retried = _task_manager(_services=_services).retry_task(task.id)
         return _ok(id=retried.id, title=retried.title, status=retried.status.value)
     except Exception as exc:
         return _err(exc)
 
 
-def get_background_quota():
+def get_background_quota(*, _services=None):
     try:
-        return _ok(**_task_manager().quota_status())
+        return _ok(**_task_manager(_services=_services).quota_status())
     except Exception as exc:
         return _err(exc)
 
@@ -2454,37 +2467,37 @@ def get_background_quota():
 # ENREGISTREMENT DES OUTILS
 # ===========================================================================
 
-def add_todo(text, due="", priority="normale"):
+def add_todo(text, due="", priority="normale", *, _services=None):
     """Tâche personnelle, distincte des tâches de génération en arrière-plan."""
-    return get_default_todo_manager().add_task(text, due, priority)
+    return _resolve(_services, "todo", get_default_todo_manager).add_task(text, due, priority)
 
 
-def list_todos(status="pending", limit=20):
-    return get_default_todo_manager().list_tasks(status, limit)
+def list_todos(status="pending", limit=20, *, _services=None):
+    return _resolve(_services, "todo", get_default_todo_manager).list_tasks(status, limit)
 
 
-def complete_todo(todo_id=None, text=""):
-    return get_default_todo_manager().complete_task(todo_id, text)
+def complete_todo(todo_id=None, text="", *, _services=None):
+    return _resolve(_services, "todo", get_default_todo_manager).complete_task(todo_id, text)
 
 
-def reopen_todo(todo_id=None, text=""):
-    return get_default_todo_manager().reopen_task(todo_id, text)
+def reopen_todo(todo_id=None, text="", *, _services=None):
+    return _resolve(_services, "todo", get_default_todo_manager).reopen_task(todo_id, text)
 
 
-def delete_todo(todo_id=None, text="", confirm=False):
-    return get_default_todo_manager().delete_task(todo_id, text, confirm)
+def delete_todo(todo_id=None, text="", confirm=False, *, _services=None):
+    return _resolve(_services, "todo", get_default_todo_manager).delete_task(todo_id, text, confirm)
 
 
-def clear_todos(confirm=False, only_done=False):
-    return get_default_todo_manager().clear_tasks(confirm, only_done)
+def clear_todos(confirm=False, only_done=False, *, _services=None):
+    return _resolve(_services, "todo", get_default_todo_manager).clear_tasks(confirm, only_done)
 
 
-def get_activity_log(day="aujourd'hui", limit=30):
-    return get_default_activity_log().query(day, limit)
+def get_activity_log(day="aujourd'hui", limit=30, *, _services=None):
+    return _resolve(_services, "activity", get_default_activity_log).query(day, limit)
 
 
-def clear_activity_log(confirm=False):
-    return get_default_activity_log().clear(confirm)
+def clear_activity_log(confirm=False, *, _services=None):
+    return _resolve(_services, "activity", get_default_activity_log).clear(confirm)
 
 
 _RAW_TOOL_FUNCTIONS = {
@@ -2666,7 +2679,7 @@ _RAW_TOOL_FUNCTIONS = {
 }
 
 
-def _guard_tool_function(name, function):
+def _guard_tool_function(name, function, services=None):
     """Protège un outil avec la politique du mode Jarvis courant.
 
     Le wrapper est enregistré dans TOOL_FUNCTIONS : il couvre donc les appels
@@ -2674,9 +2687,15 @@ def _guard_tool_function(name, function):
     aux tests et aux usages internes).
     """
     signature = inspect.signature(function)
+    accepts_services = "_services" in signature.parameters
+    public_signature = signature.replace(parameters=[
+        parameter for parameter in signature.parameters.values() if parameter.name != "_services"
+    ])
 
     @functools.wraps(function)
     def _wrapped(*args, **kwargs):
+        if "_services" in kwargs:
+            return _err("Argument interne interdit.")
         call_args = dict(kwargs)
         try:
             bound = signature.bind_partial(*args, **kwargs)
@@ -2684,16 +2703,26 @@ def _guard_tool_function(name, function):
         except Exception:
             pass
         try:
-            blocked = get_default_mode_manager().block_for_tool(name, call_args)
+            blocked = _resolve(services, "modes", get_default_mode_manager).block_for_tool(name, call_args)
         except Exception:
             return _err("Politique de sécurité indisponible : action refusée.")
         if blocked is not None:
             return blocked
-        result = function(*args, **kwargs)
-        log_action(name, success=isinstance(result, dict) and result.get("success") is True)
+        if services is not None and accepts_services:
+            result = function(*args, **kwargs, _services=services)
+        else:
+            result = function(*args, **kwargs)
+        success = isinstance(result, dict) and result.get("success") is True
+        if services is None:
+            log_action(name, success=success)
+        else:
+            try:
+                services.require("activity").log(name, success=success)
+            except Exception:
+                pass  # Activity logging has always been best effort.
         return result
 
-    _wrapped.__signature__ = signature  # type: ignore[attr-defined]
+    _wrapped.__signature__ = public_signature  # type: ignore[attr-defined]
     return _wrapped
 
 
@@ -2701,6 +2730,46 @@ TOOL_FUNCTIONS = {
     name: _guard_tool_function(name, function)
     for name, function in _RAW_TOOL_FUNCTIONS.items()
 }
+
+
+class RuntimeToolBindings:
+    """Per-runtime tools and an in-flight gate, independent of asyncio cancellation.
+
+    This is a lifecycle boundary, not an authorization or consent engine.
+    """
+
+    def __init__(self, services):
+        self._condition = threading.Condition()
+        self._closing = False
+        self._active = 0
+        self.functions = {
+            name: self._track(_guard_tool_function(name, function, services))
+            for name, function in _RAW_TOOL_FUNCTIONS.items()
+        }
+
+    def _track(self, function):
+        @functools.wraps(function)
+        def invoke(*args, **kwargs):
+            with self._condition:
+                if self._closing:
+                    return _err("Runtime en cours d'arrêt : outil indisponible.")
+                self._active += 1
+            try:
+                return function(*args, **kwargs)
+            finally:
+                with self._condition:
+                    self._active -= 1
+                    self._condition.notify_all()
+        return invoke
+
+    def reject_new(self):
+        with self._condition:
+            self._closing = True
+
+    def drain(self, timeout):
+        with self._condition:
+            self._closing = True
+            return self._condition.wait_for(lambda: self._active == 0, timeout=timeout)
 
 
 def _decl(name, description, properties=None, required=None):

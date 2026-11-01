@@ -273,7 +273,11 @@ class GeminiLive:
         speech_pace_provider=None,
         memory_manager: MemoryManager | None = None,
         conversation: ConversationContext | None = None,
+        tool_functions=None,
+        services=None,
     ):
+        self.tool_functions = tool_functions
+        self.services = services
         self.client = genai.Client(api_key=key)
         self.model = model
         self.user = user
@@ -1059,7 +1063,7 @@ class GeminiLive:
             return False
         action, page = parsed
         name = "open_dashboard" if action == "open" else "close_dashboard"
-        fn = TOOL_FUNCTIONS.get(name)
+        fn = (TOOL_FUNCTIONS if getattr(self, "tool_functions", None) is None else self.tool_functions).get(name)
         if fn is None:
             return False
         args: dict = {"page": page} if action == "open" and page else {}
@@ -1080,13 +1084,16 @@ class GeminiLive:
         log.info("filet Dashboard : %s(page=%s) exécuté localement (aucun appel d'outil du modèle)", name, page)
         return True
 
-    @staticmethod
-    def _notify_reset(info) -> None:
+    def _notify_reset(self, info) -> None:
         message = "Conversation réinitialisée. La mémoire persistante est conservée."
         try:
             from .routine_actions import notify_user
 
-            notify_user(message)
+            services = getattr(self, "services", None)
+            if services is None:
+                notify_user(message)
+            else:
+                notify_user(message, _services=services)
         except Exception:  # pragma: no cover - la notification ne doit rien casser
             print(f"[Jarvis] {message}")
         log.info("conversation réinitialisée -> %s", info.get("conversation_id", "?"))
@@ -1329,7 +1336,9 @@ class GeminiLive:
 
         mode_context = ""
         try:
-            mode_context = get_default_mode_manager().system_instruction()
+            services = getattr(self, "services", None)
+            mode = services.require("modes") if services is not None else get_default_mode_manager()
+            mode_context = mode.system_instruction()
         except Exception:
             mode_context = ""
 
@@ -3159,7 +3168,7 @@ class GeminiLive:
                 try:
                     for c in tc.function_calls:
 
-                        fn = TOOL_FUNCTIONS.get(c.name)
+                        fn = (TOOL_FUNCTIONS if getattr(self, "tool_functions", None) is None else self.tool_functions).get(c.name)
                         args = dict(c.args or {})
                         if fn is not None:
                             self._record_trace(
