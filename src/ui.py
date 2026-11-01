@@ -370,14 +370,18 @@ def _run_voice_loop(runtime, stop_event: threading.Event) -> None:
         traceback.print_exc()
 
 
-def _start_voice(config, presence_hook, voice_hook, stop_event, desktop_hook=None) -> threading.Thread:
+def _start_voice(config, presence_hook, voice_hook, stop_event, desktop_hook=None, *, runtime=None) -> threading.Thread:
     from .core import CoreRuntime, RuntimeHooks
 
-    runtime = CoreRuntime(config, RuntimeHooks(
+    hooks = RuntimeHooks(
         presence=presence_hook, voice_level=voice_hook, desktop=desktop_hook,
         controls=menu_state.LIVE, voice_options=menu_state.voice_backend_kwargs(),
         reason="démarrage interface",
-    ))
+    )
+    if runtime is None:
+        runtime = CoreRuntime(config, hooks)
+    else:
+        runtime.hooks = hooks
     thread = threading.Thread(target=_run_voice_loop, args=(runtime, stop_event),
                               name="jarvis-voice", daemon=True)
     # The UI only requests lifecycle operations; it never assembles a backend.
@@ -612,12 +616,12 @@ def _fanout(primary, secondary):
     return _call
 
 
-def _create_dashboard(interface_controller, quit_callback):
+def _create_dashboard(interface_controller, quit_callback, *, runtime=None):
     """Crée le contrôleur Dashboard ; toute erreur laisse Jarvis intact."""
     try:
         from UI.dashboard.controller import DashboardController
 
-        return DashboardController(interface_controller=interface_controller, quit_callback=quit_callback)
+        return DashboardController(interface_controller=interface_controller, quit_callback=quit_callback, core=runtime)
     except Exception as exc:
         print(f"[Dashboard] Indisponible : {exc}")
         traceback.print_exc()
@@ -692,7 +696,10 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
 
     # v1.9 : Dashboard (troisième interface). Léger tant qu'il n'est pas
     # ouvert ; il coexiste avec l'orbe et le Desktop sans les remplacer.
-    dashboard = _create_dashboard(controller, _quit)
+    from .core import CoreRuntime
+
+    runtime = CoreRuntime(config)
+    dashboard = _create_dashboard(controller, _quit, runtime=runtime)
 
     # L'éditeur d'apparence applique ses changements à l'overlay en cours.
     from UI import desktop_appearance_dialog
@@ -752,6 +759,7 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
         energy_hook,
         stop_event,
         desktop_hook,
+        runtime=runtime,
     )
     shutdown_done = False
 

@@ -72,3 +72,70 @@ def test_dashboard_hub_observes_runtime_services_and_detaches(tmp_path):
     result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], text=True,
                             capture_output=True, timeout=30, env=os.environ.copy())
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_hub_uses_injected_registry_and_event_driven_attachment(tmp_path):
+    script = textwrap.dedent('''
+        import asyncio
+        import os
+        import sys
+        from pathlib import Path
+        from unittest.mock import patch
+        from PySide6.QtCore import QCoreApplication
+        from src import conversation, memory, scheduler
+        from src.background_tasks import manager as tasks
+        from src.core.runtime import CoreRuntime, RuntimeFactories
+        from src.runtime_status import RuntimeStatusBoard
+        from UI.dashboard.config import ConfigStore
+        from UI.dashboard.hub import DashboardHub
+        from tests.test_core_runtime import Audio, Provider, AuthFailure, RecoveryFailure, config
+
+        app = QCoreApplication([])
+        root = Path(sys.argv[1])
+        os.environ['JARVIS_SCHEDULE_DATABASE_PATH'] = str(root / 'schedule.db')
+        cfg = config()
+        cfg.memory_database_path = str(root / 'memory.db')
+        status = RuntimeStatusBoard()
+        factories = RuntimeFactories(
+            Audio, Provider, memory.MemoryManager, memory.set_default_memory_manager,
+            conversation.get_default_conversation_context, scheduler.start_default_scheduler,
+            lambda key: tasks.configure_default_task_manager(
+                key, storage_path=root / 'tasks.json', output_dir=root / 'out'),
+            AuthFailure, RecoveryFailure,
+        )
+        async def scenario():
+            runtime = CoreRuntime(cfg, factories=factories, status=status)
+            hub = DashboardHub(ConfigStore(None), core=runtime)
+            hub.start()
+            assert hub.conversation() is None
+            assert not hub._tasks_timer.isActive()
+            task = asyncio.create_task(runtime.run())
+            while runtime.provider is None:
+                await asyncio.sleep(0)
+            await runtime.provider.ready.wait()
+            app.processEvents()
+            manager = runtime.services.require('tasks')
+            context = runtime.services.require('conversation')
+            assert hub.core is runtime and hub.runtime is status
+            assert hub.conversation() is context
+            assert hub.memory.manager() is runtime.services.require('memory')
+            assert hub.tasks.manager() is manager is hub._task_manager
+            assert runtime.provider.kwargs['conversation'] is context
+            assert runtime.provider.kwargs['memory_manager'] is hub.memory.manager()
+            before = context.listener_count()
+            hub.shutdown()
+            hub.shutdown()
+            assert context.listener_count() == before - 1
+            assert status.hook_count() == 0
+            assert hub._unsubscribe_services is None
+            runtime.request_stop()
+            runtime.request_stop()
+            await asyncio.wait_for(task, 8)
+            assert not manager._thread.is_alive()
+        with patch.object(conversation, '_DEFAULT', None), patch.object(memory, '_DEFAULT_MANAGER', None), \\
+             patch.object(tasks, '_DEFAULT', None), patch.object(scheduler, '_DEFAULT_SCHEDULER', None):
+            asyncio.run(scenario())
+    ''')
+    result = subprocess.run([sys.executable, '-c', script, str(tmp_path)], text=True,
+                            capture_output=True, timeout=30, env=os.environ.copy())
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -13,6 +13,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .context import ContextEngine
 from .events import EventBus, RuntimeEvent
 from .services import ServiceRegistry
 from ..runtime_status import RUNTIME, EngineState, redact_secrets
@@ -57,6 +58,21 @@ def default_factories() -> RuntimeFactories:
                             configure_default_task_manager, AuthError, SessionRecoveryExhausted)
 
 
+def _default_todo():
+    from ..todo import get_default_todo_manager
+    return get_default_todo_manager()
+
+
+def _default_routines():
+    from ..routines import get_default_routine_manager
+    return get_default_routine_manager()
+
+
+def _default_modes():
+    from ..modes import get_default_mode_manager
+    return get_default_mode_manager()
+
+
 class CoreRuntime:
     """Owns a single voice backend and its resources for one application run."""
 
@@ -71,6 +87,13 @@ class CoreRuntime:
         self.status = status
         self.events = EventBus()
         self.services = ServiceRegistry()
+        self.services.register("status", self.status)
+        self.services.register("context", ContextEngine(self.services))
+        # Legacy managers retain their existing ownership and are imported only
+        # when requested. This preserves their shared singleton identities.
+        self.services.register_lazy("todo", _default_todo)
+        self.services.register_lazy("routines", _default_routines)
+        self.services.register_lazy("modes", _default_modes)
         self.audio = None
         self.provider = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -276,6 +299,7 @@ class CoreRuntime:
         self.status.update(memory_state="disabled" if not memory.enabled else "ok" if memory.available else "failed")
         conversation = services.register("conversation", factories.conversation())
         conversation.start_new_conversation(reason=hooks.reason)
+        self.events.publish(RuntimeEvent("service_registered", "conversation"))
         try:
             scheduler = factories.scheduler()
             services.register("scheduler", scheduler,
@@ -287,6 +311,7 @@ class CoreRuntime:
             services.register("tasks", manager, close=lambda: self._stop_threaded_service(
                 "tasks", manager, lambda: manager.close(wait=True)))
             self.status.update(tasks_state="ok", tasks_detail="")
+            self.events.publish(RuntimeEvent("service_registered", "tasks"))
         except Exception as exc:
             log.warning("Background tasks unavailable: %s", redact_secrets(str(exc), limit=300))
             self.status.update(tasks_state="failed", tasks_detail=str(exc))

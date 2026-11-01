@@ -230,7 +230,8 @@ class ConversationWidget(DashboardWidget):
         if not self.context.confirm("conversation.new", "Démarrer une nouvelle conversation ?",
                                     "Le contexte conversationnel est effacé. La mémoire persistante est conservée."):
             return
-        result = conversation_new()
+        core = getattr(self.context.hub, "core", None)
+        result = conversation_new(core.services.require if core is not None else None)
         self.context.toast(result.message, "success" if result.success else "error")
 
     # -- évènements vocaux réels ------------------------------------------------------------

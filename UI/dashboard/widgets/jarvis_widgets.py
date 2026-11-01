@@ -366,10 +366,12 @@ class QuickActionsWidget(DashboardWidget):
 
     def _host(self) -> ActionHost:
         controller = self.context.controller
+        core = getattr(self.context.hub, "core", None)
         return ActionHost(
             set_interface_mode=getattr(controller, "set_interface_mode", None),
             current_interface_mode=getattr(controller, "current_interface_mode", None),
             open_path=self.context.open_path,
+            service_getter=core.services.require if core is not None else None,
         )
 
     def on_activate(self) -> None:

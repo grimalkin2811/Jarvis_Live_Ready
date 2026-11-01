@@ -71,6 +71,7 @@ class DashboardController(QObject):
         quit_callback: Callable[[], None] | None = None,
         state_path: str | None = None,
         runtime=RUNTIME,
+        core=None,
         hub: DashboardHub | None = None,
         registry=None,
         dialog_executor: Callable[[QDialog], Any] | None = None,
@@ -85,7 +86,7 @@ class DashboardController(QObject):
         kwargs = {"reduced_motion_probe": reduced_motion_probe} if reduced_motion_probe is not None else {}
         self.theme_manager = ThemeManager(self.store, self, **kwargs)
         self._registry = registry
-        self.hub = hub or DashboardHub(self.store, parent=self, runtime=runtime)
+        self.hub = hub or DashboardHub(self.store, parent=self, runtime=runtime, core=core)
         self.interface_controller = interface_controller
         self.tray = tray
         self.notification_bridge = notification_bridge
@@ -577,9 +578,13 @@ class DashboardController(QObject):
         if not self.store.config.general.open_on_launch:
             return False
         try:
-            from src.modes import get_default_mode_manager
-
-            if get_default_mode_manager().should_suppress_visuals():
+            core = getattr(self.hub, "core", None)
+            if core is None:
+                from src.modes import get_default_mode_manager
+                manager = get_default_mode_manager()
+            else:
+                manager = core.services.require("modes")
+            if manager.should_suppress_visuals():
                 return False
         except Exception:
             pass

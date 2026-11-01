@@ -3,6 +3,7 @@
 Heavy audio, GUI and provider imports are deliberately deferred until startup.
 """
 
+from .context import ContextEngine, ContextRequest, ContextSnapshot
 from .runtime import CoreRuntime, RuntimeHooks
 
-__all__ = ["CoreRuntime", "RuntimeHooks"]
+__all__ = ["CoreRuntime", "RuntimeHooks", "ContextEngine", "ContextRequest", "ContextSnapshot"]

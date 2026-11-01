@@ -57,10 +57,12 @@ class ActionHost:
         set_interface_mode: Callable[[str], str] | None = None,
         current_interface_mode: Callable[[], str] | None = None,
         open_path: Callable[[str], bool] | None = None,
+        service_getter: Callable[[str], Any] | None = None,
     ) -> None:
         self.set_interface_mode = set_interface_mode
         self.current_interface_mode = current_interface_mode
         self.open_path = open_path
+        self.service_getter = service_getter
 
 
 def _live():
@@ -85,10 +87,16 @@ def voice_stop() -> ActionResult:
     return _fail("Aucun moteur vocal branché : rien à interrompre.")
 
 
-def conversation_new() -> ActionResult:
-    from src.conversation import get_default_conversation_context
-
-    info = get_default_conversation_context().start_new_conversation(reason="Dashboard")
+def conversation_new(service_getter=None) -> ActionResult:
+    try:
+        if service_getter is None:
+            from src.conversation import get_default_conversation_context
+            context = get_default_conversation_context()
+        else:
+            context = service_getter("conversation")
+        info = context.start_new_conversation(reason="Dashboard")
+    except Exception:
+        return _fail("Contexte de conversation indisponible.")
     return _ok(
         "Nouvelle conversation démarrée (mémoire persistante conservée).",
         conversation_id=info.get("conversation_id"),
@@ -125,11 +133,14 @@ def _logs_dir() -> str:
     return str(paths.logs_dir())
 
 
-def routine_names() -> list[str]:
+def routine_names(service_getter=None) -> list[str]:
     try:
-        from src.routines import get_default_routine_manager
-
-        result = get_default_routine_manager().list_routine_names()
+        if service_getter is None:
+            from src.routines import get_default_routine_manager
+            manager = get_default_routine_manager()
+        else:
+            manager = service_getter("routines")
+        result = manager.list_routine_names()
     except Exception:
         return []
     if not result.get("success"):
@@ -137,10 +148,13 @@ def routine_names() -> list[str]:
     return [str(item["name"]) for item in result.get("routines", []) if item.get("enabled")][:8]
 
 
-def run_routine(name: str) -> ActionResult:
-    from src.routines import get_default_routine_manager
-
-    result = get_default_routine_manager().run_routine(name)
+def run_routine(name: str, service_getter=None) -> ActionResult:
+    if service_getter is None:
+        from src.routines import get_default_routine_manager
+        manager = get_default_routine_manager()
+    else:
+        manager = service_getter("routines")
+    result = manager.run_routine(name)
     if result.get("success"):
         return _ok(f"Routine « {name} » exécutée.", result=result)
     return _fail(f"Routine « {name} » : {result.get('error') or 'échec partiel'}", result=result)
@@ -154,7 +168,8 @@ def build_actions(host: ActionHost) -> list[QuickAction]:
         QuickAction("voice.stop", "voice.stop", "Interrompre", "Couper la réponse vocale en cours.", "■",
                     voice_stop),
         QuickAction("conversation.new", "conversation.new", "Nouvelle conversation",
-                    "Efface le contexte conversationnel (pas la mémoire).", "↺", conversation_new),
+                    "Efface le contexte conversationnel (pas la mémoire).", "↺",
+                    lambda: conversation_new(host.service_getter)),
     ]
 
     def _mode_action(mode: str, label: str, icon: str) -> QuickAction:
@@ -199,10 +214,10 @@ def build_actions(host: ActionHost) -> list[QuickAction]:
     actions.append(_folder_action("folder.documents", "Documents", _documents_dir))
     actions.append(_folder_action("folder.logs", "Journaux", _logs_dir))
 
-    for name in routine_names():
+    for name in routine_names(host.service_getter):
         actions.append(
             QuickAction("routine.run", f"routine.run:{name}", name[:24], f"Lance la routine « {name} ».", "▷",
-                        (lambda n=name: run_routine(n)), blocking=True, group="Routines")
+                        (lambda n=name: run_routine(n, host.service_getter)), blocking=True, group="Routines")
         )
     try:
         from src import protocols
@@ -212,9 +227,12 @@ def build_actions(host: ActionHost) -> list[QuickAction]:
                 from src import protocols as _p
 
                 try:
-                    from src.modes import get_default_mode_manager
-
-                    if get_default_mode_manager().should_suppress_visuals():
+                    if host.service_getter is None:
+                        from src.modes import get_default_mode_manager
+                        manager = get_default_mode_manager()
+                    else:
+                        manager = host.service_getter("modes")
+                    if manager.should_suppress_visuals():
                         return _fail("Mode jeu actif : affichage plein écran bloqué.")
                 except Exception:
                     pass

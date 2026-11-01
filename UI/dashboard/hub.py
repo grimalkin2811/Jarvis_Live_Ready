@@ -64,6 +64,7 @@ class DashboardHub(QObject):
     _log_relay = Signal(object)
     _external_notification_relay = Signal(str, str)
     _resource_relay = Signal(object)
+    _services_relay = Signal(object)
 
     # Signaux publics (toujours dans le thread Qt).
     engine_changed = Signal(object)
@@ -88,30 +89,41 @@ class DashboardHub(QObject):
                  memory_service: MemoryService | None = None,
                  todo_service: TodoService | None = None,
                  resource_monitor: ResourceMonitor | None = None,
-                 runtime=RUNTIME) -> None:
+                 runtime=RUNTIME, core=None) -> None:
         super().__init__(parent)
         self.store = store
-        self.runtime = runtime
+        self.core = core
+        self.runtime = core.services.require("status") if core is not None else runtime
         self.jobs = JobRunner(parent=self)
-        self.tasks = tasks_service or TasksService()
-        self.memory = memory_service or MemoryService()
-        self.todo = todo_service or TodoService()
+        services = core.services if core is not None else None
+        if services is not None:
+            self.tasks = tasks_service or TasksService(lambda: services.require("tasks"))
+            self.memory = memory_service or MemoryService(lambda: services.require("memory"))
+            self.todo = todo_service or TodoService(lambda: services.require("todo"))
+        else:
+            self.tasks = tasks_service or TasksService()
+            self.memory = memory_service or MemoryService()
+            self.todo = todo_service or TodoService()
         self.resources = resource_monitor or ResourceMonitor(interval=store.config.monitoring.interval_s)
         self.security = SecurityPolicy.default(store.config.security.confirm)
         self.logs = LogRingHandler()
         self.notifications = NotificationCenter(lambda: self.store.config.notifications)
         if conversation_getter is None:
-            def conversation_getter():
-                from src.conversation import get_default_conversation_context
+            if services is not None:
+                def conversation_getter():
+                    return services.require("conversation")
+            else:
+                def conversation_getter():
+                    from src.conversation import get_default_conversation_context
 
-                return get_default_conversation_context()
+                    return get_default_conversation_context()
         self._conversation_getter = conversation_getter
         self._conversation = None
         self._task_manager = None
         self._task_hook = None
         self._presence = "hidden"
         self._interface_mode = ""
-        self._engine = runtime.snapshot()
+        self._engine = self.runtime.snapshot()
         self._network_incident = 0
         self._last_engine_state = self._engine.get("engine_state")
         self._audio_alerted = False
@@ -128,6 +140,8 @@ class DashboardHub(QObject):
         self._log_relay.connect(self.log_entry.emit, Qt.QueuedConnection)
         self._external_notification_relay.connect(self._on_external_notification, Qt.QueuedConnection)
         self._resource_relay.connect(self._on_resource_sample, Qt.QueuedConnection)
+        self._services_relay.connect(self._on_service_registered, Qt.QueuedConnection)
+        self._unsubscribe_services = None
 
         self._tasks_timer = QTimer(self)
         self._tasks_timer.setInterval(2000)
@@ -149,6 +163,8 @@ class DashboardHub(QObject):
         if self._started:
             return
         self._started = True
+        if self.core is not None:
+            self._unsubscribe_services = self.core.events.subscribe(self._services_relay.emit)
         self.runtime.add_hook(self._runtime_hook)
         self.notifications.add_listener(self._center_hook)
         attach_log(self.logs)
@@ -161,7 +177,7 @@ class DashboardHub(QObject):
             pass
         self._attach_conversation()
         self._attach_tasks()
-        if self._task_manager is None:
+        if self._task_manager is None and self.core is None:
             self._tasks_timer.start()
         self.apply_monitoring_prefs()
         self._engine = self.runtime.snapshot()
@@ -171,6 +187,9 @@ class DashboardHub(QObject):
             return
         self._started = False
         self._tasks_timer.stop()
+        if self._unsubscribe_services is not None:
+            self._unsubscribe_services()
+            self._unsubscribe_services = None
         self.runtime.remove_hook(self._runtime_hook)
         self.notifications.remove_listener(self._center_hook)
         self.logs.remove_listener(self._log_hook)
@@ -193,6 +212,16 @@ class DashboardHub(QObject):
         self._sync_resource_subscription()
         self.resources.stop()
         self.jobs.shutdown()
+
+    @Slot(object)
+    def _on_service_registered(self, event) -> None:
+        if not self._started or event.kind != "service_registered":
+            return
+        if event.detail == "conversation":
+            self._attach_conversation()
+            self.conversation_changed.emit({"reason": "attached"})
+        elif event.detail == "tasks":
+            self._attach_tasks()
 
     @property
     def started(self) -> bool:

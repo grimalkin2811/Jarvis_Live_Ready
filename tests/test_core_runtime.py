@@ -160,7 +160,8 @@ def test_runtime_shared_lifecycle_and_cancellation():
         assert closed == ["tasks", "scheduler"]
         assert status.snapshot()["engine_state"] == EngineState.STOPPED
         assert not status.snapshot()["text_input"]
-        assert events == ["starting", "audio_started", "connected", "stopped"]
+        assert events == ["starting", "service_registered", "service_registered",
+                          "audio_started", "connected", "stopped"]
     asyncio.run(scenario())
 
 
