@@ -246,7 +246,7 @@ class ModeAppsDialog(QDialog):
 _DIALOG: ModeAppsDialog | None = None
 
 
-def show_mode_apps_dialog(parent=None) -> ModeAppsDialog:
+def show_mode_apps_dialog(parent=None, *, manager=None) -> ModeAppsDialog:
     """Une seule fenêtre partagée entre l'orbe et la zone de notification."""
     global _DIALOG
     if _DIALOG is None or not _DIALOG.isVisible():
@@ -256,7 +256,7 @@ def show_mode_apps_dialog(parent=None) -> ModeAppsDialog:
             # _DIALOG à None sans toucher à une éventuelle nouvelle instance.
             _DIALOG.deleteLater()
             _DIALOG = None
-        _DIALOG = ModeAppsDialog(parent)
+        _DIALOG = ModeAppsDialog(parent, manager=manager)
         _DIALOG.setAttribute(Qt.WA_DeleteOnClose)
         # À la destruction effective, le singleton est remis à None — sans
         # écraser une nouvelle instance créée entre-temps.

@@ -493,18 +493,22 @@ class BootSequenceOverlay(QWidget):
 class ProtocolPresenter(QObject):
     """Relie ``src.protocols`` à l'overlay, quel que soit le thread émetteur."""
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(self, parent: QObject | None = None, *, core=None) -> None:
         super().__init__(parent)
+        self.core = core
         self.overlay = BootSequenceOverlay()
         protocols.add_listener(self._on_event)
 
     def _visuals_suppressed(self) -> bool:
         try:
-            from src.modes import get_default_mode_manager
-
-            return bool(get_default_mode_manager().should_suppress_visuals())
+            if self.core is None:
+                from src.modes import get_default_mode_manager
+                manager = get_default_mode_manager()
+            else:
+                manager = self.core.services.require("modes")
+            return bool(manager.should_suppress_visuals())
         except Exception:
-            return False
+            return self.core is not None
 
     def _on_event(self, event: dict) -> None:
         # Appelé depuis le thread du protocole : on repasse par un signal.

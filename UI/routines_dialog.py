@@ -28,6 +28,7 @@ class RoutinesDialog(QDialog):
     def __init__(self, parent=None, *, manager=None, scheduler=None) -> None:
         super().__init__(parent)
         self.manager = manager if manager is not None else get_default_routine_manager()
+        self._closed = False
         self._running_name = None
         self._run_finished.connect(self._on_run_finished, Qt.QueuedConnection)
         self.scheduler = scheduler if scheduler is not None else get_default_scheduler()
@@ -251,7 +252,7 @@ class RoutinesDialog(QDialog):
 
     @Slot(str, object)
     def _on_run_finished(self, name: str, result: object) -> None:
-        if self._running_name != name:
+        if self._closed or self._running_name != name:
             return
         self._running_name = None
         self.refresh(force=True)
@@ -283,17 +284,23 @@ class RoutinesDialog(QDialog):
         # laisser un interrupteur vert qui ne correspond pas à la réalité.
         self.refresh(force=True)
 
+    def closeEvent(self, event) -> None:
+        self._closed = True
+        _forget_dialog(self)
+        super().closeEvent(event)
+
 
 _DIALOG: RoutinesDialog | None = None
 
 
-def show_routines_dialog(parent=None) -> RoutinesDialog:
+def show_routines_dialog(parent=None, *, manager=None, scheduler=None) -> RoutinesDialog:
     """Un seul catalogue partagé entre l'orbe et la zone de notification."""
     global _DIALOG
     if _DIALOG is None:
-        _DIALOG = RoutinesDialog(parent)
+        _DIALOG = RoutinesDialog(parent, manager=manager, scheduler=scheduler)
         _DIALOG.setAttribute(Qt.WA_DeleteOnClose)
-        _DIALOG.destroyed.connect(_forget_dialog)
+        current = _DIALOG
+        _DIALOG.destroyed.connect(lambda *_: _forget_dialog(current))
     _DIALOG.refresh(force=True)
     _DIALOG.show()
     _DIALOG.raise_()
@@ -301,6 +308,7 @@ def show_routines_dialog(parent=None) -> RoutinesDialog:
     return _DIALOG
 
 
-def _forget_dialog(*_args) -> None:
+def _forget_dialog(instance=None) -> None:
     global _DIALOG
-    _DIALOG = None
+    if instance is None or _DIALOG is instance:
+        _DIALOG = None

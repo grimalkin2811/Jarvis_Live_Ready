@@ -659,6 +659,12 @@ class ConversationContext:
             return messages[-limit:] if limit else ()
         return messages
 
+    def context_messages(self, limit: int = 30) -> tuple[str, tuple[Message, ...]]:
+        """Atomically capture conversation identity and recent messages."""
+        with self._lock:
+            messages = tuple(self._messages[-max(0, limit):]) if limit > 0 else ()
+            return self._conversation_id, messages
+
     def messages_for_provider(
         self,
         provider: str | None = None,

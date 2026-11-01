@@ -18,6 +18,7 @@ class BackgroundTasksDialog(QDialog):
     def __init__(self, manager, parent=None):
         super().__init__(parent)
         self.manager = manager
+        self._closed = False
         self.setWindowTitle("Jarvis — Tâches d'arrière-plan")
         self.resize(900, 620)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -73,6 +74,8 @@ class BackgroundTasksDialog(QDialog):
 
     @Slot()
     def refresh(self) -> None:
+        if self._closed:
+            return
         selected = self.list.currentItem().data(Qt.UserRole) if self.list.currentItem() else None
         active = self.manager.list_active_tasks()
         unread = self.manager.list_unread_completed_tasks()
@@ -92,6 +95,8 @@ class BackgroundTasksDialog(QDialog):
 
     @Slot(object, object)
     def _select(self, current, _previous) -> None:
+        if self._closed:
+            return
         if current is None:
             self.detail.clear()
             self.cancel_button.setEnabled(False)
@@ -116,35 +121,43 @@ class BackgroundTasksDialog(QDialog):
 
     @Slot()
     def _cancel(self) -> None:
+        if self._closed:
+            return
         item = self.list.currentItem()
         if item and not self.manager.cancel_task(item.data(Qt.UserRole)):
             QMessageBox.information(self, "Jarvis", "Cette tâche ne peut plus être annulée.")
 
     def closeEvent(self, event) -> None:
+        self._closed = True
         self.manager.remove_hook(self._hook)
+        _clear_dialog(self)
         super().closeEvent(event)
 
 
 _DIALOG = None
 
 
-def show_background_tasks_dialog(parent=None) -> BackgroundTasksDialog | None:
+def show_background_tasks_dialog(parent=None, *, manager=None) -> BackgroundTasksDialog | None:
     global _DIALOG
     try:
-        from src.background_tasks import get_default_task_manager
-        manager = get_default_task_manager()
+        if manager is None:
+            from src.background_tasks import get_default_task_manager
+            manager = get_default_task_manager()
     except Exception as exc:
         QMessageBox.warning(parent, "Jarvis — Tâches", str(exc))
         return None
     if _DIALOG is None:
         _DIALOG = BackgroundTasksDialog(manager, parent)
-        _DIALOG.destroyed.connect(lambda *_: _clear_dialog())
+        _DIALOG.setAttribute(Qt.WA_DeleteOnClose)
+        current = _DIALOG
+        _DIALOG.destroyed.connect(lambda *_: _clear_dialog(current))
     _DIALOG.show()
     _DIALOG.raise_()
     _DIALOG.activateWindow()
     return _DIALOG
 
 
-def _clear_dialog():
+def _clear_dialog(instance=None):
     global _DIALOG
-    _DIALOG = None
+    if instance is None or _DIALOG is instance:
+        _DIALOG = None

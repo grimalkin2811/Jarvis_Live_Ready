@@ -318,7 +318,7 @@ ROUTINE_STATIC_ITEMS = [
 ]
 
 
-def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
+def _routine_names(limit: int = ROUTINE_SLOTS, service_getter=None) -> List[str]:
     """Noms des routines enregistrées, sans jamais faire échouer l'UI.
 
     Utilise ``list_routine_names()`` (lecture légère, sans sanitization) :
@@ -326,9 +326,12 @@ def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
     et ne doit PAS importer le registre ``src.tools`` (~50 ms + pycaw).
     """
     try:
-        from src.routines import get_default_routine_manager
-
-        result = get_default_routine_manager().list_routine_names()
+        if service_getter is None:
+            from src.routines import get_default_routine_manager
+            manager = get_default_routine_manager()
+        else:
+            manager = service_getter("routines")
+        result = manager.list_routine_names()
         if not result.get("success"):
             return []
         # Les presets ont leur panneau défilant : ne pas les tronquer
@@ -339,9 +342,9 @@ def _routine_names(limit: int = ROUTINE_SLOTS) -> List[str]:
         return []
 
 
-def build_routines_spec() -> MenuSpec:
+def build_routines_spec(service_getter=None, *, load=True) -> MenuSpec:
     """Construit le menu Routines à partir des routines réellement définies."""
-    names = _routine_names()
+    names = _routine_names(service_getter=service_getter) if load else []
     items = [MenuItemSpec(name[:22], "pulse", routine_name=name) for name in names]
     items = [ROUTINE_STATIC_ITEMS[0]] + items + ROUTINE_STATIC_ITEMS[1:]
     return MenuSpec(
@@ -358,13 +361,39 @@ def build_routines_spec() -> MenuSpec:
     )
 
 
-MENU_SPECS.append(build_routines_spec())
+# Importing the UI must not instantiate a business service before the Core.
+MENU_SPECS.append(build_routines_spec(load=False))
 
 
 class MorphingOrbWidget(QWidget):
 
-    def __init__(self, interface_mode_getter=None, interface_mode_setter=None) -> None:
+    def _service(self, name):
+        if self._closed:
+            raise RuntimeError("Orb interface is closed")
+        if self.core is not None:
+            return self.core.services.require(name)
+        # Compatibility for standalone widgets and existing callers only.
+        if name == "memory":
+            from src.memory import get_default_memory_manager
+            return get_default_memory_manager()
+        if name == "tasks":
+            from src.background_tasks import get_default_task_manager
+            return get_default_task_manager()
+        if name == "routines":
+            from src.routines import get_default_routine_manager
+            return get_default_routine_manager()
+        if name == "scheduler":
+            from src.scheduler import get_default_scheduler
+            return get_default_scheduler()
+        if name == "modes":
+            from src.modes import get_default_mode_manager
+            return get_default_mode_manager()
+        raise LookupError(name)
+
+    def __init__(self, interface_mode_getter=None, interface_mode_setter=None, *, core=None) -> None:
         super().__init__()
+        self.core = core
+        self._closed = False
 
         # Injectés par ``src.ui.InterfaceModeController`` en production. Les
         # fallbacks relisent/écrivent directement config.json pour conserver
@@ -1301,6 +1330,7 @@ class MorphingOrbWidget(QWidget):
         super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._closed = True
         # Sauvegarde via les wrappers (le flag « dirty » du slider
         # d'opacité est also consigné) : quels que soient le chemin de
         # fermeture (Échap, System → Quit, icône de notification,
@@ -1344,7 +1374,8 @@ class MorphingOrbWidget(QWidget):
             try:
                 from .boot_sequence import ProtocolPresenter
 
-                self._protocol_presenter = ProtocolPresenter(self)
+                kwargs = {"core": self.core} if self.core is not None else {}
+                self._protocol_presenter = ProtocolPresenter(self, **kwargs)
             except Exception:
                 self._protocol_presenter = None
         return self._protocol_presenter
@@ -1585,13 +1616,12 @@ class MorphingOrbWidget(QWidget):
             return self._visuals_suppressed_by_mode
         self._mode_checked_at = self.time
         try:
-            from src.modes import get_default_mode_manager
 
             self._visuals_suppressed_by_mode = bool(
-                get_default_mode_manager().should_suppress_visuals()
+                self._service("modes").should_suppress_visuals()
             )
         except Exception:
-            self._visuals_suppressed_by_mode = False
+            self._visuals_suppressed_by_mode = self.core is not None
         return self._visuals_suppressed_by_mode
 
     # =========================================================
@@ -1798,22 +1828,19 @@ class MorphingOrbWidget(QWidget):
     def _memory_value(self, label: str) -> str:
         if label == "Memory Count":
             def _count():
-                from src.memory import get_default_memory_manager
-                result = get_default_memory_manager().list_memories(limit=500)
+                result = self._service("memory").list_memories(limit=500)
                 if result.get("success"):
                     return str(result.get("count", 0))
                 return "0"
             return self._cached_status("memory_count", _count)
         if label == "Model State":
             def _state():
-                from src.memory import get_default_memory_manager
-                manager = get_default_memory_manager()
+                manager = self._service("memory")
                 return "On" if manager.enabled and manager.available else "Off"
             return self._cached_status("memory_state", _state)
         if label == "Background Tasks":
             def _tasks():
-                from src.background_tasks import get_default_task_manager
-                manager = get_default_task_manager()
+                manager = self._service("tasks")
                 return f"{len(manager.list_active_tasks())} / {len(manager.list_unread_completed_tasks())} new"
             return self._cached_status("background_tasks", _tasks)
         return ""
@@ -1844,9 +1871,8 @@ class MorphingOrbWidget(QWidget):
             return
         self._routines_checked_at = self.time
         try:
-            from src.routines import get_default_routine_manager
 
-            mtime = get_default_routine_manager().mtime()
+            mtime = self._service("routines").mtime()
         except Exception:
             return
         if mtime == self._routines_mtime:
@@ -1856,14 +1882,13 @@ class MorphingOrbWidget(QWidget):
             index = next(i for i, spec in enumerate(MENU_SPECS) if spec.name == "Routines")
         except StopIteration:
             return
-        MENU_SPECS[index] = build_routines_spec()
+        MENU_SPECS[index] = build_routines_spec(self._service)
         self._routines_cache = {}
 
     def _routines_value(self, label: str) -> str:
         if label == "Catalogue":
             def _count():
-                from src.routines import get_default_routine_manager
-                result = get_default_routine_manager().list_routines()
+                result = self._service("routines").list_routines()
                 items = result.get("routines", [])
                 return f"{sum(bool(item.get('enabled')) for item in items)}/{len(items)}"
             return self._cached_status("routines_count", _count)
@@ -1873,9 +1898,8 @@ class MorphingOrbWidget(QWidget):
             return "—"
         if label == "Reminders":
             def _count():
-                from src.scheduler import get_default_scheduler
 
-                result = get_default_scheduler().list_reminders(limit=100)
+                result = self._service("scheduler").list_reminders(limit=100)
                 return str(result.get("count", 0)) if result.get("success") else "Off"
             return self._cached_status("reminders_count", _count)
 
@@ -1883,9 +1907,8 @@ class MorphingOrbWidget(QWidget):
         if cached is not None:
             return cached
         try:
-            from src.routines import get_default_routine_manager
 
-            result = get_default_routine_manager().list_routines()
+            result = self._service("routines").list_routines()
             value = "▶"
             for item in result.get("routines", []):
                 if str(item["name"])[:22] == label:
@@ -1904,9 +1927,8 @@ class MorphingOrbWidget(QWidget):
 
         def _worker() -> None:
             try:
-                from src.routines import get_default_routine_manager
 
-                result = get_default_routine_manager().run_routine(name)
+                result = self._service("routines").run_routine(name)
                 if result.get("success"):
                     message = f"{name} ✓"
                 else:
@@ -1915,9 +1937,12 @@ class MorphingOrbWidget(QWidget):
                 message = f"{name} : {exc}"
             # Écriture cross-thread tolérée (simple assignation, protégée
             # par le GIL) : le flash sera affiché par la prochaine image.
-            self._menu_action_flash = message[:80]
-            self._menu_action_flash_time = self.time
+            if not self._closed:
+                self._menu_action_flash = message[:80]
+                self._menu_action_flash_time = self.time
 
+        if self._closed:
+            return
         threading.Thread(target=_worker, name="jarvis-routine", daemon=True).start()
 
     # ------------------------------------------------------------------
@@ -1960,8 +1985,7 @@ class MorphingOrbWidget(QWidget):
             return self.menu_state.always_on_top
         if name == "Memory" and label == "Long-term Memory":
             def _enabled():
-                from src.memory import get_default_memory_manager
-                manager = get_default_memory_manager()
+                manager = self._service("memory")
                 return bool(manager.enabled and manager.available)
             return self._cached_status("memory_enabled", _enabled) == "True"
         if name == "Appearance" and label == "Minimal Mode":
@@ -2038,8 +2062,7 @@ class MorphingOrbWidget(QWidget):
             self._apply_always_on_top(value)
         elif name == "Memory" and label == "Long-term Memory":
             try:
-                from src.memory import get_default_memory_manager
-                get_default_memory_manager().set_enabled(value)
+                self._service("memory").set_enabled(value)
             except Exception:
                 pass
             self._invalidate_status_cache()
@@ -2208,9 +2231,8 @@ class MorphingOrbWidget(QWidget):
         fenêtre ne fait que lire/écrire la configuration persistante.
         """
         try:
-            from src.modes import get_default_mode_manager
 
-            if get_default_mode_manager().should_suppress_visuals():
+            if self._service("modes").should_suppress_visuals():
                 # En mode jeu, aucun affichage au-dessus du jeu.
                 self._flash("Mode jeu actif : sans affichage")
                 return
@@ -2220,7 +2242,8 @@ class MorphingOrbWidget(QWidget):
             from .mode_apps_dialog import show_mode_apps_dialog
 
             self._close_radial_menu()
-            show_mode_apps_dialog(self)
+            kwargs = {"manager": self._service("modes")} if self.core is not None else {}
+            show_mode_apps_dialog(self, **kwargs)
         except Exception as exc:
             self._flash(f"Réglage indisponible : {exc}")
 
@@ -2233,9 +2256,8 @@ class MorphingOrbWidget(QWidget):
         ``appearance_state.json`` — aucun second fichier de configuration.
         """
         try:
-            from src.modes import get_default_mode_manager
 
-            if get_default_mode_manager().should_suppress_visuals():
+            if self._service("modes").should_suppress_visuals():
                 self._flash("Mode jeu actif : sans affichage")
                 return
         except Exception:
@@ -2289,7 +2311,9 @@ class MorphingOrbWidget(QWidget):
             elif name == "Routines" and label == "Catalogue":
                 from .routines_dialog import show_routines_dialog
                 self._close_radial_menu()
-                show_routines_dialog(self)
+                kwargs = ({"manager": self._service("routines"), "scheduler": self._service("scheduler")}
+                          if self.core is not None else {})
+                show_routines_dialog(self, **kwargs)
             elif self._menu_is_slider(spec, item):
                 self._flash(f"{label}: {self._menu_slider_value(spec, item)}%")
             elif self._menu_is_option(spec, item):
@@ -2341,7 +2365,8 @@ class MorphingOrbWidget(QWidget):
             elif name == "Memory" and label == "Background Tasks":
                 from .background_tasks_dialog import show_background_tasks_dialog
                 self._close_radial_menu()
-                show_background_tasks_dialog(self)
+                kwargs = {"manager": self._service("tasks")} if self.core is not None else {}
+                show_background_tasks_dialog(self, **kwargs)
             elif name == "System" and label == "Reset Settings":
                 self._reset_settings()
             elif name == "System" and label == "Quit":

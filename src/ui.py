@@ -81,8 +81,10 @@ class InterfaceModeController(QObject):
         *,
         initial_mode: str | None = None,
         config_path=None,
+        core=None,
     ) -> None:
         super().__init__()
+        self.core = core
         self._appearance_state = appearance_state
         self._visibility = visibility
         self._config_path = config_path
@@ -115,9 +117,11 @@ class InterfaceModeController(QObject):
             from UI import jarvis_menu
             from UI.jarvis_menu import MorphingOrbWidget
 
+            kwargs = {"core": self.core} if self.core is not None else {}
             self._blob = MorphingOrbWidget(
                 interface_mode_getter=self.current_mode,
                 interface_mode_setter=self.set_mode,
+                **kwargs,
             )
             jarvis_menu.set_voice_energy(self._voice_energy)
             jarvis_menu.set_presence_state(self._presence_state)
@@ -130,7 +134,8 @@ class InterfaceModeController(QObject):
             from UI.desktop.overlay import DesktopOverlay, DesktopOverlayController
 
             self._overlay = DesktopOverlay(self._appearance_state)
-            self._presence_router = DesktopOverlayController(self._overlay)
+            kwargs = {"core": self.core} if self.core is not None else {}
+            self._presence_router = DesktopOverlayController(self._overlay, **kwargs)
             # Les contrôles optionnels de l'overlay pilotent les mêmes actions
             # que le menu radial : aucune logique dupliquée.
             self._overlay.stopRequested.connect(self._stop_speaking)
@@ -290,14 +295,19 @@ class InterfaceModeController(QObject):
             return
         overlay = self._ensure_overlay()
         try:
-            from .modes import get_default_mode_manager
-
-            if get_default_mode_manager().should_suppress_visuals():
+            if self.core is None:
+                from .modes import get_default_mode_manager
+                manager = get_default_mode_manager()
+            else:
+                manager = self.core.services.require("modes")
+            if manager.should_suppress_visuals():
                 overlay.hide_overlay()
                 self._visibility.hide()
                 return
         except Exception:
-            pass
+            if self.core is not None:
+                overlay.hide_overlay()
+                return
         # « Afficher Jarvis » depuis l'icône de notification : on accuse
         # réception par une présence discrète et **temporaire**. La faire
         # durer indéfiniment (comportement 1.5.3, intensité 0.30 figée)
@@ -419,6 +429,7 @@ def _build_tray_icon(
     mode_getter=None,
     on_mode_change=None,
     on_dashboard=None,
+    core=None,
 ):
     """Icône de zone de notification : moyen visible et fiable de quitter
     Jarvis, indispensable en mode --desktop où aucune fenêtre ne réagit à
@@ -518,13 +529,22 @@ def _build_tray_icon(
 
         def _show_routines_if_allowed() -> None:
             try:
-                from .modes import get_default_mode_manager
-
-                if get_default_mode_manager().should_suppress_visuals():
+                if core is None:
+                    from .modes import get_default_mode_manager
+                    manager = get_default_mode_manager()
+                else:
+                    manager = core.services.require("modes")
+                if manager.should_suppress_visuals():
                     return
             except Exception:
-                pass
-            show_routines_dialog()
+                if core is not None:
+                    return
+            try:
+                kwargs = ({"manager": core.services.require("routines"),
+                           "scheduler": core.services.require("scheduler")} if core is not None else {})
+                show_routines_dialog(**kwargs)
+            except Exception as exc:
+                print(f"[Routines] Interface indisponible : {exc}")
 
         routines_action = menu.addAction("Routines…")
         routines_action.triggered.connect(_show_routines_if_allowed)
@@ -533,7 +553,8 @@ def _build_tray_icon(
             try:
                 from UI.background_tasks_dialog import show_background_tasks_dialog
 
-                show_background_tasks_dialog()
+                kwargs = {"manager": core.services.require("tasks")} if core is not None else {}
+                show_background_tasks_dialog(**kwargs)
             except Exception as exc:
                 print(f"[Tasks] Interface indisponible : {exc}")
 
@@ -547,12 +568,16 @@ def _build_tray_icon(
             volontairement masqué.
             """
             try:
-                from .modes import get_default_mode_manager
-
-                if get_default_mode_manager().should_suppress_visuals():
+                if core is None:
+                    from .modes import get_default_mode_manager
+                    manager = get_default_mode_manager()
+                else:
+                    manager = core.services.require("modes")
+                if manager.should_suppress_visuals():
                     return
             except Exception:
-                pass
+                if core is not None:
+                    return
             try:
                 from UI.desktop_appearance_dialog import show_desktop_appearance_dialog
 
@@ -565,12 +590,16 @@ def _build_tray_icon(
 
         def _start_protocol_if_allowed(protocol_id: str) -> None:
             try:
-                from .modes import get_default_mode_manager
-
-                if get_default_mode_manager().should_suppress_visuals():
+                if core is None:
+                    from .modes import get_default_mode_manager
+                    manager = get_default_mode_manager()
+                else:
+                    manager = core.services.require("modes")
+                if manager.should_suppress_visuals():
                     return
             except Exception:
-                pass
+                if core is not None:
+                    return
             protocols.start_protocol(protocol_id)
 
         # Protocoles : la fonction cachée reste accessible à la souris pour
@@ -684,10 +713,14 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
         visibility.reset()
         app.quit()
 
+    from .core import CoreRuntime
+
+    runtime = CoreRuntime(config)
     controller = InterfaceModeController(
         appearance_state,
         visibility,
         initial_mode=config.interface_mode,
+        core=runtime,
     )
     active_mode = controller.start()
     from UI.interface_mode_bridge import INTERFACE_MODE
@@ -696,9 +729,6 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
 
     # v1.9 : Dashboard (troisième interface). Léger tant qu'il n'est pas
     # ouvert ; il coexiste avec l'orbe et le Desktop sans les remplacer.
-    from .core import CoreRuntime
-
-    runtime = CoreRuntime(config)
     dashboard = _create_dashboard(controller, _quit, runtime=runtime)
 
     # L'éditeur d'apparence applique ses changements à l'overlay en cours.
@@ -714,6 +744,7 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
         mode_getter=controller.current_mode,
         on_mode_change=controller.set_mode,
         on_dashboard=dashboard.open if dashboard is not None else None,
+        core=runtime,
     )
     if dashboard is not None:
         dashboard.tray = tray
@@ -735,7 +766,7 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
     try:
         from UI.boot_sequence import ProtocolPresenter
 
-        protocol_presenter = ProtocolPresenter()
+        protocol_presenter = ProtocolPresenter(core=runtime)
         controller.set_protocol_presenter(protocol_presenter)
     except Exception as exc:
         print(f"[Protocole] Overlay indisponible : {exc}")
@@ -769,6 +800,17 @@ def run_ui(mode: str | None = None, *, open_dashboard: bool = False) -> int:
             return
         shutdown_done = True
         stop_event.set()
+        # Detach dialog hooks while their backend services are still alive.
+        # Do not import unopened dialogs merely to shut them down.
+        for module_name in ("UI.background_tasks_dialog", "UI.routines_dialog",
+                            "UI.mode_apps_dialog", "UI.desktop_appearance_dialog"):
+            module = sys.modules.get(module_name)
+            dialog = getattr(module, "_DIALOG", None) if module is not None else None
+            if dialog is not None:
+                try:
+                    dialog.close()
+                except Exception as exc:
+                    print(f"[Jarvis] Fermeture du dialogue {module_name} impossible : {exc}")
         runtime = getattr(voice_thread, "jarvis_runtime", None)
         if runtime is not None:
             runtime.request_stop()

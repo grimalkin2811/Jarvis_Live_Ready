@@ -129,6 +129,7 @@ class DashboardHub(QObject):
         self._audio_alerted = False
         self._wake_alerted = False
         self._started = False
+        self._stopped = False
         self._background_monitoring = False
         self._resource_keys: set[str] = set()
         self._resource_subscribed = False
@@ -137,7 +138,7 @@ class DashboardHub(QObject):
         self._conversation_relay.connect(self._on_conversation, Qt.QueuedConnection)
         self._task_relay.connect(self._on_task, Qt.QueuedConnection)
         self._notification_relay.connect(self._on_notification, Qt.QueuedConnection)
-        self._log_relay.connect(self.log_entry.emit, Qt.QueuedConnection)
+        self._log_relay.connect(self._on_log, Qt.QueuedConnection)
         self._external_notification_relay.connect(self._on_external_notification, Qt.QueuedConnection)
         self._resource_relay.connect(self._on_resource_sample, Qt.QueuedConnection)
         self._services_relay.connect(self._on_service_registered, Qt.QueuedConnection)
@@ -163,6 +164,7 @@ class DashboardHub(QObject):
         if self._started:
             return
         self._started = True
+        self._stopped = False
         if self.core is not None:
             self._unsubscribe_services = self.core.events.subscribe(self._services_relay.emit)
         self.runtime.add_hook(self._runtime_hook)
@@ -186,6 +188,7 @@ class DashboardHub(QObject):
         if not self._started:
             return
         self._started = False
+        self._stopped = True
         self._tasks_timer.stop()
         if self._unsubscribe_services is not None:
             self._unsubscribe_services()
@@ -212,6 +215,11 @@ class DashboardHub(QObject):
         self._sync_resource_subscription()
         self.resources.stop()
         self.jobs.shutdown()
+
+    @Slot(object)
+    def _on_log(self, entry) -> None:
+        if not self._stopped:
+            self.log_entry.emit(entry)
 
     @Slot(object)
     def _on_service_registered(self, event) -> None:
@@ -242,6 +250,8 @@ class DashboardHub(QObject):
 
     @Slot(object)
     def _on_engine(self, snapshot: dict[str, Any]) -> None:
+        if self._stopped:
+            return
         previous = self._last_engine_state
         self._engine = dict(snapshot)
         state = snapshot.get("engine_state")
@@ -294,10 +304,14 @@ class DashboardHub(QObject):
 
     def handle_presence(self, state: str) -> None:
         """Entrée Qt (déjà dans le thread Qt via le contrôleur)."""
+        if self._stopped:
+            return
         self._presence = str(state or "hidden")
         self.presence_changed.emit(self._presence)
 
     def handle_voice_event(self, event: str, payload: dict[str, Any]) -> None:
+        if self._stopped:
+            return
         name = str(event or "")
         data = dict(payload or {})
         if name == "level":
@@ -325,6 +339,8 @@ class DashboardHub(QObject):
         self.voice_event.emit(name, data)
 
     def handle_interface_mode(self, mode: str) -> None:
+        if self._stopped:
+            return
         self._interface_mode = str(mode or "")
         self.logs.record_event(f"Interface active : {self._interface_mode}", source="interface", category="ui")
         self.interface_mode_changed.emit(self._interface_mode)
@@ -339,6 +355,8 @@ class DashboardHub(QObject):
         return self._conversation
 
     def _attach_conversation(self) -> None:
+        if self._stopped:
+            return
         try:
             context = self._conversation_getter()
         except Exception:
@@ -356,6 +374,8 @@ class DashboardHub(QObject):
 
     @Slot(object)
     def _on_conversation(self, event: dict[str, Any]) -> None:
+        if self._stopped:
+            return
         self.conversation_changed.emit(dict(event or {}))
 
     # ------------------------------------------------------------------
@@ -367,6 +387,8 @@ class DashboardHub(QObject):
 
     @Slot()
     def _attach_tasks(self) -> None:
+        if self._stopped:
+            return
         manager = self.tasks.manager()
         if manager is self._task_manager and manager is not None:
             self._tasks_timer.stop()
@@ -396,6 +418,8 @@ class DashboardHub(QObject):
 
     @Slot(object)
     def _on_task(self, task: Any) -> None:
+        if self._stopped:
+            return
         status = getattr(getattr(task, "status", None), "value", "")
         if task is not None:
             self.logs.record_event(
@@ -416,6 +440,8 @@ class DashboardHub(QObject):
 
     @Slot(object)
     def _on_notification(self, notification: Any) -> None:
+        if self._stopped:
+            return
         if notification is None:
             self.notifications_changed.emit()
             return
@@ -424,6 +450,8 @@ class DashboardHub(QObject):
 
     @Slot(str, str)
     def _on_external_notification(self, title: str, message: str) -> None:
+        if self._stopped:
+            return
         from . import DASHBOARD_NAME
 
         if title.startswith(f"{DASHBOARD_NAME} — ") or title == LEGACY_TASK_DONE_TITLE:
@@ -467,6 +495,8 @@ class DashboardHub(QObject):
 
     @Slot(object)
     def _on_resource_sample(self, sample: Any) -> None:
+        if self._stopped:
+            return
         prefs = self.store.config.monitoring
         if prefs.enabled:
             for metric, message in threshold_breaches(sample, prefs.cpu_threshold, prefs.ram_threshold,

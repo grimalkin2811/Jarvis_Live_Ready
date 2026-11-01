@@ -128,6 +128,17 @@ def test_hub_uses_injected_registry_and_event_driven_attachment(tmp_path):
             assert context.listener_count() == before - 1
             assert status.hook_count() == 0
             assert hub._unsubscribe_services is None
+            logs = []
+            hub.log_entry.connect(logs.append)
+            hub._log_relay.emit({'message': 'late'})
+            hub._engine_relay.emit({'engine_state': 'failed', 'engine_detail': 'late'})
+            hub._conversation_relay.emit({'reason': 'late'})
+            hub._task_relay.emit(None)
+            app.processEvents()
+            assert hub.engine().get('engine_detail') != 'late'
+            assert not logs
+            assert hub.conversation() is None
+            assert context.listener_count() == before - 1
             runtime.request_stop()
             runtime.request_stop()
             await asyncio.wait_for(task, 8)

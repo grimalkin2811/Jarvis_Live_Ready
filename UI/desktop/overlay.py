@@ -743,9 +743,10 @@ class DesktopOverlayController(QObject):
     Le nom historique ``PresenceRouter`` reste un alias de cette classe.
     """
 
-    def __init__(self, overlay: DesktopOverlay, parent: QObject | None = None) -> None:
+    def __init__(self, overlay: DesktopOverlay, parent: QObject | None = None, *, core=None) -> None:
         super().__init__(parent)
         self._overlay = overlay
+        self.core = core
         self.machine = DesktopStateMachine(on_transition=self._on_transition)
 
         # Filet de sécurité de l'état courant (nom historique conservé : il est
@@ -829,11 +830,14 @@ class DesktopOverlayController(QObject):
     def _suppressed(self) -> bool:
         """Mode jeu : aucun affichage au-dessus du jeu (règle 1.3.0)."""
         try:
-            from src.modes import get_default_mode_manager
-
-            return bool(get_default_mode_manager().should_suppress_visuals())
+            if self.core is None:
+                from src.modes import get_default_mode_manager
+                manager = get_default_mode_manager()
+            else:
+                manager = self.core.services.require("modes")
+            return bool(manager.should_suppress_visuals())
         except Exception:
-            return False
+            return self.core is not None
 
     def _force_hidden(self) -> None:
         self._listen_hide_timer.stop()
