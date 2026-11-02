@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import contextmanager
+import logging
 import os
 import sqlite3
 import threading
@@ -85,6 +86,8 @@ class Scheduler:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._routine_manager = routine_manager
+        self._runtime_services = None
+        self._runtime_stopping = False
         self._notify_hooks: list = []
         if self.enabled:
             self._initialize()
@@ -173,17 +176,43 @@ class Scheduler:
         with self._lock:
             self._routine_manager = manager
 
+    def set_runtime_services(self, services) -> None:
+        """Bind a running Core; None restores standalone compatibility."""
+        with self._lock:
+            self._runtime_services = services
+            self._runtime_stopping = False
+
     def _routines(self):
         with self._lock:
-            manager = self._routine_manager
+            services, manager = self._runtime_services, self._routine_manager
+        if services is not None:
+            return services.require("routines")
         if manager is not None:
             return manager
         from .routines import get_default_routine_manager
 
         return get_default_routine_manager()
 
+    def _run_routine(self, name):
+        with self._lock:
+            services = self._runtime_services
+        if services is None:
+            return self._routines().run_routine(name)
+        return services.require("tools").functions["run_routine"](name=name)
+
+    def _mode_suppresses_notifications(self):
+        with self._lock:
+            services = self._runtime_services
+        if services is None:
+            return _notifications_suppressed_by_mode()
+        try:
+            return bool(services.require("modes").should_suppress_notifications())
+        except Exception:
+            logging.getLogger("jarvis.scheduler").exception("Runtime mode unavailable; suppressing visual notifications")
+            return True
+
     def _notify(self, title: str, message: str) -> str:
-        if _notifications_suppressed_by_mode():
+        if self._mode_suppresses_notifications():
             return "suppressed:game_mode"
         channel = notifications.publish(title, message)
         with self._lock:
@@ -201,7 +230,7 @@ class Scheduler:
         message = str(message or "").strip()
         if not message:
             return _err("Message de notification vide.")
-        if _notifications_suppressed_by_mode():
+        if self._mode_suppresses_notifications():
             return _ok(
                 notification=False,
                 raison="Mode jeu actif : notification visuelle supprimée.",
@@ -440,7 +469,7 @@ class Scheduler:
         routine_name = row["routine"]
         if routine_name:
             try:
-                result = self._routines().run_routine(routine_name)
+                result = self._run_routine(routine_name)
                 self._notify_routine_result(routine_name, result, late)
             except Exception as exc:
                 self._notify("Routine planifiée", f"{routine_name} a échoué : {exc}")
@@ -537,7 +566,7 @@ class Scheduler:
                 continue
 
             try:
-                result = self._routines().run_routine(routine["name"])
+                result = self._run_routine(routine["name"])
             except Exception as exc:
                 result = _err(str(exc))
             self._notify_routine_result(routine["name"], result)
@@ -557,6 +586,8 @@ class Scheduler:
         if not self._ready():
             return False
         with self._lock:
+            if getattr(self, "_runtime_stopping", False):
+                return False
             if self._thread is not None and self._thread.is_alive():
                 # A previous stop can time out while a callback is blocked.
                 # Do not clear its stop signal or launch a second worker.
@@ -566,8 +597,15 @@ class Scheduler:
             self._thread.start()
         return True
 
+    def request_stop(self) -> None:
+        """Signal the worker without blocking the caller."""
+        with self._lock:
+            if getattr(self, "_runtime_services", None) is not None:
+                self._runtime_stopping = True
+            self._stop.set()
+
     def stop(self) -> None:
-        self._stop.set()
+        self.request_stop()
         with self._lock:
             thread = self._thread
         if thread is not None:

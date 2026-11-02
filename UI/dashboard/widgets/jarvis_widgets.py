@@ -372,6 +372,8 @@ class QuickActionsWidget(DashboardWidget):
             current_interface_mode=getattr(controller, "current_interface_mode", None),
             open_path=self.context.open_path,
             service_getter=core.services.require if core is not None else None,
+            tool_runner=(lambda name, **kwargs: core.services.require("tools").functions[name](**kwargs))
+                        if core is not None else None,
         )
 
     def on_activate(self) -> None:

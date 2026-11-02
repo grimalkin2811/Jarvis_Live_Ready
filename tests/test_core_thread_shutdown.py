@@ -12,10 +12,15 @@ from tests.test_core_runtime import Resource, config, factory_set
 class StuckThread:
     def __init__(self):
         self.alive = True
+        self.done = threading.Event()
     def is_alive(self):
         return self.alive
     def join(self, timeout=None):
-        pass
+        if timeout is None:
+            self.done.wait(5)
+    def release(self):
+        self.alive = False
+        self.done.set()
 
 
 def test_runtime_detects_worker_still_alive_after_stop():
@@ -37,9 +42,14 @@ def test_runtime_detects_worker_still_alive_after_stop():
         await runtime.provider.ready.wait()
         runtime.request_stop()
         await task
-        assert closed == ["tasks", "scheduler"]
+        assert closed == []  # workers may still be using these resources
         assert runtime.status.snapshot()["engine_state"] == EngineState.FAILED
         assert "scheduler" in runtime.status.snapshot()["last_error"]
+        assert CoreRuntime._owner is runtime
+        runtime._scheduler._thread.release()
+        assert await asyncio.to_thread(runtime.complete_deferred_cleanup)
+        assert closed == ["tasks", "scheduler"]
+        assert CoreRuntime._owner is None
     asyncio.run(scenario())
 
 

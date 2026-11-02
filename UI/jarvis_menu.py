@@ -1928,7 +1928,8 @@ class MorphingOrbWidget(QWidget):
         def _worker() -> None:
             try:
 
-                result = self._service("routines").run_routine(name)
+                result = (self.core.services.require("tools").functions["run_routine"](name=name)
+                          if self.core is not None else self._service("routines").run_routine(name))
                 if result.get("success"):
                     message = f"{name} ✓"
                 else:
@@ -2311,7 +2312,8 @@ class MorphingOrbWidget(QWidget):
             elif name == "Routines" and label == "Catalogue":
                 from .routines_dialog import show_routines_dialog
                 self._close_radial_menu()
-                kwargs = ({"manager": self._service("routines"), "scheduler": self._service("scheduler")}
+                kwargs = ({"manager": self._service("routines"), "scheduler": self._service("scheduler"),
+                           "routine_runner": self.core.services.require("tools").functions["run_routine"]}
                           if self.core is not None else {})
                 show_routines_dialog(self, **kwargs)
             elif self._menu_is_slider(spec, item):

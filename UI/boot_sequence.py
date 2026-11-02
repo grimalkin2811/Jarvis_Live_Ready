@@ -528,7 +528,9 @@ class ProtocolPresenter(QObject):
         """Lance un protocole ; renvoie False si le nom est inconnu."""
         if self._visuals_suppressed():
             return False
-        return protocols.start_protocol(name) is not None
+        if self.core is None:
+            return protocols.start_protocol(name) is not None
+        return protocols.start_protocol(name, services=self.core.services) is not None
 
     def cancel(self) -> None:
         protocols.cancel_active()

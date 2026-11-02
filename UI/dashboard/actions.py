@@ -13,6 +13,7 @@ routines, protocoles, dossiers réels). Aucune commande système arbitraire.
 
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -58,11 +59,13 @@ class ActionHost:
         current_interface_mode: Callable[[], str] | None = None,
         open_path: Callable[[str], bool] | None = None,
         service_getter: Callable[[str], Any] | None = None,
+        tool_runner: Callable[..., dict] | None = None,
     ) -> None:
         self.set_interface_mode = set_interface_mode
         self.current_interface_mode = current_interface_mode
         self.open_path = open_path
         self.service_getter = service_getter
+        self.tool_runner = tool_runner
 
 
 def _live():
@@ -148,13 +151,13 @@ def routine_names(service_getter=None) -> list[str]:
     return [str(item["name"]) for item in result.get("routines", []) if item.get("enabled")][:8]
 
 
-def run_routine(name: str, service_getter=None) -> ActionResult:
+def run_routine(name: str, service_getter=None, *, tool_runner=None) -> ActionResult:
     if service_getter is None:
         from src.routines import get_default_routine_manager
         manager = get_default_routine_manager()
     else:
         manager = service_getter("routines")
-    result = manager.run_routine(name)
+    result = manager.run_routine(name) if tool_runner is None else tool_runner("run_routine", name=name)
     if result.get("success"):
         return _ok(f"Routine « {name} » exécutée.", result=result)
     return _fail(f"Routine « {name} » : {result.get('error') or 'échec partiel'}", result=result)
@@ -217,7 +220,8 @@ def build_actions(host: ActionHost) -> list[QuickAction]:
     for name in routine_names(host.service_getter):
         actions.append(
             QuickAction("routine.run", f"routine.run:{name}", name[:24], f"Lance la routine « {name} ».", "▷",
-                        (lambda n=name: run_routine(n, host.service_getter)), blocking=True, group="Routines")
+                        (lambda n=name: run_routine(n, host.service_getter, tool_runner=host.tool_runner)),
+                        blocking=True, group="Routines")
         )
     try:
         from src import protocols
@@ -235,9 +239,14 @@ def build_actions(host: ActionHost) -> list[QuickAction]:
                     if manager.should_suppress_visuals():
                         return _fail("Mode jeu actif : affichage plein écran bloqué.")
                 except Exception:
-                    pass
-                run = _p.start_protocol(pid)
-                if run is None:
+                    logging.getLogger("jarvis.dashboard.actions").exception("Mode unavailable for protocol")
+                    return _fail("Mode indisponible : lancement du protocole refusé.")
+                if host.tool_runner is None:
+                    run = _p.start_protocol(pid)
+                    started = run is not None
+                else:
+                    started = bool(host.tool_runner("run_protocol", protocol=pid).get("success"))
+                if not started:
                     return _fail(f"Protocole « {pname} » introuvable.")
                 return _ok(f"Protocole « {pname} » lancé.")
 

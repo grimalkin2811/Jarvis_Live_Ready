@@ -25,9 +25,10 @@ class RoutinesDialog(QDialog):
     routines_changed = Signal()
     _run_finished = Signal(str, object)
 
-    def __init__(self, parent=None, *, manager=None, scheduler=None) -> None:
+    def __init__(self, parent=None, *, manager=None, scheduler=None, routine_runner=None) -> None:
         super().__init__(parent)
         self.manager = manager if manager is not None else get_default_routine_manager()
+        self._routine_runner = routine_runner
         self._closed = False
         self._running_name = None
         self._run_finished.connect(self._on_run_finished, Qt.QueuedConnection)
@@ -235,7 +236,7 @@ class RoutinesDialog(QDialog):
 
         def worker():
             try:
-                result = manager.run_routine(name)
+                result = self._routine_runner(name=name) if self._routine_runner is not None else manager.run_routine(name)
             except Exception:
                 result = {"success": False, "error": "Exécution impossible."}
             try:
@@ -293,11 +294,11 @@ class RoutinesDialog(QDialog):
 _DIALOG: RoutinesDialog | None = None
 
 
-def show_routines_dialog(parent=None, *, manager=None, scheduler=None) -> RoutinesDialog:
+def show_routines_dialog(parent=None, *, manager=None, scheduler=None, routine_runner=None) -> RoutinesDialog:
     """Un seul catalogue partagé entre l'orbe et la zone de notification."""
     global _DIALOG
     if _DIALOG is None:
-        _DIALOG = RoutinesDialog(parent, manager=manager, scheduler=scheduler)
+        _DIALOG = RoutinesDialog(parent, manager=manager, scheduler=scheduler, routine_runner=routine_runner)
         _DIALOG.setAttribute(Qt.WA_DeleteOnClose)
         current = _DIALOG
         _DIALOG.destroyed.connect(lambda *_: _forget_dialog(current))

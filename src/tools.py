@@ -2296,7 +2296,7 @@ def cancel_reminder(reminder_id=None, confirm=False, *, _services=None):
 # ===========================================================================
 
 
-def run_protocol(protocol="wake_up"):
+def run_protocol(protocol="wake_up", *, _services=None):
     """Joue un protocole cinematique (reveil, diagnostic, concentration, veille).
 
     L'affichage est pris en charge par l'interface (overlay plein ecran) si
@@ -2314,7 +2314,8 @@ def run_protocol(protocol="wake_up"):
 
     # Sans interface abonnee, on dessine la sequence dans la console.
     emit = None if _protocols.has_listener() else _protocols.render_console()
-    run = _protocols.start_protocol(target, emit)
+    run = (_protocols.start_protocol(target, emit) if _services is None else
+           _protocols.start_protocol(target, emit, services=_services))
     if run is None:  # pragma: no cover - defensif
         return _err("Protocole indisponible.")
 
@@ -2761,6 +2762,10 @@ class RuntimeToolBindings:
                     self._active -= 1
                     self._condition.notify_all()
         return invoke
+
+    def track_background(self, function):
+        """Track work that outlives the caller; reject it after shutdown."""
+        return self._track(function)
 
     def reject_new(self):
         with self._condition:

@@ -541,7 +541,8 @@ def _build_tray_icon(
                     return
             try:
                 kwargs = ({"manager": core.services.require("routines"),
-                           "scheduler": core.services.require("scheduler")} if core is not None else {})
+                           "scheduler": core.services.require("scheduler"),
+                           "routine_runner": core.services.require("tools").functions["run_routine"]} if core is not None else {})
                 show_routines_dialog(**kwargs)
             except Exception as exc:
                 print(f"[Routines] Interface indisponible : {exc}")
@@ -600,7 +601,10 @@ def _build_tray_icon(
             except Exception:
                 if core is not None:
                     return
-            protocols.start_protocol(protocol_id)
+            if core is None:
+                protocols.start_protocol(protocol_id)
+            else:
+                protocols.start_protocol(protocol_id, services=core.services)
 
         # Protocoles : la fonction cachée reste accessible à la souris pour
         # qui ne connaît pas les codes secrets, sauf en mode jeu où tout

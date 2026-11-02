@@ -144,11 +144,11 @@ def _probe_network() -> str:
     return f"liaison établie · {int((time.time() - start) * 1000)} ms"
 
 
-def _probe_memory_bank() -> str:
+def _probe_memory_bank(services=None) -> str:
     try:
         from .memory import get_default_memory_manager
 
-        manager = get_default_memory_manager()
+        manager = services.require("memory") if services is not None else get_default_memory_manager()
         if not getattr(manager, "enabled", False):
             return "banque mémoire désactivée"
         result = manager.list_memories(limit=500)
@@ -158,11 +158,12 @@ def _probe_memory_bank() -> str:
         return "banque mémoire hors ligne"
 
 
-def _probe_routines() -> str:
+def _probe_routines(services=None) -> str:
     try:
         from .routines import get_default_routine_manager
 
-        result = get_default_routine_manager().list_routines()
+        manager = services.require("routines") if services is not None else get_default_routine_manager()
+        result = manager.list_routines()
         routines = result.get("routines", []) or []
         active = sum(1 for item in routines if item.get("enabled"))
         return f"{active} routine(s) armée(s) sur {len(routines)}"
@@ -170,11 +171,12 @@ def _probe_routines() -> str:
         return "moteur de routines indisponible"
 
 
-def _probe_reminders() -> str:
+def _probe_reminders(services=None) -> str:
     try:
         from .scheduler import get_default_scheduler
 
-        result = get_default_scheduler().list_reminders(limit=50)
+        manager = services.require("scheduler") if services is not None else get_default_scheduler()
+        result = manager.list_reminders(limit=50)
         count = len(result.get("rappels", result.get("reminders", [])) or [])
         return f"{count} rappel(s) en attente"
     except Exception:
@@ -376,21 +378,24 @@ def _tool_functions() -> dict:
         return {}
 
 
-def _run_probe(name: str) -> str:
+def _run_probe(name: str, services=None) -> str:
     probe = PROBES.get(name)
     if probe is None:
         return ""
     try:
+        if services is not None and name in {"memory_bank", "routines", "reminders"}:
+            return str(probe(services) or "")
         return str(probe() or "")
     except Exception as exc:  # pragma: no cover - défensif
         return f"sonde indisponible ({exc})"
 
 
-def _run_tool(beat: Beat) -> tuple[str, bool]:
+def _run_tool(beat: Beat, services=None) -> tuple[str, bool]:
     name = beat.tool
     if name in _forbidden_tools():
         return "action refusée (outil protégé)", False
-    fn = _tool_functions().get(name)
+    functions = services.require("tools").functions if services is not None else _tool_functions()
+    fn = functions.get(name)
     if fn is None:
         return f"outil « {name} » indisponible", False
     try:
@@ -463,6 +468,7 @@ def play_protocol(
     cancel_event: threading.Event | None = None,
     fast: bool = False,
     sleeper: Callable[[float], None] | None = None,
+    services=None,
 ) -> dict:
     """Joue un protocole **de façon synchrone** et renvoie son résumé.
 
@@ -510,10 +516,10 @@ def play_protocol(
         detail = beat.detail
         status = "ok"
         if beat.probe:
-            probed = _run_probe(beat.probe)
+            probed = _run_probe(beat.probe, services)
             detail = f"{detail} · {probed}" if detail and probed else (probed or detail)
         if beat.tool:
-            message, ok = _run_tool(beat)
+            message, ok = _run_tool(beat, services)
             detail = f"{detail} · {message}" if detail else message
             status = "ok" if ok else "warn"
 
@@ -559,6 +565,7 @@ def start_protocol(
     emit: Callable[[dict], None] | None = None,
     *,
     fast: bool = False,
+    services=None,
 ) -> ProtocolRun | None:
     """Lance un protocole dans un thread de fond.
 
@@ -586,10 +593,12 @@ def start_protocol(
             emit,
             cancel_event=run.cancel_event,
             fast=fast,
+            services=services,
         )
 
+    target = services.require("tools").track_background(_target) if services is not None else _target
     run.thread = threading.Thread(
-        target=_target,
+        target=target,
         name=f"jarvis-protocol-{protocol.protocol_id}",
         daemon=True,
     )

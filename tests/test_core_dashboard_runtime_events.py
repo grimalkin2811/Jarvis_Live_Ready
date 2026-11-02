@@ -30,7 +30,8 @@ def test_dashboard_reopen_sees_same_core_and_notification_events(tmp_path):
         context = ConversationContext()
         scheduler = Scheduler(root / 'schedule.db')
         todo = TodoManager(root / 'todo.db')
-        mode = type('Mode', (), {'block_for_tool': lambda *args: None})()
+        mode = type('Mode', (), {'block_for_tool': lambda *args: None,
+                                  'should_suppress_notifications': lambda self: False})()
         activity = type('Activity', (), {'log': lambda *args, **kwargs: None})()
         cfg = config()
         cfg.memory_database_path = str(root / 'memory.db')

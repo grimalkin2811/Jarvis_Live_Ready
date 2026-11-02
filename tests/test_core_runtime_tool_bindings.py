@@ -27,6 +27,9 @@ class Mode:
     def system_instruction(self):
         return ""
 
+    def should_suppress_notifications(self):
+        return False
+
 
 class Activity:
     def __init__(self):

@@ -52,11 +52,17 @@ def default_factories() -> RuntimeFactories:
     from ..conversation import get_default_conversation_context
     from ..gemini_live import AuthError, GeminiLive, SessionRecoveryExhausted
     from ..memory import MemoryManager, set_default_memory_manager
-    from ..scheduler import start_default_scheduler
 
     return RuntimeFactories(AudioIO, GeminiLive, MemoryManager, set_default_memory_manager,
-                            get_default_conversation_context, start_default_scheduler,
+                            get_default_conversation_context, _default_scheduler,
                             configure_default_task_manager, AuthError, SessionRecoveryExhausted)
+
+
+def _default_scheduler():
+    # Configure before starting: a due routine must never run in a gap between
+    # construction and injection of the runtime-bound dispatcher.
+    from ..scheduler import get_default_scheduler
+    return get_default_scheduler()
 
 
 def _default_todo():
@@ -109,9 +115,11 @@ class CoreRuntime:
         self.services.register_lazy("music", _default_music)
         self._tool_bindings = None
         self._deferred_cleanup = False
+        self._deferred_cleanup_result = True
         self._deferred_cleanup_lock = threading.Lock()
         self.audio = None
         self.provider = None
+        self._scheduler = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._stop_requested = threading.Event()
@@ -195,6 +203,14 @@ class CoreRuntime:
             self._stop_requested.set()
             if self._tool_bindings is not None:
                 self._tool_bindings.reject_new()
+            scheduler = self._scheduler
+            signal_stop = getattr(scheduler, "request_stop", None)
+            if signal_stop is not None:
+                try:
+                    signal_stop()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Scheduler stop signal failed")
         loop, task = self._loop, self._task
         if loop is not None and task is not None:
             try:
@@ -259,6 +275,13 @@ class CoreRuntime:
         finally:
             self._cleanup_started = True
             self._stop_requested.set()
+            signal_stop = getattr(self._scheduler, "request_stop", None)
+            if signal_stop is not None:
+                try:
+                    signal_stop()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Scheduler stop signal failed")
             if self._tool_bindings is not None:
                 self._tool_bindings.reject_new()
             # A second cancellation must not abandon an in-flight close and
@@ -285,10 +308,39 @@ class CoreRuntime:
                 self._notify(controls.set_stop_speaking_handler, None)
             # Cancelling asyncio.to_thread does not stop its worker. Do not
             # close resources or admit a new owner while an invocation uses them.
-            drained = self._tool_bindings is None or self._tool_bindings.drain(timeout=2.0)
-            self._deferred_cleanup = not drained
-            failures = self.services.close() if drained else ["outils encore actifs"]
+            drained = True
+            if self._tool_bindings is not None:
+                drain_task = asyncio.create_task(asyncio.to_thread(self._tool_bindings.drain, 2.0))
+                while True:
+                    try:
+                        drained = await asyncio.shield(drain_task)
+                        break
+                    except asyncio.CancelledError:
+                        if drain_task.cancelled():
+                            drained = False
+                            self._cleanup_failed = True
+                            break
+                        cancelled_during_cleanup = True
+            scheduler_thread = getattr(self._scheduler, "_thread", None)
+            if scheduler_thread is not None and scheduler_thread.is_alive():
+                join_task = asyncio.create_task(asyncio.to_thread(scheduler_thread.join, 2.0))
+                while True:
+                    try:
+                        await asyncio.shield(join_task)
+                        break
+                    except asyncio.CancelledError:
+                        if join_task.cancelled():
+                            self._cleanup_failed = True
+                            break
+                        cancelled_during_cleanup = True
+            scheduler_busy = scheduler_thread is not None and scheduler_thread.is_alive()
+            self._deferred_cleanup = not drained or scheduler_busy
+            failures = ([] if not self._deferred_cleanup else
+                        ["outils encore actifs" if not drained else "scheduler encore actif"])
+            if not self._deferred_cleanup:
+                failures = self.services.close()
             if failures or self._cleanup_failed:
+                log.error("Incomplete runtime cleanup: %s", ", ".join(failures or ["provider"]))
                 self.status.record_error("Nettoyage incomplet du runtime : " + ", ".join(failures or ["provider"]))
                 self.status.set_engine_state(EngineState.FAILED, "nettoyage incomplet")
             if self.status.snapshot().get("engine_state") not in (EngineState.AUTH_ERROR, EngineState.FAILED):
@@ -300,6 +352,25 @@ class CoreRuntime:
             with CoreRuntime._owner_lock:
                 if CoreRuntime._owner is self and not self._deferred_cleanup:
                     CoreRuntime._owner = None
+            if self._deferred_cleanup:
+                # One event-driven waiter, only after a timeout. Neither a
+                # scheduler callback nor a tool may outlive its resources.
+                def finish_when_idle():
+                    try:
+                        if scheduler_thread is not None:
+                            scheduler_thread.join()
+                        if self._tool_bindings is not None:
+                            self._tool_bindings.drain(timeout=None)
+                        self.complete_deferred_cleanup()
+                    except Exception:
+                        log.exception("Deferred runtime cleanup failed")
+                        self.status.record_error("Nettoyage différé impossible")
+                try:
+                    threading.Thread(target=finish_when_idle,
+                                     name="jarvis-deferred-cleanup", daemon=True).start()
+                except Exception:
+                    log.exception("Could not schedule deferred runtime cleanup")
+                    self.status.record_error("Impossible de programmer le nettoyage différé")
             if cancelled_during_cleanup:
                 raise asyncio.CancelledError
 
@@ -311,17 +382,29 @@ class CoreRuntime:
         """
         with self._deferred_cleanup_lock:
             if not self._deferred_cleanup:
-                return True
-            if not self._tool_bindings.drain(timeout=0):
+                return self._deferred_cleanup_result
+            scheduler_thread = getattr(self._scheduler, "_thread", None)
+            if scheduler_thread is not None and scheduler_thread.is_alive():
+                return False
+            if self._tool_bindings is not None and not self._tool_bindings.drain(timeout=0):
                 return False
             failures = self.services.close()
             self._deferred_cleanup = False
             with CoreRuntime._owner_lock:
                 if CoreRuntime._owner is self:
                     CoreRuntime._owner = None
+            self._deferred_cleanup_result = not failures
             if failures:
+                log.error("Deferred runtime cleanup failed for: %s", ", ".join(failures))
                 self.status.record_error("Nettoyage différé incomplet : " + ", ".join(failures))
-            return not failures
+            return self._deferred_cleanup_result
+
+    @staticmethod
+    def _stop_scheduler(scheduler: Any) -> None:
+        CoreRuntime._stop_threaded_service("scheduler", scheduler, scheduler.stop)
+        bind = getattr(scheduler, "set_runtime_services", None)
+        if bind is not None:
+            bind(None)
 
     @staticmethod
     def _stop_threaded_service(name: str, service: Any, stop: Callable[[], None]) -> None:
@@ -344,10 +427,26 @@ class CoreRuntime:
         conversation = services.register("conversation", factories.conversation())
         conversation.start_new_conversation(reason=hooks.reason)
         self.events.publish(RuntimeEvent("service_registered", "conversation"))
+        from ..tools import RuntimeToolBindings
+        with self._stop_lock:
+            self._tool_bindings = RuntimeToolBindings(services)
+            if self._stop_requested.is_set():
+                self._tool_bindings.reject_new()
+        services.register("tools", self._tool_bindings)
         try:
             scheduler = factories.scheduler()
-            services.register("scheduler", scheduler,
-                              close=lambda: self._stop_threaded_service("scheduler", scheduler, scheduler.stop))
+            services.register("scheduler", scheduler, close=lambda: self._stop_scheduler(scheduler))
+            with self._stop_lock:
+                self._scheduler = scheduler
+                bind = getattr(scheduler, "set_runtime_services", None)
+                if bind is not None:
+                    bind(services)
+                if self._stop_requested.is_set():
+                    signal_stop = getattr(scheduler, "request_stop", None)
+                    if signal_stop is not None:
+                        signal_stop()
+                elif factories.scheduler is _default_scheduler:
+                    scheduler.start()
         except Exception as exc:
             log.warning("Scheduler unavailable: %s", redact_secrets(str(exc), limit=300))
         try:
@@ -386,12 +485,6 @@ class CoreRuntime:
             audio.begin_speaking()
             self._notify(hooks.presence, "speaking")
 
-        from ..tools import RuntimeToolBindings
-        with self._stop_lock:
-            self._tool_bindings = RuntimeToolBindings(services)
-            if self._stop_requested.is_set():
-                self._tool_bindings.reject_new()
-        services.register("tools", self._tool_bindings)
         # Third-party legacy factories may have a fixed pre-injection signature.
         # Do not break them; only advertise optional dependencies they accept.
         try:
