@@ -24,25 +24,26 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `src/core/context.py:171` | `ContextEngine.build` | conversation | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/core/context.py:194` | `ContextEngine.build` | memory | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/core/context.py:230` | `ContextEngine.build` | status | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:64` | `_default_todo` | todo | `get_default_todo_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
-| `src/core/runtime.py:69` | `_default_routines` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
-| `src/core/runtime.py:74` | `_default_modes` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
-| `src/core/runtime.py:79` | `_default_activity` | activity | `get_default_activity_log` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
-| `src/core/runtime.py:84` | `_default_music` | music | `get_default_music_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
-| `src/core/runtime.py:101` | `CoreRuntime.__init__` | status | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:102` | `CoreRuntime.__init__` | context | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:105` | `CoreRuntime.__init__` | todo | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:106` | `CoreRuntime.__init__` | routines | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:107` | `CoreRuntime.__init__` | modes | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:108` | `CoreRuntime.__init__` | activity | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:109` | `CoreRuntime.__init__` | music | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:339` | `CoreRuntime._run_pipeline` | memory | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:344` | `CoreRuntime._run_pipeline` | conversation | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:349` | `CoreRuntime._run_pipeline` | scheduler | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:355` | `CoreRuntime._run_pipeline` | tasks | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:367` | `CoreRuntime._run_pipeline` | audio | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:394` | `CoreRuntime._run_pipeline` | tools | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/core/runtime.py:417` | `CoreRuntime._run_pipeline` | provider | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:65` | `_default_scheduler` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
+| `src/core/runtime.py:70` | `_default_todo` | todo | `get_default_todo_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
+| `src/core/runtime.py:75` | `_default_routines` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
+| `src/core/runtime.py:80` | `_default_modes` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
+| `src/core/runtime.py:85` | `_default_activity` | activity | `get_default_activity_log` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
+| `src/core/runtime.py:90` | `_default_music` | music | `get_default_music_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | compatibilité des factories ; supprimer après migration des propriétaires |
+| `src/core/runtime.py:107` | `CoreRuntime.__init__` | status | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:108` | `CoreRuntime.__init__` | context | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:111` | `CoreRuntime.__init__` | todo | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:112` | `CoreRuntime.__init__` | routines | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:113` | `CoreRuntime.__init__` | modes | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:114` | `CoreRuntime.__init__` | activity | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:115` | `CoreRuntime.__init__` | music | `register_lazy` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:422` | `CoreRuntime._run_pipeline` | memory | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:427` | `CoreRuntime._run_pipeline` | conversation | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:435` | `CoreRuntime._run_pipeline` | tools | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:438` | `CoreRuntime._run_pipeline` | scheduler | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:454` | `CoreRuntime._run_pipeline` | tasks | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:466` | `CoreRuntime._run_pipeline` | audio | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/core/runtime.py:510` | `CoreRuntime._run_pipeline` | provider | `register` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/gemini_live.py:326` | `GeminiLive.__init__` | conversation | `get_default_conversation_context` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
 | `src/gemini_live.py:1340` | `GeminiLive._connect_once` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/gemini_live.py:1340` | `GeminiLive._connect_once` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
@@ -50,16 +51,24 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `src/memory.py:1119` | `get_default_memory_manager` | memory | `MemoryManager` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
 | `src/modes.py:1027` | `get_default_mode_manager` | modes | `JarvisModeManager` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
 | `src/music/manager.py:351` | `get_default_music_manager` | music | `MusicManager` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
+| `src/protocols.py:151` | `_probe_memory_bank` | memory | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/protocols.py:151` | `_probe_memory_bank` | memory | `get_default_memory_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/protocols.py:165` | `_probe_routines` | routines | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/protocols.py:165` | `_probe_routines` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
-| `src/protocols.py:177` | `_probe_reminders` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/protocols.py:178` | `_probe_reminders` | scheduler | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/protocols.py:178` | `_probe_reminders` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/protocols.py:397` | `_run_tool` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/protocols.py:599` | `start_protocol` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/routine_actions.py:16` | `_scheduler` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
 | `src/routine_actions.py:16` | `_scheduler` | scheduler | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/routines.py:828` | `get_default_routine_manager` | routines | `RoutineManager` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
-| `src/scheduler.py:66` | `_notifications_suppressed_by_mode` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
-| `src/scheduler.py:183` | `Scheduler._routines` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
-| `src/scheduler.py:620` | `get_default_scheduler` | scheduler | `Scheduler` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
-| `src/scheduler.py:632` | `start_default_scheduler` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/scheduler.py:67` | `_notifications_suppressed_by_mode` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/scheduler.py:189` | `Scheduler._routines` | routines | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/scheduler.py:194` | `Scheduler._routines` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/scheduler.py:201` | `Scheduler._run_routine` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/scheduler.py:209` | `Scheduler._mode_suppresses_notifications` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/scheduler.py:658` | `get_default_scheduler` | scheduler | `Scheduler` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
+| `src/scheduler.py:670` | `start_default_scheduler` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
 | `src/todo.py:367` | `get_default_todo_manager` | todo | `TodoManager` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
 | `src/tools.py:713` | `_music_manager` | music | `get_default_music_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au dispatcher ; préserver API routines/outils historique |
 | `src/tools.py:722` | `music_search` | music | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
@@ -109,17 +118,17 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `src/tools.py:2275` | `set_reminder` | scheduler | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
 | `src/tools.py:2285` | `list_reminders` | scheduler | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
 | `src/tools.py:2290` | `cancel_reminder` | scheduler | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2377` | `_task_manager` | tasks | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2472` | `add_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2476` | `list_todos` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2480` | `complete_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2484` | `reopen_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2488` | `delete_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2492` | `clear_todos` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2496` | `get_activity_log` | activity | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2500` | `clear_activity_log` | activity | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2706` | `_guard_tool_function._wrapped` | modes | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
-| `src/tools.py:2720` | `_guard_tool_function._wrapped` | activity | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/tools.py:2378` | `_task_manager` | tasks | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2473` | `add_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2477` | `list_todos` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2481` | `complete_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2485` | `reopen_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2489` | `delete_todo` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2493` | `clear_todos` | todo | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2497` | `get_activity_log` | activity | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2501` | `clear_activity_log` | activity | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2707` | `_guard_tool_function._wrapped` | modes | `_resolve` | registre injecté ou fallback autonome | injection explicite si présente ; getter historique sinon | injecté pour les appels Core ; compatibilité hors Core |
+| `src/tools.py:2721` | `_guard_tool_function._wrapped` | activity | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/ui.py:300` | `InterfaceModeController.activate_current` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
 | `src/ui.py:302` | `InterfaceModeController.activate_current` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/ui.py:392` | `_start_voice` | runtime | `CoreRuntime` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
@@ -127,19 +136,20 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `src/ui.py:536` | `_build_tray_icon._show_routines_if_allowed` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/ui.py:543` | `_build_tray_icon._show_routines_if_allowed` | routines | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `src/ui.py:544` | `_build_tray_icon._show_routines_if_allowed` | scheduler | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/ui.py:556` | `_build_tray_icon._show_background_tasks` | tasks | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/ui.py:573` | `_build_tray_icon._show_desktop_appearance` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
-| `src/ui.py:575` | `_build_tray_icon._show_desktop_appearance` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/ui.py:595` | `_build_tray_icon._start_protocol_if_allowed` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
-| `src/ui.py:597` | `_build_tray_icon._start_protocol_if_allowed` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `src/ui.py:718` | `run_ui` | runtime | `CoreRuntime` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
+| `src/ui.py:545` | `_build_tray_icon._show_routines_if_allowed` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/ui.py:557` | `_build_tray_icon._show_background_tasks` | tasks | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/ui.py:574` | `_build_tray_icon._show_desktop_appearance` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/ui.py:576` | `_build_tray_icon._show_desktop_appearance` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/ui.py:596` | `_build_tray_icon._start_protocol_if_allowed` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injectable ; conservé pour les appelants historiques |
+| `src/ui.py:598` | `_build_tray_icon._start_protocol_if_allowed` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `src/ui.py:722` | `run_ui` | runtime | `CoreRuntime` | construction directe | nouvelle instance ; vérifier propriétaire et appelants | examiner propriétaire avant de remplacer ou retirer |
 | `UI/background_tasks_dialog.py:145` | `show_background_tasks_dialog` | tasks | `get_default_task_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/boot_sequence.py:506` | `ProtocolPresenter._visuals_suppressed` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/boot_sequence.py:508` | `ProtocolPresenter._visuals_suppressed` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
-| `UI/dashboard/actions.py:94` | `conversation_new` | conversation | `get_default_conversation_context` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
-| `UI/dashboard/actions.py:140` | `routine_names` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
-| `UI/dashboard/actions.py:154` | `run_routine` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
-| `UI/dashboard/actions.py:232` | `build_actions._run` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/dashboard/actions.py:97` | `conversation_new` | conversation | `get_default_conversation_context` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/dashboard/actions.py:143` | `routine_names` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/dashboard/actions.py:157` | `run_routine` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/dashboard/actions.py:236` | `build_actions._run` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/dashboard/controller.py:584` | `DashboardController.maybe_open_on_launch` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/dashboard/controller.py:586` | `DashboardController.maybe_open_on_launch` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `UI/dashboard/hub.py:96` | `DashboardHub.__init__` | status | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
@@ -151,6 +161,7 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `UI/dashboard/memory_service.py:116` | `MemoryService.__init__.manager_getter` | memory | `get_default_memory_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/dashboard/notes_service.py:95` | `TodoService.__init__.manager_getter` | todo | `get_default_todo_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/dashboard/tasks_service.py:81` | `TasksService.__init__.manager_getter` | tasks | `get_default_task_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/dashboard/widgets/jarvis_widgets.py:375` | `QuickActionsWidget._host` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `UI/desktop/overlay.py:835` | `DesktopOverlayController._suppressed` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/desktop/overlay.py:837` | `DesktopOverlayController._suppressed` | modes | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `UI/jarvis_menu.py:331` | `_routine_names` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
@@ -159,10 +170,12 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `UI/jarvis_menu.py:384` | `MorphingOrbWidget._service` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/jarvis_menu.py:387` | `MorphingOrbWidget._service` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/jarvis_menu.py:390` | `MorphingOrbWidget._service` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/jarvis_menu.py:1931` | `MorphingOrbWidget._run_routine_async._worker` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
+| `UI/jarvis_menu.py:2316` | `MorphingOrbWidget._menu_callback_for._callback` | tools | `require` | registre injecté | dépendance indisponible après fermeture ou avant initialisation | migré ; disponibilité et arrêt à gérer |
 | `UI/mode_apps_dialog.py:46` | `_ModeSection.__init__` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/mode_apps_dialog.py:143` | `ModeAppsDialog.__init__` | modes | `get_default_mode_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 | `UI/routines_dialog.py:30` | `RoutinesDialog.__init__` | routines | `get_default_routine_manager` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
-| `UI/routines_dialog.py:34` | `RoutinesDialog.__init__` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
+| `UI/routines_dialog.py:35` | `RoutinesDialog.__init__` | scheduler | `get_default_scheduler` | getter global historique | instance partagée ou création paresseuse ; setter peut diverger | injecter au point d’entrée ; fallback autonome conservé si présent |
 
 ## États globaux recensés
 
@@ -177,13 +190,13 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `src/notifications.py:18` | `_HOOKS` |
 | `src/notifications.py:19` | `_WINDOWS_QUEUE` |
 | `src/notifications.py:20` | `_WINDOWS_WORKER` |
-| `src/protocols.py:427` | `_ACTIVE_RUN` |
-| `src/protocols.py:428` | `_LISTENERS` |
+| `src/protocols.py:432` | `_ACTIVE_RUN` |
+| `src/protocols.py:433` | `_LISTENERS` |
 | `src/routines.py:93` | `_TOOL_FUNCTIONS` |
 | `src/routines.py:94` | `_TOOL_DECLARATIONS` |
 | `src/routines.py:813` | `_DEFAULT_MANAGER` |
 | `src/runtime_status.py:367` | `RUNTIME` |
-| `src/scheduler.py:605` | `_DEFAULT_SCHEDULER` |
+| `src/scheduler.py:643` | `_DEFAULT_SCHEDULER` |
 | `src/system_extras.py:99` | `_HISTORY` |
 | `src/todo.py:359` | `_DEFAULT_MANAGER` |
 | `src/tools.py:1267` | `_TIMERS` |
@@ -195,5 +208,27 @@ Un getter historique reste une compatibilité à migrer, pas une preuve que le r
 | `UI/interface_mode_bridge.py:39` | `INTERFACE_MODE` |
 | `UI/menu_state.py:333` | `LIVE` |
 | `UI/mode_apps_dialog.py:246` | `_DIALOG` |
-| `UI/routines_dialog.py:293` | `_DIALOG` |
+| `UI/routines_dialog.py:294` | `_DIALOG` |
 | `UI/visibility_bridge.py:179` | `VISIBILITY` |
+
+## Revue complémentaire des chemins indirects — mission de clôture
+
+Cette table complète la recherche AST par une revue manuelle des callbacks et threads. Les getters conservés restent des compatibilités autonomes, non des preuves de propriété exclusive ; cette analyse statique ne garantit pas l'absence de dépendances dynamiques non répertoriées.
+
+| Chemin | Accès et cycle de vie | Statut / risque |
+|---|---|---|
+| `src/main.py:run_console` | Construit un Core par session ; `--protocol` seul joue sans Core | Compatible ; protocole console autonome utilise getters historiques. |
+| `src/ui.py:run_ui`, Orb et Desktop | Core injecté ; getters UI si aucun Core | Partagé quand injecté ; services/contrôles purement UI locaux. Identité graphique non prouvée ici. |
+| Tray, `UI.boot_sequence.ProtocolPresenter` | Mode via registre, lancement protocole avec registre | Migré quand Core présent ; historique autonome conservé. |
+| Orb et dialogue routines, actions Dashboard | Dispatch `run_routine` lié pour l'exécution avec Core ; manager injecté pour l'édition | Migré sur ces points d'entrée ; callback UI tardif et jobs hors dispatcher restent à examiner. |
+| `Scheduler._fire_reminder` / `_check_scheduled_routines` | Registre Core, dispatcher lié, mode Core | Migré pour scheduler configuré par Core ; les factories tierces qui démarrent le scheduler avant retour peuvent encore provoquer un déclenchement avant injection. |
+| `protocols.start_protocol` / `_run_probe` / `_run_tool` | Services et dispatcher Core si fournis ; worker suivi | Migré sur outil, presenter et tray ; `--protocol` console standalone et toute invocation externe sans services restent historiques. Son lancement et l'arrivée effective du thread ne sont pas atomiques ; après arrêt, l'entrée du worker est refusée. |
+| `RuntimeToolBindings` et Gemini | Registre Core ; appels modèle et filet Dashboard, API autonome historique | Appels directs via `functions` cohérents ; fonctions module appelées directement sans registre résolvent encore les defaults. |
+| `ContextEngine.build_async` | Sources par registre ; `asyncio.to_thread`, single-flight | **Non suivi par la barrière d'outils**. Un build peut rester actif après timeout/arrêt ; ressources conservées uniquement pour les outils et thread scheduler suivis. |
+| `background_tasks` | Manager Core avec worker dédié ; notifications historiques globales | Arrêt du manager contrôlé ; si son thread dépasse le join, erreur détectée mais registre peut déjà être fermé. Worker indépendant non inclus dans la barrière des outils. |
+| `src.notifications` | `_HOOKS`, file et worker Windows globaux | Compatibilité backend ; centre de notifications Dashboard local au hub. Leur identité n'est pas celle du bus Core. |
+| Todo, routines, modes, activité, musique | Getters lazily empruntés par registre | Identités mémorisées après première résolution ; un setter global ou appel legacy parallèle peut diverger. Propriété et destruction exclusives non garanties. |
+| Mémoire, conversation et scheduler | Factory Core et setters/getters globaux historiques | Mémoire et conversation restent utilisées par API standalone ; plusieurs instances sont possibles si un appelant externe change les defaults. |
+| `tools` timers, `protocols` écouteurs/run global, ponts UI | Timers et registres de processus, API OS et callbacks | Compatibilité historique non universellement suivie ; peut survivre à Core, audit et migration complémentaires nécessaires. |
+| UI secondaires, `DashboardHub`, moniteur, jobs | Services injectés par callbacks ; jobs locaux au hub ; fallback autonome | Certains callbacks peuvent dépasser la fermeture UI/Core ; pas d'identité ni arrêt graphique exhaustif démontrés. |
+| Routines `set_tool_registry` et appels directs | Registre global pour appels standalone | Conservé pour API historiques/tests ; pas utilisé par les étapes des routines déclenchées via dispatch Core. |
