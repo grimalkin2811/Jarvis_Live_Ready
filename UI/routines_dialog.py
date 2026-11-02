@@ -232,11 +232,12 @@ class RoutinesDialog(QDialog):
         self.refresh(force=True)
         self.feedback.setText(f"{name} : exécution en cours…")
         manager = self.manager
+        routine_runner = self._routine_runner
         finished = self._run_finished
 
         def worker():
             try:
-                result = self._routine_runner(name=name) if self._routine_runner is not None else manager.run_routine(name)
+                result = routine_runner(name=name) if routine_runner is not None else manager.run_routine(name)
             except Exception:
                 result = {"success": False, "error": "Exécution impossible."}
             try:
@@ -302,6 +303,21 @@ def show_routines_dialog(parent=None, *, manager=None, scheduler=None, routine_r
         _DIALOG.setAttribute(Qt.WA_DeleteOnClose)
         current = _DIALOG
         _DIALOG.destroyed.connect(lambda *_: _forget_dialog(current))
+    elif manager is not None or scheduler is not None or routine_runner is not None:
+        # Never keep a previously opened standalone dialog bound to stale
+        # services when the application supplies the Core's dependencies.
+        if _DIALOG._running_name is not None and (
+            (manager is not None and manager is not _DIALOG.manager)
+            or (scheduler is not None and scheduler is not _DIALOG.scheduler)
+            or (routine_runner is not None and routine_runner is not _DIALOG._routine_runner)
+        ):
+            raise RuntimeError("Une routine est encore en cours dans le catalogue précédent.")
+        if manager is not None:
+            _DIALOG.manager = manager
+        if scheduler is not None:
+            _DIALOG.scheduler = scheduler
+        if routine_runner is not None:
+            _DIALOG._routine_runner = routine_runner
     _DIALOG.refresh(force=True)
     _DIALOG.show()
     _DIALOG.raise_()

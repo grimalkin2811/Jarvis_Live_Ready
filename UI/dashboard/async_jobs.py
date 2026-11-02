@@ -23,8 +23,9 @@ class JobRunner(QObject):
     _finished = Signal(int, bool, object)
     _future_done = Signal(int, object)
 
-    def __init__(self, max_workers: int = 3, parent: QObject | None = None) -> None:
+    def __init__(self, max_workers: int = 3, parent: QObject | None = None, *, activity_boundary=None) -> None:
         super().__init__(parent)
+        self._activity_boundary = activity_boundary
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, int(max_workers)), thread_name_prefix="jarvis-dashboard-job"
         )
@@ -57,7 +58,13 @@ class JobRunner(QObject):
 
         def _run() -> None:
             try:
-                result = fn(*args, **kwargs)
+                if self._activity_boundary is None:
+                    result = fn(*args, **kwargs)
+                else:
+                    # Acquire on the actual executor thread: a queued job that
+                    # starts after stop is rejected before it touches services.
+                    with self._activity_boundary.activity("dashboard.job"):
+                        result = fn(*args, **kwargs)
                 ok = True
             except BaseException as exc:  # noqa: BLE001 - livré à on_error
                 result = exc

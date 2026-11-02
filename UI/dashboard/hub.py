@@ -94,7 +94,7 @@ class DashboardHub(QObject):
         self.store = store
         self.core = core
         self.runtime = core.services.require("status") if core is not None else runtime
-        self.jobs = JobRunner(parent=self)
+        self.jobs = JobRunner(parent=self, activity_boundary=getattr(core, "activity_boundary", None))
         services = core.services if core is not None else None
         if services is not None:
             self.tasks = tasks_service or TasksService(lambda: services.require("tasks"))

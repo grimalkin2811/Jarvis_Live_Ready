@@ -249,6 +249,8 @@ _DIALOG: ModeAppsDialog | None = None
 def show_mode_apps_dialog(parent=None, *, manager=None) -> ModeAppsDialog:
     """Une seule fenêtre partagée entre l'orbe et la zone de notification."""
     global _DIALOG
+    if _DIALOG is not None and manager is not None and _DIALOG.manager is not manager:
+        _DIALOG.close()
     if _DIALOG is None or not _DIALOG.isVisible():
         if _DIALOG is not None:
             # Fermée mais pas encore détruite : on la détruit proprement.

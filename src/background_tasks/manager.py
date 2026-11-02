@@ -66,6 +66,9 @@ class TaskManager:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._closing = False
+        self._runtime_bound = False
+        self._runtime_released = False
+        self._shutdown_error: Exception | None = None
         self._init_error: BaseException | None = None
         self._api_key = api_key
         if (
@@ -99,6 +102,8 @@ class TaskManager:
 
     def start(self) -> None:
         with self._lock:
+            if self._closing and self._runtime_bound:
+                raise RuntimeError("Le gestionnaire de tâches est en cours d'arrêt.")
             if self._thread and self._thread.is_alive():
                 if self._closing:
                     raise RuntimeError("Le gestionnaire de tâches est en cours d'arrêt.")
@@ -168,18 +173,48 @@ class TaskManager:
                 item.cancel()
             if pending:
                 loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            # A submitted coroutine can be cancelled before its first step.
+            # It cannot update its own persistent status in that case.
+            with self._lock:
+                unfinished = [task.id for task in self._tasks.values()
+                              if task.status not in TERMINAL_STATUSES]
+            for task_id in unfinished:
+                try:
+                    self._mutate(task_id, status=TaskStatus.CANCELLED, finished_at=utc_now(),
+                                 current_step="Annulée", error="Arrêt du gestionnaire de tâches.")
+                except Exception as exc:
+                    self._shutdown_error = exc
+                    print(f"[Tasks] Finalisation d'une tâche impossible ({type(exc).__name__}).")
             try:
                 close_client = getattr(getattr(self.client, "aio", None), "aclose", None)
                 if close_client is not None:
                     loop.run_until_complete(close_client())
-            except Exception:
-                pass
+            except Exception as exc:
+                self._shutdown_error = exc
+                print(f"[Tasks] Fermeture du client impossible ({type(exc).__name__}).")
             loop.close()
 
+    def bind_runtime(self) -> None:
+        """Disallow restarting this manager after its owning runtime stops."""
+        with self._lock:
+            self._runtime_bound = True
+            self._runtime_released = False
+
+    def release_runtime(self) -> None:
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                raise RuntimeError("Le worker Task Manager est encore actif.")
+            self._runtime_released = True
+
+    def request_stop(self) -> None:
+        self.close(wait=False)
+
     def close(self, wait: bool = False) -> None:
-        self._closing = True
-        loop = self._loop
-        for future in list(self._futures.values()):
+        with self._lock:
+            self._closing = True
+            loop = self._loop
+            futures = tuple(self._futures.values())
+        for future in futures:
             future.cancel()
         # The loop can be between initialization and run_forever. Scheduling
         # stop even in that gap closes the race; during initialization the
@@ -191,6 +226,8 @@ class TaskManager:
                 pass  # the worker closed the loop concurrently
         if wait and self._thread:
             self._thread.join(timeout=3.0)
+        if wait and self._shutdown_error is not None:
+            raise RuntimeError("Fermeture du client ou finalisation Task Manager impossible") from self._shutdown_error
 
     def add_hook(self, hook: TaskHook) -> None:
         with self._lock:
@@ -266,11 +303,23 @@ class TaskManager:
         # Le worker peut passer l'objet stocké à RUNNING immédiatement après
         # run_coroutine_threadsafe; ne pas le recloner après cette frontière.
         queued_snapshot = self._clone(task)
-        self.start()
-        assert self._loop is not None
-        future = asyncio.run_coroutine_threadsafe(self._run_task(task.id), self._loop)
-        with self._lock:
-            self._futures[task.id] = future
+        try:
+            self.start()
+            with self._lock:
+                if self._closing:
+                    raise RuntimeError("Le gestionnaire de tâches est en cours d'arrêt.")
+                assert self._loop is not None
+                coroutine = self._run_task(task.id)
+                try:
+                    future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+                except BaseException:
+                    coroutine.close()
+                    raise
+                self._futures[task.id] = future
+        except Exception:
+            self._mutate(task.id, status=TaskStatus.CANCELLED, finished_at=utc_now(),
+                         current_step="Annulée", error="Soumission interrompue.")
+            raise
         return queued_snapshot
 
     def retry_task(self, task_id: str) -> BackgroundTask:
@@ -466,9 +515,21 @@ class TaskManager:
     def resolve_live_model(self, timeout: float = 60.0) -> dict:
         """Déclenche la découverte sur la boucle propriétaire, thread-safe."""
         self.start()
-        assert self._loop is not None and self.resolver is not None
-        future = asyncio.run_coroutine_threadsafe(self.resolver.resolve(), self._loop)
-        resolution = future.result(timeout=timeout)
+        with self._lock:
+            if self._closing:
+                raise RuntimeError("Le gestionnaire de tâches est en cours d'arrêt.")
+            assert self._loop is not None and self.resolver is not None
+            coroutine = self.resolver.resolve()
+            try:
+                future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+            except BaseException:
+                coroutine.close()
+                raise
+        try:
+            resolution = future.result(timeout=timeout)
+        except concurrent.futures.TimeoutError:
+            future.cancel()
+            raise
         return {
             "model": resolution.model,
             "transport": resolution.transport,
@@ -484,6 +545,9 @@ _DEFAULT: TaskManager | None = None
 def configure_default_task_manager(api_key: str, **kwargs) -> TaskManager:
     global _DEFAULT
     with _DEFAULT_LOCK:
+        if (_DEFAULT is not None and _DEFAULT._closing and _DEFAULT._runtime_bound
+                and not _DEFAULT._runtime_released):
+            raise RuntimeError("Le gestionnaire de tâches du runtime est en cours d'arrêt.")
         if _DEFAULT is None or _DEFAULT._closing:
             _DEFAULT = TaskManager(api_key, **kwargs)
         return _DEFAULT

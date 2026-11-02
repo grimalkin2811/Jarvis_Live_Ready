@@ -1285,7 +1285,66 @@ def _timer_finished(timer_id, label):
             pass
 
 
-def set_timer(seconds=None, minutes=None, label="minuteur"):
+class RuntimeTimers:
+    """Own timers created through one Core; standalone timers remain independent."""
+    def __init__(self, boundary):
+        self._boundary = boundary
+        self._lock = threading.Lock()
+        self._threads = set()
+        self._closing = False
+
+    def start(self, thread):
+        with self._lock:
+            if self._closing:
+                return False
+            self._threads = {item for item in self._threads if item.is_alive()}
+            self._threads.add(thread)
+            try:
+                thread.start()
+            except BaseException:
+                self._threads.remove(thread)
+                raise
+            return True
+
+    def callback(self, timer_id, label):
+        lease = self._boundary.activity("timer.callback")
+        try:
+            lease.__enter__()
+        except RuntimeError:
+            return
+        try:
+            _timer_finished(timer_id, label)
+        finally:
+            with _TIMERS_LOCK:
+                entry = _TIMERS.get(timer_id)
+                if entry is not None and entry.get("owner") is self:
+                    entry["owner"] = None
+                    entry["timer"] = None
+            lease.__exit__(None, None, None)
+
+    def request_stop(self):
+        with self._lock:
+            self._closing = True
+            threads = tuple(self._threads)
+        for thread in threads:
+            thread.cancel()
+        with _TIMERS_LOCK:
+            for entry in _TIMERS.values():
+                if entry.get("owner") is self:
+                    entry["done"] = True
+                    entry["owner"] = None
+                    entry["timer"] = None
+
+    def wait(self, timeout):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._lock:
+            threads = tuple(self._threads)
+        for thread in threads:
+            thread.join(None if deadline is None else max(0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in threads)
+
+
+def set_timer(seconds=None, minutes=None, label="minuteur", *, _services=None):
     """Programme un minuteur (en secondes et/ou minutes)."""
     try:
         total = int(seconds or 0) + int(minutes or 0) * 60
@@ -1301,20 +1360,26 @@ def set_timer(seconds=None, minutes=None, label="minuteur"):
         timer_id = _TIMER_SEQ[0]
 
     name = str(label or "minuteur").strip() or "minuteur"
-    thread = threading.Timer(total, _timer_finished, args=(timer_id, name))
+    owner = _services.require("runtime_timers") if _services is not None else None
+    callback = _timer_finished if owner is None else owner.callback
+    thread = threading.Timer(total, callback, args=(timer_id, name))
     thread.daemon = True
-    thread.start()
-
+    end = (dt.datetime.now() + dt.timedelta(seconds=total)).strftime("%H:%M:%S")
     with _TIMERS_LOCK:
-        _TIMERS[timer_id] = {
-            "id": timer_id,
-            "label": name,
-            "fin": (dt.datetime.now() + dt.timedelta(seconds=total)).strftime("%H:%M:%S"),
-            "timer": thread,
-            "done": False,
-        }
-
-    return _ok(id=timer_id, label=name, duree_secondes=total, fin=_TIMERS[timer_id]["fin"])
+        _TIMERS[timer_id] = {"id": timer_id, "label": name, "fin": end,
+                             "timer": thread, "done": False, "owner": owner}
+    try:
+        if owner is None:
+            thread.start()
+        elif not owner.start(thread):
+            with _TIMERS_LOCK:
+                _TIMERS[timer_id].update(done=True, owner=None, timer=None)
+            return _err("Runtime en cours d'arrêt : minuteur refusé.")
+    except Exception:
+        with _TIMERS_LOCK:
+            _TIMERS[timer_id].update(done=True, owner=None, timer=None)
+        raise
+    return _ok(id=timer_id, label=name, duree_secondes=total, fin=end)
 
 
 def list_timers():
@@ -1337,6 +1402,9 @@ def cancel_timer(timer_id=None):
                 if not entry["done"]:
                     entry["timer"].cancel()
                     entry["done"] = True
+                    if entry.get("owner") is not None:
+                        entry["owner"] = None
+                        entry["timer"] = None
                     count += 1
             return _ok(annules=count)
 
@@ -1349,6 +1417,9 @@ def cancel_timer(timer_id=None):
             return _err("Minuteur introuvable")
         entry["timer"].cancel()
         entry["done"] = True
+        if entry.get("owner") is not None:
+            entry["owner"] = None
+            entry["timer"] = None
         return _ok(id=key, label=entry["label"])
 
 
@@ -2739,10 +2810,10 @@ class RuntimeToolBindings:
     This is a lifecycle boundary, not an authorization or consent engine.
     """
 
-    def __init__(self, services):
-        self._condition = threading.Condition()
-        self._closing = False
-        self._active = 0
+    def __init__(self, services, boundary=None):
+        from .core.activity_boundary import ActivityBoundary
+
+        self.boundary = boundary if boundary is not None else ActivityBoundary()
         self.functions = {
             name: self._track(_guard_tool_function(name, function, services))
             for name, function in _RAW_TOOL_FUNCTIONS.items()
@@ -2751,16 +2822,15 @@ class RuntimeToolBindings:
     def _track(self, function):
         @functools.wraps(function)
         def invoke(*args, **kwargs):
-            with self._condition:
-                if self._closing:
-                    return _err("Runtime en cours d'arrêt : outil indisponible.")
-                self._active += 1
+            lease = self.boundary.activity(f"tool:{function.__name__}")
+            try:
+                lease.__enter__()
+            except RuntimeError:
+                return _err("Runtime en cours d'arrêt : outil indisponible.")
             try:
                 return function(*args, **kwargs)
             finally:
-                with self._condition:
-                    self._active -= 1
-                    self._condition.notify_all()
+                lease.__exit__(None, None, None)
         return invoke
 
     def track_background(self, function):
@@ -2768,13 +2838,10 @@ class RuntimeToolBindings:
         return self._track(function)
 
     def reject_new(self):
-        with self._condition:
-            self._closing = True
+        self.boundary.reject_new()
 
     def drain(self, timeout):
-        with self._condition:
-            self._closing = True
-            return self._condition.wait_for(lambda: self._active == 0, timeout=timeout)
+        return self.boundary.drain(timeout)
 
 
 def _decl(name, description, properties=None, required=None):

@@ -1379,34 +1379,39 @@ class AudioIO:
     # ARRÊT
     # =========================================================
 
+    def request_stop(self) -> None:
+        """Signal the audio worker without joining it on the caller's thread."""
+        self.running = False
+
     def stop(self) -> None:
 
-        self.running = False
+        self.request_stop()
         self.audio_started = False
         # Fin de vie : plus aucune fenêtre de conversation ne doit être
         # armée par la suite (le clear_output final devient un no-op).
         self.awake = False
         self._emit_presence("hidden")
+        failures = []
 
         # Micro
         if self.ins:
 
-            try:
-                self.ins.stop()
-                self.ins.close()
-            except Exception:
-                pass
+            for method in (self.ins.stop, self.ins.close):
+                try:
+                    method()
+                except Exception as exc:
+                    failures.append(("input stream", exc))
 
             self.ins = None
 
         # Sortie audio
         if self.outs:
 
-            try:
-                self.outs.stop()
-                self.outs.close()
-            except Exception:
-                pass
+            for method in (self.outs.stop, self.outs.close):
+                try:
+                    method()
+                except Exception as exc:
+                    failures.append(("output stream", exc))
 
             self.outs = None
 
@@ -1414,6 +1419,8 @@ class AudioIO:
         if self.wake_thread:
 
             self.wake_thread.join(timeout=1.0)
+            if self.wake_thread.is_alive():
+                raise RuntimeError("Le worker audio est encore actif après l'arrêt.")
             self.wake_thread = None
 
         # Nettoyage sortie
@@ -1430,7 +1437,10 @@ class AudioIO:
         self.awake = False
         self._set_speaking(False)
 
-        try:
-            self.wake_model.reset()
-        except Exception:
-            pass
+        if self.wake_model is not None:
+            try:
+                self.wake_model.reset()
+            except Exception as exc:
+                failures.append(("wake model", exc))
+        if failures:
+            raise RuntimeError("Audio cleanup failed: " + ", ".join(name for name, _ in failures)) from failures[0][1]

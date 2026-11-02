@@ -146,6 +146,9 @@ def show_background_tasks_dialog(parent=None, *, manager=None) -> BackgroundTask
     except Exception as exc:
         QMessageBox.warning(parent, "Jarvis — Tâches", str(exc))
         return None
+    if _DIALOG is not None and _DIALOG.manager is not manager:
+        # Detach the old manager's hook before creating the new view.
+        _DIALOG.close()
     if _DIALOG is None:
         _DIALOG = BackgroundTasksDialog(manager, parent)
         _DIALOG.setAttribute(Qt.WA_DeleteOnClose)

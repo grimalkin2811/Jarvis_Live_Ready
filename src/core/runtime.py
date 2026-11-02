@@ -14,6 +14,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from .activity_boundary import ActivityBoundary
 from .context import ContextEngine
 from .events import EventBus, RuntimeEvent
 from .services import ServiceRegistry
@@ -48,14 +49,19 @@ class RuntimeFactories:
 def default_factories() -> RuntimeFactories:
     # Lazy: importing the core alone never requires Qt, audio drivers or GenAI.
     from ..audio import AudioIO
-    from ..background_tasks import configure_default_task_manager
     from ..conversation import get_default_conversation_context
     from ..gemini_live import AuthError, GeminiLive, SessionRecoveryExhausted
     from ..memory import MemoryManager, set_default_memory_manager
 
     return RuntimeFactories(AudioIO, GeminiLive, MemoryManager, set_default_memory_manager,
                             get_default_conversation_context, _default_scheduler,
-                            configure_default_task_manager, AuthError, SessionRecoveryExhausted)
+                            _default_tasks, AuthError, SessionRecoveryExhausted)
+
+
+def _default_tasks(api_key):
+    # Register ownership before starting an initialization that may time out.
+    from ..background_tasks import configure_default_task_manager
+    return configure_default_task_manager(api_key, auto_start=False)
 
 
 def _default_scheduler():
@@ -105,7 +111,9 @@ class CoreRuntime:
         self.events = EventBus()
         self.services = ServiceRegistry()
         self.services.register("status", self.status)
-        self.services.register("context", ContextEngine(self.services))
+        self.activity_boundary = self.services.register("activity_boundary", ActivityBoundary())
+        self.services.register("context", ContextEngine(
+            self.services, activity_boundary=self.activity_boundary))
         # Legacy managers retain their existing ownership and are imported only
         # when requested. This preserves their shared singleton identities.
         self.services.register_lazy("todo", _default_todo)
@@ -114,12 +122,14 @@ class CoreRuntime:
         self.services.register_lazy("activity", _default_activity)
         self.services.register_lazy("music", _default_music)
         self._tool_bindings = None
+        self._timers = None
         self._deferred_cleanup = False
         self._deferred_cleanup_result = True
         self._deferred_cleanup_lock = threading.Lock()
         self.audio = None
         self.provider = None
         self._scheduler = None
+        self._tasks_manager = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._task: asyncio.Task | None = None
         self._stop_requested = threading.Event()
@@ -201,8 +211,23 @@ class CoreRuntime:
             if self._stop_requested.is_set():
                 return
             self._stop_requested.set()
-            if self._tool_bindings is not None:
-                self._tool_bindings.reject_new()
+            self.activity_boundary.reject_new()
+            if self._timers is not None:
+                self._timers.request_stop()
+            signal_audio = getattr(self.audio, "request_stop", None)
+            if signal_audio is not None:
+                try:
+                    signal_audio()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Audio stop signal failed")
+            signal_tasks = getattr(self._tasks_manager, "request_stop", None)
+            if signal_tasks is not None:
+                try:
+                    signal_tasks()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Task Manager stop signal failed")
             scheduler = self._scheduler
             signal_stop = getattr(scheduler, "request_stop", None)
             if signal_stop is not None:
@@ -275,6 +300,23 @@ class CoreRuntime:
         finally:
             self._cleanup_started = True
             self._stop_requested.set()
+            self.activity_boundary.reject_new()
+            if self._timers is not None:
+                self._timers.request_stop()
+            signal_audio = getattr(self.audio, "request_stop", None)
+            if signal_audio is not None:
+                try:
+                    signal_audio()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Audio stop signal failed")
+            signal_tasks = getattr(self._tasks_manager, "request_stop", None)
+            if signal_tasks is not None:
+                try:
+                    signal_tasks()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Task Manager stop signal failed")
             signal_stop = getattr(self._scheduler, "request_stop", None)
             if signal_stop is not None:
                 try:
@@ -282,8 +324,6 @@ class CoreRuntime:
                 except Exception:
                     self._cleanup_failed = True
                     log.exception("Scheduler stop signal failed")
-            if self._tool_bindings is not None:
-                self._tool_bindings.reject_new()
             # A second cancellation must not abandon an in-flight close and
             # leave the owner lock or other resources behind.
             cleanup_task = asyncio.create_task(self._dispose_provider())
@@ -308,19 +348,17 @@ class CoreRuntime:
                 self._notify(controls.set_stop_speaking_handler, None)
             # Cancelling asyncio.to_thread does not stop its worker. Do not
             # close resources or admit a new owner while an invocation uses them.
-            drained = True
-            if self._tool_bindings is not None:
-                drain_task = asyncio.create_task(asyncio.to_thread(self._tool_bindings.drain, 2.0))
-                while True:
-                    try:
-                        drained = await asyncio.shield(drain_task)
+            drain_task = asyncio.create_task(asyncio.to_thread(self.activity_boundary.drain, 2.0))
+            while True:
+                try:
+                    drained = await asyncio.shield(drain_task)
+                    break
+                except asyncio.CancelledError:
+                    if drain_task.cancelled():
+                        drained = False
+                        self._cleanup_failed = True
                         break
-                    except asyncio.CancelledError:
-                        if drain_task.cancelled():
-                            drained = False
-                            self._cleanup_failed = True
-                            break
-                        cancelled_during_cleanup = True
+                    cancelled_during_cleanup = True
             scheduler_thread = getattr(self._scheduler, "_thread", None)
             if scheduler_thread is not None and scheduler_thread.is_alive():
                 join_task = asyncio.create_task(asyncio.to_thread(scheduler_thread.join, 2.0))
@@ -334,9 +372,57 @@ class CoreRuntime:
                             break
                         cancelled_during_cleanup = True
             scheduler_busy = scheduler_thread is not None and scheduler_thread.is_alive()
-            self._deferred_cleanup = not drained or scheduler_busy
-            failures = ([] if not self._deferred_cleanup else
-                        ["outils encore actifs" if not drained else "scheduler encore actif"])
+            tasks_thread = getattr(self._tasks_manager, "_thread", None)
+            if tasks_thread is not None and tasks_thread.is_alive():
+                join_task = asyncio.create_task(asyncio.to_thread(tasks_thread.join, 2.0))
+                while True:
+                    try:
+                        await asyncio.shield(join_task)
+                        break
+                    except asyncio.CancelledError:
+                        if join_task.cancelled():
+                            self._cleanup_failed = True
+                            break
+                        cancelled_during_cleanup = True
+            tasks_busy = tasks_thread is not None and tasks_thread.is_alive()
+            audio_thread = getattr(self.audio, "wake_thread", None)
+            if audio_thread is not None and audio_thread.is_alive():
+                join_task = asyncio.create_task(asyncio.to_thread(audio_thread.join, 2.0))
+                while True:
+                    try:
+                        await asyncio.shield(join_task)
+                        break
+                    except asyncio.CancelledError:
+                        if join_task.cancelled():
+                            self._cleanup_failed = True
+                            break
+                        cancelled_during_cleanup = True
+            audio_busy = audio_thread is not None and audio_thread.is_alive()
+            timers_busy = False
+            if self._timers is not None:
+                timer_wait = asyncio.create_task(asyncio.to_thread(self._timers.wait, 2.0))
+                while True:
+                    try:
+                        timers_busy = not await asyncio.shield(timer_wait)
+                        break
+                    except asyncio.CancelledError:
+                        if timer_wait.cancelled():
+                            timers_busy = True
+                            self._cleanup_failed = True
+                            break
+                        cancelled_during_cleanup = True
+            self._deferred_cleanup = not drained or scheduler_busy or tasks_busy or audio_busy or timers_busy
+            failures = []
+            if not drained:
+                failures.append("activités encore actives: " + ", ".join(self.activity_boundary.snapshot()["active"]))
+            if scheduler_busy:
+                failures.append("scheduler encore actif")
+            if tasks_busy:
+                failures.append("Task Manager encore actif")
+            if audio_busy:
+                failures.append("worker audio encore actif")
+            if timers_busy:
+                failures.append("minuteurs encore actifs")
             if not self._deferred_cleanup:
                 failures = self.services.close()
             if failures or self._cleanup_failed:
@@ -359,8 +445,13 @@ class CoreRuntime:
                     try:
                         if scheduler_thread is not None:
                             scheduler_thread.join()
-                        if self._tool_bindings is not None:
-                            self._tool_bindings.drain(timeout=None)
+                        if tasks_thread is not None:
+                            tasks_thread.join()
+                        if audio_thread is not None:
+                            audio_thread.join()
+                        if self._timers is not None:
+                            self._timers.wait(None)
+                        self.activity_boundary.drain(timeout=None)
                         self.complete_deferred_cleanup()
                     except Exception:
                         log.exception("Deferred runtime cleanup failed")
@@ -386,7 +477,15 @@ class CoreRuntime:
             scheduler_thread = getattr(self._scheduler, "_thread", None)
             if scheduler_thread is not None and scheduler_thread.is_alive():
                 return False
-            if self._tool_bindings is not None and not self._tool_bindings.drain(timeout=0):
+            tasks_thread = getattr(self._tasks_manager, "_thread", None)
+            if tasks_thread is not None and tasks_thread.is_alive():
+                return False
+            audio_thread = getattr(self.audio, "wake_thread", None)
+            if audio_thread is not None and audio_thread.is_alive():
+                return False
+            if self._timers is not None and not self._timers.wait(0):
+                return False
+            if not self.activity_boundary.drain(timeout=0):
                 return False
             failures = self.services.close()
             self._deferred_cleanup = False
@@ -398,6 +497,13 @@ class CoreRuntime:
                 log.error("Deferred runtime cleanup failed for: %s", ", ".join(failures))
                 self.status.record_error("Nettoyage différé incomplet : " + ", ".join(failures))
             return self._deferred_cleanup_result
+
+    @staticmethod
+    def _stop_tasks(manager: Any) -> None:
+        CoreRuntime._stop_threaded_service("tasks", manager, lambda: manager.close(wait=True))
+        release = getattr(manager, "release_runtime", None)
+        if release is not None:
+            release()
 
     @staticmethod
     def _stop_scheduler(scheduler: Any) -> None:
@@ -427,11 +533,13 @@ class CoreRuntime:
         conversation = services.register("conversation", factories.conversation())
         conversation.start_new_conversation(reason=hooks.reason)
         self.events.publish(RuntimeEvent("service_registered", "conversation"))
-        from ..tools import RuntimeToolBindings
+        from ..tools import RuntimeTimers, RuntimeToolBindings
         with self._stop_lock:
-            self._tool_bindings = RuntimeToolBindings(services)
+            self._timers = services.register("runtime_timers", RuntimeTimers(self.activity_boundary))
+            self._tool_bindings = RuntimeToolBindings(services, self.activity_boundary)
             if self._stop_requested.is_set():
                 self._tool_bindings.reject_new()
+                self._timers.request_stop()
         services.register("tools", self._tool_bindings)
         try:
             scheduler = factories.scheduler()
@@ -451,11 +559,28 @@ class CoreRuntime:
             log.warning("Scheduler unavailable: %s", redact_secrets(str(exc), limit=300))
         try:
             manager = factories.tasks(cfg.api_key)
-            services.register("tasks", manager, close=lambda: self._stop_threaded_service(
-                "tasks", manager, lambda: manager.close(wait=True)))
+            services.register("tasks", manager, close=lambda: self._stop_tasks(manager))
+            with self._stop_lock:
+                self._tasks_manager = manager
+                bind = getattr(manager, "bind_runtime", None)
+                if bind is not None:
+                    bind()
+                if self._stop_requested.is_set():
+                    signal_tasks = getattr(manager, "request_stop", None)
+                    if signal_tasks is not None:
+                        signal_tasks()
+            if factories.tasks is _default_tasks and not self._stop_requested.is_set():
+                manager.start()
             self.status.update(tasks_state="ok", tasks_detail="")
             self.events.publish(RuntimeEvent("service_registered", "tasks"))
         except Exception as exc:
+            signal_tasks = getattr(self._tasks_manager, "request_stop", None)
+            if signal_tasks is not None:
+                try:
+                    signal_tasks()
+                except Exception:
+                    self._cleanup_failed = True
+                    log.exception("Task Manager stop after startup failure failed")
             log.warning("Background tasks unavailable: %s", redact_secrets(str(exc), limit=300))
             self.status.update(tasks_state="failed", tasks_detail=str(exc))
 
@@ -513,6 +638,8 @@ class CoreRuntime:
         self._text_handler = provider.submit_text_threadsafe
         self.status.register_text_handler(self._text_handler)
         self.status.update(model=str(cfg.model or ""))
+        if self._stop_requested.is_set():
+            return
         try:
             audio.start()
         except Exception as exc:

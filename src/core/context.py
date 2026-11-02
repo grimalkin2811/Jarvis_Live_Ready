@@ -105,8 +105,9 @@ def _terms(text: str) -> frozenset[str]:
 
 
 class ContextEngine:
-    def __init__(self, services: ServiceRegistry) -> None:
+    def __init__(self, services: ServiceRegistry, *, activity_boundary=None) -> None:
         self._services = services
+        self._activity_boundary = activity_boundary
         self._async_gate = threading.Lock()
 
     async def build_async(self, request: ContextRequest, *, timeout: float = 5.0) -> ContextSnapshot:
@@ -143,6 +144,12 @@ class ContextEngine:
 
     def build(self, request: ContextRequest) -> ContextSnapshot:
         """Build synchronously; callers with an event loop should use build_async."""
+        if self._activity_boundary is None:
+            return self._build(request)
+        with self._activity_boundary.activity("context.build"):
+            return self._build(request)
+
+    def _build(self, request: ContextRequest) -> ContextSnapshot:
         if not isinstance(request.budget_tokens, int) or isinstance(request.budget_tokens, bool):
             raise TypeError("budget_tokens must be an integer")
         if not 0 <= request.budget_tokens <= MAX_BUDGET:
