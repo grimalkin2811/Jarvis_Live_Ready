@@ -1,5 +1,45 @@
 # Validation de clôture — Runtime Boundary 01.5
 
+## Décision de la reprise sur `2b4b339` — actuelle
+
+**VERDICT ARCHITECTURAL : PARTIAL. VERDICT ENVIRONNEMENTAL : PARTIAL.** Le lot n'est pas clos. Il reste des violations et des lifecycles critiques non prouvés, et non uniquement des limites de machine. Les sections historiques ci-dessous décrivent la validation précédente ; le présent encadré et l'inventaire complémentaire les complètent et priment si nécessaire.
+
+Le préflight a constaté un checkout superficiel dont HEAD/index avaient été réinitialisés à `ec944e2` alors que la branche distante et le contenu de fichiers correspondaient à `2b4b339`. Fetch de l'objet, comparaison contre un index temporaire : aucune divergence de fichier suivi hors `.gitignore`, aucun fichier non ignoré supplémentaire ; `ec944e2` est ancêtre de `2b4b339`. Alignement par avance rapide de la référence et de l'index, sans changement de fichier ni réécriture de commits. Branche `arena/8edade8b-jarvis-live-ready` ; `main` distant reste `ec944e26457b22492b5872ee520d6bb3ce410081`. `.gitignore` préexistant non commité, SHA-256 inchangé `dd211e71f5d97f965505729839e147c895cec7409d786f3bd33f9dc94b11abce`.
+
+**Code et tests évalués : `91be09342484631b875259eb0f303690105f4258`**, enfant de `2b4b339ee78f4f526d385ec9d0cdc1bbeb9f3b37`. Ce rapport et l'inventaire sont commis après les tests sans changer le code ; le SHA final du rapport est donné par `git rev-parse HEAD` après commit/push, sans autoréférence circulaire. L'état final visé est propre hors `.gitignore` préexistant.
+
+### Corrections de cette reprise
+
+- Dans `JobRunner`, admission de l'executor et fermeture du Hub sont sérialisées : une soumission qui a passé le contrôle ne peut plus créer un thread **après que le Hub s'est déclaré fermé**. En cas d'erreur inattendue de `submit`, le callback est retiré et l'erreur propagée. Le verrou couvre `ThreadPoolExecutor.submit`, opération usuellement brève ; si la création native de thread elle-même se bloque, un `shutdown` concurrent peut attendre, limite non qualifiée de réussite.
+- Le `DashboardHub` est terminal après `shutdown`, y compris appelé avant `start` : nouvelle souscription/relance du sampler et démarrage du pool sont refusés. `start/shutdown` et gestion de l'UI restent des appels du thread Qt ; on ne déclare pas QObject thread-safe.
+- `tests/test_final_hub_shutdown_admission.py` : vrai submit retardé contre shutdown concurrent, thread executor réellement joint, soumission tardive refusée, erreur inattendue nettoyée, shutdown répété, Hub fermé avant/après start. Quinze exécutions répétées avec les deux tests de courses TaskManager : **15/15**, six tests par exécution.
+- Context : un nouveau test en subprocess interdit l'import de `google.genai` et PySide6 ainsi que les lectures `os.environ`/`os.getenv` pendant une construction offline ; les tests précédents couvrent snapshots gelés, provenance, exclusions, budget, sélection, mémoire SQLite en lecture et timeout. Ce test ne certifie pas l'interne d'un fournisseur externe.
+
+### Réserves exactes bloquant la clôture
+
+L'ensemble détaillé avec catégories exactes `OK_ARCHITECTURAL`, `COMPATIBILITY_JUSTIFIED`, `TO_CORRECT`, `NOT_VALIDATED`, propriétaires, threads et caches se trouve dans la section « Audit de décision complémentaire » de [l'inventaire](inventaire-runtime-final-01-5.md). Réserves critiques restantes :
+
+1. **Orb et catalogue routines** : `_run_routine_async` et le worker du dialogue peuvent créer un thread sans admission préalable après stop ; `_set_enabled` du dialogue conserve le manager emprunté et peut muter le fichier routines après arrêt Core. QtWidgets non disponible ici ; correction sûre et couverture intégrale de ces chemins restent à faire.
+2. **Admissions déjà acceptées** : un protocole ou job Dashboard admis avant fermeture peut encore réellement créer son thread après début de `request_stop`. Le bail conserve les services, mais cela ne démontre pas la propriété plus stricte « aucun nouveau worker après début du shutdown » ; le test de protocole à démarrage retardé le montre explicitement.
+3. **Fermeture complète Hub/Core** : `shutdown(wait=False)` peut rendre la main alors que des threads du pool, un sampler ou un callback sont encore vivants. Le test joint les threads non bloqués réellement ; il ne prouve pas leur fin au retour de `shutdown`, ni l'arrêt de workers externes bloqués. Le Core conserve son propriétaire pour ses activités suivies ; cela ne couvre pas universellement les workers UI.
+4. **UI et caches** : acquisitions et usage réels de certains services/hook Qt, références de dialogues, lectures/mutations synchrones et callbacks tardifs ne sont pas tous couverts par un bail. L'inventaire identifie chaque famille et son thread. Les caches de chaînes/copies ne sont pas des services en soi et ne sont pas déplacés mécaniquement.
+5. **Factories et singletons** : une factory Scheduler/TaskManager personnalisée peut rendre un objet déjà démarré avant injection ; les getters/setters historiques et services empruntés peuvent être modifiés concurremment ou hors session. Le mode autonome reste légitime, mais l'isolation universelle n'est pas prouvée.
+6. **Erreur de cleanup** : `ServiceRegistry.close` efface les callbacks avant exécution ; si un callback échoue, le retry automatique de cet objet n'est pas garanti. Un provider SDK bloqué peut garder owner/ressources indéfiniment et un sampler repris pendant blocage ne redémarre pas automatiquement.
+
+Une correction purement cosmétique ou une suppression des compatibilités ne réglerait pas ces cas. La sécurité des services suivis est prouvée dans les tests correspondants, pas pour tous les accès ni pour les internals SDK. Une synchronisation stricte entre arrêt et création de thread doit aussi éviter d'attendre indéfiniment dans le thread Qt ; ne pas déclarer le problème résolu en masquant les workers.
+
+### Tests de cette reprise
+
+- Tests ciblés Runtime/lifecycle, Context, Dashboard, TaskManager et audio logiciel : **339 passed in 37.22s** ; exécution Linux Python 3.11.2 avec PySide6 6.11.3 et `QT_QPA_PLATFORM=offscreen`, sur le contenu de `91be093`. Commande `python -m pytest -q` avec les fichiers `tests/test_{final_hub_shutdown_admission,core_activity_boundary,final_boundary_ui_lifecycle,final_task_boundary_integration,core_task_start_stop,background_tasks,protocols,dashboard_resources,core_runtime,core_runtime_tool_bindings,core_dashboard_runtime_events,context_engine,context_scenarios,conversation_context,live_context_harness,voice_runtime,core_concurrent_shutdown,core_thread_shutdown,core_deferred_integration,core_mic_shutdown,dashboard_registry_actions,dashboard_memory_service,core_dashboard_shared_services,core_shutdown_regressions,audio_controls,audio_turn_pending,mic_stream_pause,wakeword}.py`. `ruff check .`, `compileall` et `pip check` réussis ; `.gitignore` exclu de `git diff --check` car son espace final préexiste.
+- Test Qt distinct : **10 passed, 1 failed, 4 collection errors in 6.72s**. Échec et erreurs : QtWidgets/QtGui/QtTest impossibles à importer, `libGL.so.1` absente. `ldd` signale également `libEGL.so.1`, `libxkbcommon.so.0`, `libdbus-1.so.3` absentes ; Xvfb absent. Les succès QtCore ne valident pas QtWidgets.
+- Suite complète du code figé : `QT_QPA_PLATFORM=offscreen JARVIS_NO_MODEL_DOWNLOAD=1 python -m pytest -q -rs --continue-on-collection-errors --disable-warnings` : **1 506 passed, 561 subtests passed, 114 skipped, 16 failed, 21 errors in 504.47s**. Les 37 traces d'échec/erreur signalent `ImportError: libGL.so.1` ; chaque cas est classé individuellement en fin de rapport. L'échec d'import ne prouve pas le bon fonctionnement des tests qui n'ont pu s'exécuter.
+- Non exécutés : Windows natif, Gemini réel, audio matériel, QtWidgets réelle et machine G5400. Les tests audio logiciels ne valident pas les pilotes ni périphériques ; aucune action CI/permission n'a été contournée.
+
+
+---
+
+## Historique de la validation précédente
+
 ## Verdicts distincts
 
 - **Architecture : PARTIEL.** Les scénarios Core et les corrections ci-dessous sont vérifiés, mais la frontière n'est pas universelle : certains accès GUI synchrones et références cachées à des services ne détiennent pas de bail ; des getters/setters globaux et factories personnalisées pré-démarrées peuvent diverger. L'arrêt du seul Core ne prouve pas l'extinction des threads inactifs de l'executor appartenant au Hub. Il serait incorrect d'affirmer « zéro worker connu orphelin » pour tous les parcours ou l'absence générale d'accès après destruction. Pas de clôture architecturale globale sur cette preuve.
@@ -70,3 +110,47 @@ Pas d'exécution Windows, Gemini réseau ou matériel audio ; les CI Windows anc
 3. Définir la fin du cycle Hub/executor et vérifier les vrais threads après fermeture complète Hub + Core, y compris jobs en attente ou bloqués ; ne pas assimiler thread idle et worker actif sur un service, mais ne pas affirmer leur disparition sans mesure.
 4. Préciser le contrat de timeout/erreur du provider et la reprise des échecs de cleanup sans détruire de services encore utilisés ; tester le sampler avec retour d'abonné pendant blocage et callbacks déjà engagés.
 5. Exécuter les tests QtWidgets après installation de dépendances système et environnement graphique adapté, puis validation Windows 11/G5400, Gemini réel et audio physique avec configuration et autorisations appropriées. Ne pas considérer les CI historiques comme une validation de ce commit.
+
+## Classification individuelle des échecs — reprise `91be093`
+
+Chaque entrée ci-dessous est classée **3 — problème d’environnement** : `ImportError: libGL.so.1`, constaté dans sa trace. Ces erreurs empêchent l’exécution du test concerné ; elles ne prouvent ni correction ni défaut du code QtWidgets. Aucun autre échec (catégories 1, 2, 4 ou 5) n’a été observé dans cette exécution. Les 114 skips sont ceux prévus par la suite, non ajoutés pour cette mission.
+
+| Type | Test ou module | Classification |
+|---|---|---|
+| Collecte | `tests/test_blob_visibility.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_conversation_widget.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_entry_points.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_perf.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_productivity.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_tasks.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_widgets.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_dashboard_window.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_interruption_ui.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_item_bg_opacity.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_menu_backgrounds.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_menu_hover.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_menu_integration.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_menu_layout.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_menu_render_offscreen.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_menu_ux.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_mode_apps_dialog.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_orb_visibility.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_protocol_ui.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_routines_ui.py` | 3 — environnement : libGL |
+| Collecte | `tests/test_ui_menu_regression.py` | 3 — environnement : libGL |
+| Échec | `test_presets_only_reference_registered_widgets` | 3 — environnement : libGL |
+| Échec | `test_hub_routes_real_task_hooks_and_bridge_filter_avoids_legacy_duplicate` | 3 — environnement : libGL |
+| Échec | `test_notification_bridge_filter_suppresses_display_only` | 3 — environnement : libGL |
+| Échec | `test_every_widget_action_has_a_policy` | 3 — environnement : libGL |
+| Échec | `AudioFailureNotificationTests.test_non_audio_engine_failure_is_still_notified` | 3 — environnement : libGL |
+| Échec | `AudioFailureNotificationTests.test_one_audio_failure_raises_one_notification` | 3 — environnement : libGL |
+| Échec | `AppearanceStateIntegrationTests.test_desktop_block_is_persisted_and_restored` | 3 — environnement : libGL |
+| Échec | `AppearanceStateIntegrationTests.test_no_second_config_file_is_created` | 3 — environnement : libGL |
+| Échec | `AppearanceStateIntegrationTests.test_saving_a_v160_state_adds_the_block` | 3 — environnement : libGL |
+| Échec | `AppearanceStateIntegrationTests.test_survives_multiple_save_load_cycles` | 3 — environnement : libGL |
+| Échec | `AppearanceStateIntegrationTests.test_unknown_future_keys_do_not_break_loading` | 3 — environnement : libGL |
+| Échec | `AppearanceStateIntegrationTests.test_v160_file_still_loads_with_defaults` | 3 — environnement : libGL |
+| Échec | `UiWiringTests.test_stop_handler_empties_output_then_marks_a_manual_stop` | 3 — environnement : libGL |
+| Échec | `test_void_methods_do_not_leak_none_references` | 3 — environnement : libGL |
+| Échec | `test_orb_desktop_dashboard_share_injected_core` | 3 — environnement : libGL |
+| Échec | `test_lag_probe_charges_each_gap_to_the_phase_where_it_is_observed` | 3 — environnement : libGL |
