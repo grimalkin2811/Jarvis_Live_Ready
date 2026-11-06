@@ -49,6 +49,21 @@ class JobRunner(QObject):
         **kwargs: Any,
     ) -> int:
         """Planifie ``fn`` ; ``on_done``/``on_error`` s'exécutent dans le thread Qt."""
+        if self._activity_boundary is None:
+            return self._submit(fn, args, kwargs, on_done, on_error, owner)
+        # Atomically admit submission before an executor thread can be spawned.
+        # The worker acquires a separate lease when it actually starts.
+        lease = self._activity_boundary.activity("dashboard.submit")
+        try:
+            lease.__enter__()
+        except RuntimeError:
+            return 0
+        try:
+            return self._submit(fn, args, kwargs, on_done, on_error, owner)
+        finally:
+            lease.__exit__(None, None, None)
+
+    def _submit(self, fn, args, kwargs, on_done, on_error, owner) -> int:
         job_id = next(self._ids)
         owner_ref = weakref.ref(owner) if owner is not None else None
         with self._lock:

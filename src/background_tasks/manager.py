@@ -63,6 +63,7 @@ class TaskManager:
         self._hooks: list[TaskHook] = []
         self._futures: dict[str, concurrent.futures.Future] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._loop_running = False
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
         self._closing = False
@@ -163,10 +164,18 @@ class TaskManager:
                 self._init_error = exc
             finally:
                 self._ready.set()
-            # close() may have been requested while initialization was in
-            # progress, before loop.run_forever() could be stopped.
-            if self._init_error is None and not self._closing:
-                loop.run_forever()
+            # Decide under the same lock used by close(). If shutdown wins
+            # during initialization no stop callback may be left queued for
+            # the later run_until_complete() cleanup phase.
+            with self._lock:
+                run_loop = self._init_error is None and not self._closing
+                self._loop_running = run_loop
+            if run_loop:
+                try:
+                    loop.run_forever()
+                finally:
+                    with self._lock:
+                        self._loop_running = False
         finally:
             pending = asyncio.all_tasks(loop)
             for item in pending:
@@ -211,15 +220,17 @@ class TaskManager:
 
     def close(self, wait: bool = False) -> None:
         with self._lock:
+            first_request = not self._closing
             self._closing = True
             loop = self._loop
-            futures = tuple(self._futures.values())
+            loop_running = self._loop_running
+            futures = tuple(self._futures.values()) if first_request else ()
         for future in futures:
             future.cancel()
-        # The loop can be between initialization and run_forever. Scheduling
-        # stop even in that gap closes the race; during initialization the
-        # worker instead observes _closing immediately after _ready is set.
-        if loop and self._ready.is_set() and not loop.is_closed():
+        # Queue stop only once: a second pending loop.stop can otherwise fire
+        # during run_until_complete(gather(...)) and strand cancelled tasks.
+        # During initialization the worker observes _closing after _ready.
+        if first_request and loop_running and loop and not loop.is_closed():
             try:
                 loop.call_soon_threadsafe(loop.stop)
             except RuntimeError:
@@ -409,8 +420,10 @@ class TaskManager:
             with self._lock:
                 self._futures.pop(task_id, None)
 
-    def _mutate(self, task_id: str, **changes) -> BackgroundTask:
+    def _mutate(self, task_id: str, *, _require_open: bool = False, **changes) -> BackgroundTask | None:
         with self._lock:
+            if _require_open and self._runtime_bound and self._closing:
+                return None
             task = self._tasks[task_id]
             requested_status = changes.get("status")
             if (
@@ -464,10 +477,10 @@ class TaskManager:
                 return False
             future = self._futures.get(task.id)
         cancelled = self._mutate(
-            task.id, status=TaskStatus.CANCELLED, finished_at=utc_now(),
+            task.id, _require_open=True, status=TaskStatus.CANCELLED, finished_at=utc_now(),
             current_step="Annulée", error="Tâche annulée.",
         )
-        if cancelled.status is not TaskStatus.CANCELLED:
+        if cancelled is None or cancelled.status is not TaskStatus.CANCELLED:
             return False
         if future is not None:
             future.cancel()
@@ -477,8 +490,7 @@ class TaskManager:
         task = self.get_task(task_id)
         if task is None or task.status is not TaskStatus.COMPLETED:
             return False
-        self._mutate(task.id, seen=True)
-        return True
+        return self._mutate(task.id, _require_open=True, seen=True) is not None
 
     def get_task_result(self, task_id: str, *, mark_seen: bool = True) -> dict | None:
         task = self.get_task(task_id)

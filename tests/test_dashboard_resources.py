@@ -82,3 +82,33 @@ def test_real_psutil_sampling_when_available():
     assert 0.0 <= sample.cpu_percent <= 100.0 * 64
     assert 0.0 < sample.ram_percent <= 100.0
     assert sample.ram_total > 0
+
+
+def test_blocked_sampler_remains_visible_and_cannot_spawn_a_duplicate():
+    entered, release = threading.Event(), threading.Event()
+    received = []
+
+    def blocked():
+        entered.set()
+        assert release.wait(5)
+        return _sample()
+
+    monitor = ResourceMonitor(interval=0.5, sampler=blocked)
+    monitor.subscribe("a", received.append)
+    worker = monitor._thread
+    try:
+        assert entered.wait(3)
+        monitor.stop(timeout=0.01)
+        assert worker.is_alive() and monitor.running()
+        assert "encore en cours" in monitor.last_error
+        monitor.subscribe("b", received.append)
+        assert monitor._thread is worker
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive()
+        assert received == []
+        monitor.stop(timeout=0.1)
+        assert not monitor.running()
+    finally:
+        release.set()
+        monitor.stop(timeout=3)

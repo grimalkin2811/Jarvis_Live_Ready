@@ -231,7 +231,8 @@ class ConversationWidget(DashboardWidget):
                                     "Le contexte conversationnel est effacé. La mémoire persistante est conservée."):
             return
         core = getattr(self.context.hub, "core", None)
-        result = conversation_new(core.services.require if core is not None else None)
+        result = conversation_new(core.services.require if core is not None else None,
+                                  activity_boundary=core.activity_boundary if core is not None else None)
         self.context.toast(result.message, "success" if result.success else "error")
 
     # -- évènements vocaux réels ------------------------------------------------------------
@@ -263,11 +264,11 @@ class ConversationWidget(DashboardWidget):
     # -- rendu ---------------------------------------------------------------------------
 
     def render(self, force: bool = False) -> None:
-        context = self.context.hub.conversation()
-        if context is None:
+        data = self.context.hub.conversation_data()
+        if data is None:
             self.set_state(STATE_UNAVAILABLE, "Contexte conversationnel indisponible.")
             return
-        messages = context.get_messages()
+        messages, snap = data
         limit = int(self.settings.get("max_messages", 100) or 100)
         show_tools = bool(self.settings.get("show_tools", True))
         signature = (len(messages), messages[-1] if messages else None, self._live_user, self._live_assistant,
@@ -276,7 +277,6 @@ class ConversationWidget(DashboardWidget):
             return
         self._last_signature = signature
         try:
-            snap = context.snapshot()
             self.context_info.setText(f"{snap.get('turns', 0)} tour(s) · ~{snap.get('estimated_tokens', 0)} tokens")
             enabled = snap.get("enabled", True)
         except Exception:

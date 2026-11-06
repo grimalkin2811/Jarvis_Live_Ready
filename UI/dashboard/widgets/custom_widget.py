@@ -70,10 +70,10 @@ def _notifications(w):
 
 
 def _turns(w):
-    context = w.context.hub.conversation()
-    if context is None:
+    data = w.context.hub.conversation_data(include_messages=False)
+    if data is None:
         return "indisponible", "unknown"
-    return str(context.snapshot().get("turns", 0)), "ok"
+    return str(data[1].get("turns", 0)), "ok"
 
 
 def _cpu(w):

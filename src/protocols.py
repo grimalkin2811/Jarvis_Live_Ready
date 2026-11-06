@@ -578,34 +578,54 @@ def start_protocol(
     if protocol is None:
         return None
 
-    global _ACTIVE_RUN
-    with _ACTIVE_LOCK:
-        previous = _ACTIVE_RUN
-    if previous is not None and previous.running:
-        previous.cancel()
-        previous.join(timeout=1.5)
+    # Reserve the activity before starting the thread. A runtime stop between
+    # Thread.start() and its target used to produce a success response even
+    # when the worker was later rejected. This lease is transferred to the
+    # worker and released only after its actual exit.
+    lease = None
+    if services is not None:
+        try:
+            lease = services.require("tools").boundary.activity("protocol.run")
+            lease.__enter__()
+        except (RuntimeError, LookupError):
+            return None
 
-    run = ProtocolRun(protocol)
+    try:
+        global _ACTIVE_RUN
+        with _ACTIVE_LOCK:
+            previous = _ACTIVE_RUN
+        if previous is not None and previous.running:
+            previous.cancel()
+            previous.join(timeout=1.5)
 
-    def _target() -> None:
-        run.result = play_protocol(
-            protocol,
-            emit,
-            cancel_event=run.cancel_event,
-            fast=fast,
-            services=services,
+        run = ProtocolRun(protocol)
+
+        def _target() -> None:
+            try:
+                run.result = play_protocol(
+                    protocol,
+                    emit,
+                    cancel_event=run.cancel_event,
+                    fast=fast,
+                    services=services,
+                )
+            finally:
+                if lease is not None:
+                    lease.__exit__(None, None, None)
+
+        run.thread = threading.Thread(
+            target=_target,
+            name=f"jarvis-protocol-{protocol.protocol_id}",
+            daemon=True,
         )
-
-    target = services.require("tools").track_background(_target) if services is not None else _target
-    run.thread = threading.Thread(
-        target=target,
-        name=f"jarvis-protocol-{protocol.protocol_id}",
-        daemon=True,
-    )
-    with _ACTIVE_LOCK:
-        _ACTIVE_RUN = run
-    run.thread.start()
-    return run
+        with _ACTIVE_LOCK:
+            _ACTIVE_RUN = run
+        run.thread.start()
+        return run
+    except BaseException:
+        if lease is not None:
+            lease.__exit__(None, None, None)
+        raise
 
 
 def active_run() -> ProtocolRun | None:

@@ -350,9 +350,35 @@ class DashboardHub(QObject):
     # ------------------------------------------------------------------
 
     def conversation(self):
+        if self.core is not None and self.core.activity_boundary.snapshot()["closing"]:
+            return None
         if self._conversation is None:
             self._attach_conversation()
         return self._conversation
+
+    def conversation_data(self, *, include_messages: bool = True):
+        """Copy the data needed by synchronous widgets under a Core lease."""
+        from contextlib import nullcontext
+
+        lease = (self.core.activity_boundary.activity("dashboard.conversation")
+                 if self.core is not None else nullcontext())
+        try:
+            lease.__enter__()
+        except RuntimeError:
+            # Rejection at entry is expected after stop; do not use the cache.
+            return None
+        try:
+            context = self.conversation()
+            if context is None:
+                return None
+            messages = context.get_messages() if include_messages else ()
+            try:
+                snapshot = context.snapshot()
+            except Exception:
+                snapshot = {}
+            return messages, snapshot
+        finally:
+            lease.__exit__(None, None, None)
 
     def _attach_conversation(self) -> None:
         if self._stopped:
@@ -383,6 +409,8 @@ class DashboardHub(QObject):
     # ------------------------------------------------------------------
 
     def tasks_available(self) -> bool:
+        if self.core is not None and self.core.activity_boundary.snapshot()["closing"]:
+            return False
         return self._task_manager is not None
 
     @Slot()

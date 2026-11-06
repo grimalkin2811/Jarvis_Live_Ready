@@ -140,11 +140,17 @@ class ResourceMonitor:
     def stop(self, timeout: float = 2.0) -> None:
         with self._lock:
             thread = self._thread
-            self._thread = None
-        self._stop.set()
-        self._wake.set()
+            # Signal under the same lock used by _ensure_thread: a concurrent
+            # subscriber must not start a replacement before the stop signal.
+            self._stop.set()
+            self._wake.set()
         if thread is not None and thread.is_alive() and thread is not threading.current_thread():
             thread.join(timeout=timeout)
+        with self._lock:
+            if thread is not None and thread.is_alive():
+                self.last_error = "Arrêt du moniteur de ressources encore en cours."
+            elif self._thread is thread:
+                self._thread = None
 
     def _run(self) -> None:
         if psutil is not None:
@@ -163,6 +169,10 @@ class ResourceMonitor:
             except Exception as exc:
                 self.last_error = str(exc)
                 continue
+            # A sampler may have blocked while its owner stopped. Do not
+            # dispatch a late sample to subscribers after the stop signal.
+            if self._stop.is_set():
+                break
             self.samples_taken += 1
             with self._lock:
                 self._history.append(sample)

@@ -60,12 +60,14 @@ class ActionHost:
         open_path: Callable[[str], bool] | None = None,
         service_getter: Callable[[str], Any] | None = None,
         tool_runner: Callable[..., dict] | None = None,
+        activity_boundary=None,
     ) -> None:
         self.set_interface_mode = set_interface_mode
         self.current_interface_mode = current_interface_mode
         self.open_path = open_path
         self.service_getter = service_getter
         self.tool_runner = tool_runner
+        self.activity_boundary = activity_boundary
 
 
 def _live():
@@ -90,14 +92,19 @@ def voice_stop() -> ActionResult:
     return _fail("Aucun moteur vocal branché : rien à interrompre.")
 
 
-def conversation_new(service_getter=None) -> ActionResult:
+def conversation_new(service_getter=None, *, activity_boundary=None) -> ActionResult:
+    from contextlib import nullcontext
+
     try:
-        if service_getter is None:
-            from src.conversation import get_default_conversation_context
-            context = get_default_conversation_context()
-        else:
-            context = service_getter("conversation")
-        info = context.start_new_conversation(reason="Dashboard")
+        lease = (activity_boundary.activity("dashboard.conversation.new")
+                 if activity_boundary is not None else nullcontext())
+        with lease:
+            if service_getter is None:
+                from src.conversation import get_default_conversation_context
+                context = get_default_conversation_context()
+            else:
+                context = service_getter("conversation")
+            info = context.start_new_conversation(reason="Dashboard")
     except Exception:
         return _fail("Contexte de conversation indisponible.")
     return _ok(
@@ -172,7 +179,7 @@ def build_actions(host: ActionHost) -> list[QuickAction]:
                     voice_stop),
         QuickAction("conversation.new", "conversation.new", "Nouvelle conversation",
                     "Efface le contexte conversationnel (pas la mémoire).", "↺",
-                    lambda: conversation_new(host.service_getter)),
+                    lambda: conversation_new(host.service_getter, activity_boundary=host.activity_boundary)),
     ]
 
     def _mode_action(mode: str, label: str, icon: str) -> QuickAction:

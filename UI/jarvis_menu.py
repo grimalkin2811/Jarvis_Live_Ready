@@ -371,6 +371,9 @@ class MorphingOrbWidget(QWidget):
         if self._closed:
             raise RuntimeError("Orb interface is closed")
         if self.core is not None:
+            boundary = getattr(self.core, "activity_boundary", None)
+            if boundary is not None and boundary.snapshot()["closing"]:
+                raise RuntimeError("Runtime en cours d'arrêt : service indisponible.")
             return self.core.services.require(name)
         # Compatibility for standalone widgets and existing callers only.
         if name == "memory":
@@ -2062,10 +2065,16 @@ class MorphingOrbWidget(QWidget):
             self.menu_state.always_on_top = value
             self._apply_always_on_top(value)
         elif name == "Memory" and label == "Long-term Memory":
+            from contextlib import nullcontext
+
+            boundary = getattr(getattr(self, "core", None), "activity_boundary", None)
+            lease = boundary.activity("orb.memory.toggle") if boundary is not None else nullcontext()
             try:
-                self._service("memory").set_enabled(value)
+                with lease:
+                    self._service("memory").set_enabled(value)
             except Exception:
-                pass
+                self._flash("Mémoire longue durée indisponible.")
+                return
             self._invalidate_status_cache()
             self._flash("Mémoire longue durée : " + ("activée" if value else "désactivée"))
         self._save_menu_state()
