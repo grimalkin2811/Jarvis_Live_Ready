@@ -115,6 +115,11 @@ def test_stop_in_ready_to_run_gap_does_not_cancel_client_cleanup(tmp_path):
             super().set()
             ready_set.set()
             assert proceed.wait(5)
+        def wait(self, timeout=None):
+            result = super().wait(timeout)
+            if result:
+                assert proceed.wait(5)
+            return result
     close_client = AsyncMock()
     manager = TaskManager("fake", storage_path=tmp_path / "gap.json", auto_start=False)
     manager._ready = PausedReady()
