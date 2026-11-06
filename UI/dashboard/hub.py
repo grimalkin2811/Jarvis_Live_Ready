@@ -161,10 +161,9 @@ class DashboardHub(QObject):
     # ------------------------------------------------------------------
 
     def start(self) -> None:
-        if self._started:
+        if self._started or self._stopped:
             return
         self._started = True
-        self._stopped = False
         if self.core is not None:
             self._unsubscribe_services = self.core.events.subscribe(self._services_relay.emit)
         self.runtime.add_hook(self._runtime_hook)
@@ -185,7 +184,7 @@ class DashboardHub(QObject):
         self._engine = self.runtime.snapshot()
 
     def shutdown(self) -> None:
-        if not self._started:
+        if self._stopped:
             return
         self._started = False
         self._stopped = True
@@ -493,6 +492,8 @@ class DashboardHub(QObject):
     # ------------------------------------------------------------------
 
     def apply_monitoring_prefs(self) -> None:
+        if self._stopped:
+            return
         prefs = self.store.config.monitoring
         self.resources.set_interval(prefs.interval_s)
         self._background_monitoring = bool(prefs.enabled and prefs.background)
@@ -500,6 +501,8 @@ class DashboardHub(QObject):
 
     def subscribe_resources(self, key: str) -> bool:
         """Un widget visible demande des mesures. False si surveillance désactivée."""
+        if self._stopped:
+            return False
         self._resource_keys.add(str(key))
         self._sync_resource_subscription()
         return bool(self.store.config.monitoring.enabled)
@@ -513,7 +516,7 @@ class DashboardHub(QObject):
 
     def _sync_resource_subscription(self) -> None:
         enabled = bool(self.store.config.monitoring.enabled)
-        want = enabled and (bool(self._resource_keys) or self._background_monitoring)
+        want = not self._stopped and enabled and (bool(self._resource_keys) or self._background_monitoring)
         if want and not self._resource_subscribed:
             self.resources.subscribe("__hub__", self._resource_hook)
             self._resource_subscribed = True

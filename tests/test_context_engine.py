@@ -137,3 +137,43 @@ def test_registry_lazy_resolution_is_once_across_threads():
         results = list(executor.map(lambda _: registry.require('shared'), range(40)))
     assert calls == [1]
     assert all(result is results[0] for result in results)
+
+
+def test_context_build_without_gemini_qt_or_environment_collection():
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent('''
+        import importlib.abc
+        import os
+        import sys
+
+        class BlockProviderAndGui(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "google.genai" or fullname.startswith("google.genai.") or fullname.startswith("PySide6"):
+                    raise AssertionError("unexpected provider or GUI import: " + fullname)
+                return None
+        sys.meta_path.insert(0, BlockProviderAndGui())
+        from src.core.context import ContextEngine, ContextRequest
+        from src.core.services import ServiceRegistry
+
+        class ForbiddenEnvironment:
+            def __getitem__(self, key):
+                raise AssertionError("implicit environment read")
+            def get(self, *args, **kwargs):
+                raise AssertionError("implicit environment read")
+        os.environ = ForbiddenEnvironment()
+        def forbidden_getenv(*args, **kwargs):
+            raise AssertionError("implicit environment read")
+        os.getenv = forbidden_getenv
+        snapshot = ContextEngine(ServiceRegistry()).build(
+            ContextRequest(query="offline", conversation=False, runtime=False))
+        assert [item.text for item in snapshot.items] == ["offline"]
+        assert "environment" in snapshot.missing
+        assert all(item.source != "environment" for item in snapshot.items)
+        assert "google.genai" not in sys.modules and "PySide6" not in sys.modules
+    ''')
+    result = subprocess.run([sys.executable, '-c', script], cwd=os.getcwd(), capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr

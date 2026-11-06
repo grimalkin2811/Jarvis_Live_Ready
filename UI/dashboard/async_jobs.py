@@ -66,10 +66,6 @@ class JobRunner(QObject):
     def _submit(self, fn, args, kwargs, on_done, on_error, owner) -> int:
         job_id = next(self._ids)
         owner_ref = weakref.ref(owner) if owner is not None else None
-        with self._lock:
-            if self._closed:
-                return 0
-            self._callbacks[job_id] = (on_done, on_error, owner_ref)
 
         def _run() -> None:
             try:
@@ -89,12 +85,20 @@ class JobRunner(QObject):
             except RuntimeError:  # pragma: no cover - objet Qt détruit à l'arrêt
                 pass
 
-        try:
-            self._executor.submit(_run)
-        except RuntimeError:
-            with self._lock:
+        # Serialize executor submission with Hub shutdown. Otherwise shutdown
+        # can set _closed after the check but before submit() creates a thread.
+        with self._lock:
+            if self._closed:
+                return 0
+            self._callbacks[job_id] = (on_done, on_error, owner_ref)
+            try:
+                self._executor.submit(_run)
+            except RuntimeError:
                 self._callbacks.pop(job_id, None)
-            return 0
+                return 0
+            except BaseException:
+                self._callbacks.pop(job_id, None)
+                raise
         return job_id
 
     def watch_future(
