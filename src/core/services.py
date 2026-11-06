@@ -17,6 +17,7 @@ class ServiceRegistry:
         self._resolving: set[str] = set()
         self._cleanup: list[tuple[str, Callable[[], None]]] = []
         self._closed = False
+        self._close_failures: tuple[str, ...] | None = None
         self._lock = threading.RLock()
 
     def register(self, name: str, service: T, *, close: Callable[[], None] | None = None) -> T:
@@ -64,7 +65,9 @@ class ServiceRegistry:
     def close(self) -> list[str]:
         with self._lock:
             if self._closed:
-                return []
+                # A repeated close must not turn an in-flight or failed
+                # cleanup into a false success, nor rerun unsafe callbacks.
+                return list(self._close_failures) if self._close_failures is not None else ["cleanup_in_progress"]
             self._closed = True
             cleanup = tuple(reversed(self._cleanup))
             self._cleanup.clear()
@@ -77,4 +80,6 @@ class ServiceRegistry:
             except Exception:
                 failures.append(name)
                 log.exception("Failed to close service %s", name)
+        with self._lock:
+            self._close_failures = tuple(failures)
         return failures

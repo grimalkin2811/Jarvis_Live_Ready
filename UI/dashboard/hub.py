@@ -24,6 +24,7 @@ Manager au démarrage).
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -183,8 +184,16 @@ class DashboardHub(QObject):
         self.apply_monitoring_prefs()
         self._engine = self.runtime.snapshot()
 
-    def shutdown(self) -> None:
+    def shutdown(self, *, blocking: bool = False, timeout: float = 2.0) -> None:
+        """Request shutdown; completion is reported by ``shutdown_status``.
+
+        The default never waits for worker convergence. With blocking=True a
+        bounded join is attempted; callers must still inspect the status.
+        Invoke this QObject method on the Qt thread.
+        """
         if self._stopped:
+            if blocking:
+                self._wait_shutdown(timeout)
             return
         self._started = False
         self._stopped = True
@@ -212,8 +221,23 @@ class DashboardHub(QObject):
         self._resource_keys.clear()
         self._background_monitoring = False
         self._sync_resource_subscription()
-        self.resources.stop()
+        self.resources.stop(timeout=0)
         self.jobs.shutdown()
+        if blocking:
+            self._wait_shutdown(timeout)
+
+    def _wait_shutdown(self, timeout: float) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        self.resources.stop(timeout=max(0.0, deadline - time.monotonic()))
+        self.jobs.wait_shutdown(max(0.0, deadline - time.monotonic()))
+
+    def shutdown_status(self) -> dict[str, bool]:
+        """Observe real worker/callback completion without blocking the Qt thread."""
+        jobs_done = self.jobs.shutdown_complete()
+        resources_done = not self.resources.running()
+        return {"requested": self._stopped, "jobs_done": jobs_done,
+                "resources_done": resources_done,
+                "complete": self._stopped and jobs_done and resources_done}
 
     @Slot(object)
     def _on_log(self, entry) -> None:
@@ -521,7 +545,7 @@ class DashboardHub(QObject):
             self.resources.subscribe("__hub__", self._resource_hook)
             self._resource_subscribed = True
         elif not want and self._resource_subscribed:
-            self.resources.unsubscribe("__hub__")
+            self.resources.unsubscribe("__hub__", timeout=0 if self._stopped else 2.0)
             self._resource_subscribed = False
 
     @Slot(object)

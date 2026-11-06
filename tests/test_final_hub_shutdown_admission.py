@@ -114,3 +114,79 @@ def test_stopped_hub_cannot_restart_jobs_or_resource_sampler(started):
     finally:
         hub.shutdown()
         monitor.stop()
+
+
+def test_nonblocking_hub_shutdown_reports_real_convergence():
+    import time
+    from UI.dashboard.config import ConfigStore
+    from UI.dashboard.hub import DashboardHub
+    from UI.dashboard.resources import ResourceMonitor
+    from src.runtime_status import RuntimeStatusBoard
+
+    app = QCoreApplication.instance() or QCoreApplication([])
+    store = ConfigStore(None)
+    store.config.monitoring.enabled = True
+    sampled, release_sample = threading.Event(), threading.Event()
+    worked, release_job = threading.Event(), threading.Event()
+    callbacks = []
+    def sample():
+        sampled.set()
+        assert release_sample.wait(8)
+        return object()
+    def job():
+        worked.set()
+        assert release_job.wait(8)
+        return "done"
+    monitor = ResourceMonitor(interval=.5, sampler=sample)
+    hub = DashboardHub(store, runtime=RuntimeStatusBoard(), resource_monitor=monitor)
+    try:
+        hub.start()
+        assert hub.subscribe_resources("view")
+        assert hub.jobs.submit(job, on_done=callbacks.append)
+        assert sampled.wait(3) and worked.wait(3)
+        job_threads = tuple(hub.jobs._executor._threads)
+        sampler_thread = monitor._thread
+        started = time.monotonic()
+        hub.shutdown(blocking=False)
+        assert time.monotonic() - started < 1.0
+        status = hub.shutdown_status()
+        assert status == {"requested": True, "jobs_done": False, "resources_done": False, "complete": False}
+        assert sampler_thread.is_alive() and any(t.is_alive() for t in job_threads)
+        assert hub.jobs.submit(lambda: None) == 0
+        assert not hub.subscribe_resources("late")
+        hub.shutdown(blocking=False)
+        release_sample.set()
+        release_job.set()
+        hub.shutdown(blocking=True, timeout=3)
+        assert hub.shutdown_status()["complete"]
+        assert not sampler_thread.is_alive() and all(not t.is_alive() for t in job_threads)
+        app.processEvents()
+        assert callbacks == []
+    finally:
+        release_sample.set()
+        release_job.set()
+        hub.shutdown(blocking=True, timeout=3)
+
+
+def test_shutdown_waits_for_already_entered_delivery_before_reporting_complete():
+    app = QCoreApplication.instance() or QCoreApplication([])
+    assert app is not None
+    entered, release = threading.Event(), threading.Event()
+    runner = JobRunner()
+    def callback(_value):
+        entered.set()
+        assert release.wait(5)
+    runner._callbacks[1] = (callback, None, None)
+    worker = threading.Thread(target=lambda: runner._deliver(1, True, "done"))
+    worker.start()
+    try:
+        assert entered.wait(2)
+        runner.shutdown()
+        assert not runner.shutdown_complete()
+        release.set()
+        worker.join(3)
+        assert not worker.is_alive() and runner.shutdown_complete()
+    finally:
+        release.set()
+        worker.join(3)
+        runner.shutdown()

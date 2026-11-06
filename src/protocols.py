@@ -583,9 +583,11 @@ def start_protocol(
     # when the worker was later rejected. This lease is transferred to the
     # worker and released only after its actual exit.
     lease = None
+    boundary = None
     if services is not None:
         try:
-            lease = services.require("tools").boundary.activity("protocol.run")
+            boundary = services.require("tools").boundary
+            lease = boundary.activity("protocol.run")
             lease.__enter__()
         except (RuntimeError, LookupError):
             return None
@@ -620,7 +622,15 @@ def start_protocol(
         )
         with _ACTIVE_LOCK:
             _ACTIVE_RUN = run
-        run.thread.start()
+        if boundary is not None:
+            if not boundary.launch(run.thread.start):
+                with _ACTIVE_LOCK:
+                    if _ACTIVE_RUN is run:
+                        _ACTIVE_RUN = None
+                lease.__exit__(None, None, None)
+                return None
+        else:
+            run.thread.start()
         return run
     except BaseException:
         if lease is not None:

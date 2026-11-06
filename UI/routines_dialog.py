@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import nullcontext
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
@@ -25,8 +26,9 @@ class RoutinesDialog(QDialog):
     routines_changed = Signal()
     _run_finished = Signal(str, object)
 
-    def __init__(self, parent=None, *, manager=None, scheduler=None, routine_runner=None) -> None:
+    def __init__(self, parent=None, *, manager=None, scheduler=None, routine_runner=None, activity_boundary=None) -> None:
         super().__init__(parent)
+        self._activity_boundary = activity_boundary
         self.manager = manager if manager is not None else get_default_routine_manager()
         self._routine_runner = routine_runner
         self._closed = False
@@ -148,7 +150,17 @@ class RoutinesDialog(QDialog):
         )
         self.cards.insertWidget(self.cards.count() - 1, card)
 
+    def _activity(self, name):
+        return self._activity_boundary.activity(name) if self._activity_boundary is not None else nullcontext()
+
     def refresh(self, force=False) -> None:
+        try:
+            with self._activity("routines_dialog.refresh"):
+                self._refresh(force)
+        except RuntimeError:
+            self.feedback.setText("Runtime en cours d'arrêt : catalogue indisponible.")
+
+    def _refresh(self, force=False) -> None:
         if not force and not self.isVisible():
             return
         mtime = self.manager.mtime()
@@ -218,6 +230,13 @@ class RoutinesDialog(QDialog):
 
     def _run_routine(self, name: str) -> None:
         """Un lancement explicite, jamais un effet de l'activation ou du rafraîchissement."""
+        try:
+            with self._activity("routines_dialog.start"):
+                self._start_routine(name)
+        except RuntimeError:
+            self.feedback.setText("Runtime en cours d'arrêt : routine indisponible.")
+
+    def _start_routine(self, name: str) -> None:
         if self._running_name is not None:
             return
         try:
@@ -248,7 +267,10 @@ class RoutinesDialog(QDialog):
                 pass  # Le panneau a été détruit pendant l'exécution.
 
         try:
-            threading.Thread(target=worker, name="jarvis-catalogue-routine", daemon=True).start()
+            if self._activity_boundary is None:
+                threading.Thread(target=worker, name="jarvis-catalogue-routine", daemon=True).start()
+            elif self._activity_boundary.start_thread(worker, name="jarvis-catalogue-routine") is None:
+                self._on_run_finished(name, {"success": False, "error": "Runtime en cours d'arrêt."})
         except RuntimeError:
             self._on_run_finished(name, {"success": False, "error": "Impossible de lancer le worker."})
 
@@ -267,7 +289,8 @@ class RoutinesDialog(QDialog):
 
     def _set_enabled(self, name: str, enabled: bool) -> None:
         try:
-            result = self.manager.update_routine(name, enabled=enabled)
+            with self._activity("routines_dialog.update"):
+                result = self.manager.update_routine(name, enabled=enabled)
         except Exception as exc:
             result = {"success": False, "error": str(exc)}
         if result.get("success"):
@@ -282,6 +305,12 @@ class RoutinesDialog(QDialog):
             self.feedback.setText(
                 f"Modification non enregistrée : {result.get('error', 'erreur inconnue')}"
             )
+            row = self.rows.get(name)
+            if row is not None:
+                toggle = row["toggle"]
+                toggle.blockSignals(True)
+                toggle.setChecked(not enabled)
+                toggle.blockSignals(False)
         # Relire l'état enregistré, y compris si l'écriture a échoué : ne pas
         # laisser un interrupteur vert qui ne correspond pas à la réalité.
         self.refresh(force=True)
@@ -295,21 +324,24 @@ class RoutinesDialog(QDialog):
 _DIALOG: RoutinesDialog | None = None
 
 
-def show_routines_dialog(parent=None, *, manager=None, scheduler=None, routine_runner=None) -> RoutinesDialog:
+def show_routines_dialog(parent=None, *, manager=None, scheduler=None, routine_runner=None,
+                         activity_boundary=None) -> RoutinesDialog:
     """Un seul catalogue partagé entre l'orbe et la zone de notification."""
     global _DIALOG
     if _DIALOG is None:
-        _DIALOG = RoutinesDialog(parent, manager=manager, scheduler=scheduler, routine_runner=routine_runner)
+        _DIALOG = RoutinesDialog(parent, manager=manager, scheduler=scheduler, routine_runner=routine_runner,
+                                 activity_boundary=activity_boundary)
         _DIALOG.setAttribute(Qt.WA_DeleteOnClose)
         current = _DIALOG
         _DIALOG.destroyed.connect(lambda *_: _forget_dialog(current))
-    elif manager is not None or scheduler is not None or routine_runner is not None:
+    elif manager is not None or scheduler is not None or routine_runner is not None or activity_boundary is not None:
         # Never keep a previously opened standalone dialog bound to stale
         # services when the application supplies the Core's dependencies.
         if _DIALOG._running_name is not None and (
             (manager is not None and manager is not _DIALOG.manager)
             or (scheduler is not None and scheduler is not _DIALOG.scheduler)
             or (routine_runner is not None and routine_runner is not _DIALOG._routine_runner)
+            or (activity_boundary is not None and activity_boundary is not _DIALOG._activity_boundary)
         ):
             raise RuntimeError("Une routine est encore en cours dans le catalogue précédent.")
         if manager is not None:
@@ -318,6 +350,8 @@ def show_routines_dialog(parent=None, *, manager=None, scheduler=None, routine_r
             _DIALOG.scheduler = scheduler
         if routine_runner is not None:
             _DIALOG._routine_runner = routine_runner
+        if activity_boundary is not None:
+            _DIALOG._activity_boundary = activity_boundary
     _DIALOG.refresh(force=True)
     _DIALOG.show()
     _DIALOG.raise_()

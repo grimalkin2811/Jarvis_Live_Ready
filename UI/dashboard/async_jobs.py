@@ -34,6 +34,8 @@ class JobRunner(QObject):
         self._watched: dict[int, tuple[Callable[[Any], None], Any]] = {}
         self._lock = threading.Lock()
         self._closed = False
+        self._shutdown_requested = False
+        self._deliveries = 0
         self.completed = 0
         self.failed = 0
         self._finished.connect(self._deliver, Qt.QueuedConnection)
@@ -92,7 +94,11 @@ class JobRunner(QObject):
                 return 0
             self._callbacks[job_id] = (on_done, on_error, owner_ref)
             try:
-                self._executor.submit(_run)
+                if self._activity_boundary is None:
+                    self._executor.submit(_run)
+                elif not self._activity_boundary.launch(lambda: self._executor.submit(_run)):
+                    self._callbacks.pop(job_id, None)
+                    return 0
             except RuntimeError:
                 self._callbacks.pop(job_id, None)
                 return 0
@@ -138,21 +144,29 @@ class JobRunner(QObject):
     def _deliver_future(self, watch_id: int, future: Any) -> None:
         with self._lock:
             entry = self._watched.pop(watch_id, None)
-        if entry is None:
-            return
-        on_done, owner_ref = entry
-        if owner_ref is not None:
-            owner = owner_ref()
-            if owner is None:
+            if entry is None or self._closed:
                 return
-            try:
-                from shiboken6 import isValid
+            self._deliveries += 1
+        try:
+            on_done, owner_ref = entry
+            if self._owner_valid(owner_ref):
+                on_done(future)
+        finally:
+            with self._lock:
+                self._deliveries -= 1
 
-                if not isValid(owner):
-                    return
-            except Exception:
-                pass
-        on_done(future)
+    @staticmethod
+    def _owner_valid(owner_ref) -> bool:
+        if owner_ref is None:
+            return True
+        owner = owner_ref()
+        if owner is None:
+            return False
+        try:
+            from shiboken6 import isValid
+            return isValid(owner)
+        except Exception:
+            return True  # legacy fallback when shiboken cannot inspect the owner
 
     def pending(self) -> int:
         with self._lock:
@@ -162,28 +176,24 @@ class JobRunner(QObject):
     def _deliver(self, job_id: int, ok: bool, result: Any) -> None:
         with self._lock:
             entry = self._callbacks.pop(job_id, None)
-        if entry is None:
-            return
-        on_done, on_error, owner_ref = entry
-        if owner_ref is not None:
-            owner = owner_ref()
-            if owner is None:
+            if entry is None or self._closed:
                 return
-            try:
-                from shiboken6 import isValid
-
-                if not isValid(owner):
-                    return
-            except Exception:
-                pass
-        if ok:
-            self.completed += 1
-            if on_done is not None:
-                on_done(result)
-        else:
-            self.failed += 1
-            if on_error is not None:
-                on_error(result)
+            self._deliveries += 1
+        try:
+            on_done, on_error, owner_ref = entry
+            if not self._owner_valid(owner_ref):
+                return
+            if ok:
+                self.completed += 1
+                if on_done is not None:
+                    on_done(result)
+            else:
+                self.failed += 1
+                if on_error is not None:
+                    on_error(result)
+        finally:
+            with self._lock:
+                self._deliveries -= 1
 
     def wait_idle(self, timeout: float = 5.0) -> bool:
         """Attend la fin des travaux en traitant les évènements Qt (tests)."""
@@ -199,7 +209,28 @@ class JobRunner(QObject):
 
     def shutdown(self) -> None:
         with self._lock:
+            if self._shutdown_requested:
+                return
             self._closed = True
             self._callbacks.clear()
             self._watched.clear()
-        self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._shutdown_requested = True
+
+    def wait_shutdown(self, timeout: float = 2.0) -> bool:
+        """Optionally join pool threads for a bounded time; never join oneself."""
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            threads = tuple(self._executor._threads)
+        for thread in threads:
+            if thread is not threading.current_thread():
+                thread.join(max(0.0, deadline - time.monotonic()))
+        return self.shutdown_complete()
+
+    def shutdown_complete(self) -> bool:
+        """True only after executor threads and already-started callbacks exit."""
+        with self._lock:
+            if not self._shutdown_requested or self._deliveries:
+                return False
+            threads = tuple(self._executor._threads)
+        return not any(thread.is_alive() for thread in threads)

@@ -210,8 +210,9 @@ class CoreRuntime:
         with self._stop_lock:
             if self._stop_requested.is_set():
                 return
-            self._stop_requested.set()
+            # Closing the launch boundary is the shutdown linearization point.
             self.activity_boundary.reject_new()
+            self._stop_requested.set()
             if self._timers is not None:
                 self._timers.request_stop()
             signal_audio = getattr(self.audio, "request_stop", None)
@@ -299,8 +300,11 @@ class CoreRuntime:
             raise
         finally:
             self._cleanup_started = True
-            self._stop_requested.set()
+            # Closing the launch boundary is the shutdown linearization point.
             self.activity_boundary.reject_new()
+            self._stop_requested.set()
+            if self.status.snapshot().get("engine_state") not in (EngineState.AUTH_ERROR, EngineState.FAILED):
+                self.status.set_engine_state(EngineState.STOPPING, "nettoyage en cours")
             if self._timers is not None:
                 self._timers.request_stop()
             signal_audio = getattr(self.audio, "request_stop", None)
@@ -425,6 +429,7 @@ class CoreRuntime:
                 failures.append("minuteurs encore actifs")
             if not self._deferred_cleanup:
                 failures = self.services.close()
+                self._deferred_cleanup_result = not failures and not self._cleanup_failed
             if failures or self._cleanup_failed:
                 log.error("Incomplete runtime cleanup: %s", ", ".join(failures or ["provider"]))
                 self.status.record_error("Nettoyage incomplet du runtime : " + ", ".join(failures or ["provider"]))
@@ -492,7 +497,7 @@ class CoreRuntime:
             with CoreRuntime._owner_lock:
                 if CoreRuntime._owner is self:
                     CoreRuntime._owner = None
-            self._deferred_cleanup_result = not failures
+            self._deferred_cleanup_result = not failures and not self._cleanup_failed
             if failures:
                 log.error("Deferred runtime cleanup failed for: %s", ", ".join(failures))
                 self.status.record_error("Nettoyage différé incomplet : " + ", ".join(failures))

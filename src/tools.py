@@ -1300,7 +1300,9 @@ class RuntimeTimers:
             self._threads = {item for item in self._threads if item.is_alive()}
             self._threads.add(thread)
             try:
-                thread.start()
+                if not self._boundary.launch(thread.start):
+                    self._threads.remove(thread)
+                    return False
             except BaseException:
                 self._threads.remove(thread)
                 raise

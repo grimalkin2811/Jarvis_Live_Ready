@@ -84,12 +84,12 @@ class ResourceMonitor:
             self._subscribers[str(key)] = callback
         self._ensure_thread()
 
-    def unsubscribe(self, key: str) -> None:
+    def unsubscribe(self, key: str, *, timeout: float = 2.0) -> None:
         with self._lock:
             self._subscribers.pop(str(key), None)
             empty = not self._subscribers
         if empty:
-            self.stop()
+            self.stop(timeout=timeout)
 
     def subscriber_count(self) -> int:
         with self._lock:

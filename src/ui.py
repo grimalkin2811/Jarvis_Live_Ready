@@ -542,7 +542,8 @@ def _build_tray_icon(
             try:
                 kwargs = ({"manager": core.services.require("routines"),
                            "scheduler": core.services.require("scheduler"),
-                           "routine_runner": core.services.require("tools").functions["run_routine"]} if core is not None else {})
+                           "routine_runner": core.services.require("tools").functions["run_routine"],
+                           "activity_boundary": core.activity_boundary} if core is not None else {})
                 show_routines_dialog(**kwargs)
             except Exception as exc:
                 print(f"[Routines] Interface indisponible : {exc}")

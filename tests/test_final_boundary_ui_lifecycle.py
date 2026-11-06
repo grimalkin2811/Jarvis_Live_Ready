@@ -171,6 +171,7 @@ def test_unresponsive_provider_remains_owned_until_async_disposal_finishes():
             core.request_stop()
             await asyncio.wait_for(entered.wait(), 2)
             assert not task.done() and CoreRuntime._owner is core and not closed
+            assert core.status.snapshot()["engine_state"] == EngineState.STOPPING
             assert core.activity_boundary.snapshot()["closing"]
             core.request_stop()
             release.set()
@@ -188,6 +189,7 @@ def test_protocol_admission_is_atomic_even_when_thread_start_is_delayed(monkeypa
     from types import SimpleNamespace
     from src import protocols
     entered, release = threading.Event(), threading.Event()
+    play_entered, play_release = threading.Event(), threading.Event()
     closed = []
     results = []
     class SlowStartThread(threading.Thread):
@@ -208,6 +210,8 @@ def test_protocol_admission_is_atomic_even_when_thread_start_is_delayed(monkeypa
             def play(*args, **kwargs):
                 assert core.services.require("conversation") is not None
                 assert not closed
+                play_entered.set()
+                assert play_release.wait(8)
                 return {"success": True}
             monkeypatch.setattr(protocols, "play_protocol", play)
             monkeypatch.setattr(protocols, "threading", SimpleNamespace(Thread=SlowStartThread, Event=threading.Event))
@@ -215,15 +219,22 @@ def test_protocol_admission_is_atomic_even_when_thread_start_is_delayed(monkeypa
                 protocols.start_protocol(protocol, fast=True, services=core.services)))
             launcher.start()
             assert await asyncio.to_thread(entered.wait, 2)
-            core.request_stop()
+            # start() already holds the launch gate, so request_stop waits
+            # until it has returned. Never block the asyncio/UI thread here.
+            stop = asyncio.create_task(asyncio.to_thread(core.request_stop))
+            await asyncio.sleep(.05)
+            assert not stop.done() and CoreRuntime._owner is core and not closed
+            release.set()
+            assert await asyncio.to_thread(play_entered.wait, 2)
+            await asyncio.wait_for(stop, 3)
             # The late attempt is refused before constructing a second thread.
             assert protocols.start_protocol(protocol, fast=True, services=core.services) is None
             await asyncio.wait_for(run_task, 8)
             assert CoreRuntime._owner is core and not closed
             assert core.activity_boundary.snapshot()["active"] == ("protocol.run",)
-            release.set()
             await asyncio.to_thread(launcher.join, 3)
             assert not launcher.is_alive() and len(results) == 1
+            play_release.set()
             await asyncio.to_thread(results[0].join, 3)
             assert not results[0].running and results[0].result == {"success": True}
             for _ in range(300):
@@ -233,6 +244,7 @@ def test_protocol_admission_is_atomic_even_when_thread_start_is_delayed(monkeypa
             assert CoreRuntime._owner is None and closed == ["tasks", "scheduler"]
         finally:
             release.set()
+            play_release.set()
             if launcher is not None:
                 await asyncio.to_thread(launcher.join, 3)
             core.request_stop()

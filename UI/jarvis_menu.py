@@ -1947,7 +1947,10 @@ class MorphingOrbWidget(QWidget):
 
         if self._closed:
             return
-        threading.Thread(target=_worker, name="jarvis-routine", daemon=True).start()
+        if self.core is None:
+            threading.Thread(target=_worker, name="jarvis-routine", daemon=True).start()
+        elif self.core.activity_boundary.start_thread(_worker, name="jarvis-routine") is None:
+            self._flash("Runtime en cours d'arrêt : routine indisponible.")
 
     # ------------------------------------------------------------------
     # Contrôles interactifs (toggles / sliders / options)
@@ -2322,7 +2325,8 @@ class MorphingOrbWidget(QWidget):
                 from .routines_dialog import show_routines_dialog
                 self._close_radial_menu()
                 kwargs = ({"manager": self._service("routines"), "scheduler": self._service("scheduler"),
-                           "routine_runner": self.core.services.require("tools").functions["run_routine"]}
+                           "routine_runner": self.core.services.require("tools").functions["run_routine"],
+                           "activity_boundary": self.core.activity_boundary}
                           if self.core is not None else {})
                 show_routines_dialog(self, **kwargs)
             elif self._menu_is_slider(spec, item):

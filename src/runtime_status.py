@@ -56,6 +56,8 @@ class EngineState:
     AUTH_ERROR = "auth_error"
     #: Échec d'initialisation (import, audio…) : backend vocal indisponible.
     FAILED = "failed"
+    #: Fermeture demandée, nettoyage ou provider encore en cours.
+    STOPPING = "stopping"
     #: Boucle vocale terminée (arrêt normal de Jarvis).
     STOPPED = "stopped"
 
@@ -68,6 +70,7 @@ ENGINE_LABELS: dict[str, str] = {
     EngineState.RECONNECTING: "Reconnexion",
     EngineState.AUTH_ERROR: "Clé API refusée",
     EngineState.FAILED: "Indisponible",
+    EngineState.STOPPING: "Arrêt en cours",
     EngineState.STOPPED: "Arrêté",
 }
 
@@ -77,6 +80,7 @@ UNAVAILABLE_STATES = frozenset(
         EngineState.RECONNECTING,
         EngineState.AUTH_ERROR,
         EngineState.FAILED,
+        EngineState.STOPPING,
         EngineState.STOPPED,
     }
 )
@@ -343,6 +347,8 @@ class RuntimeStatusBoard:
             return "Clé Gemini API refusée : vérifie GEMINI_API_KEY (fichier .env)."
         if state == EngineState.FAILED:
             return "Backend vocal indisponible." + (f" ({detail})" if detail else "")
+        if state == EngineState.STOPPING:
+            return "Le moteur vocal est en cours d'arrêt."
         if state == EngineState.STOPPED:
             return "Le moteur vocal est arrêté."
         if not snap.get("text_input"):
