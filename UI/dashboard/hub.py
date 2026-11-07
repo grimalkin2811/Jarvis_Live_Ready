@@ -184,7 +184,7 @@ class DashboardHub(QObject):
         self.apply_monitoring_prefs()
         self._engine = self.runtime.snapshot()
 
-    def shutdown(self, *, blocking: bool = False, timeout: float = 2.0) -> None:
+    def shutdown(self, blocking: bool = False, *, timeout: float = 2.0) -> None:
         """Request shutdown; completion is reported by ``shutdown_status``.
 
         The default never waits for worker convergence. With blocking=True a

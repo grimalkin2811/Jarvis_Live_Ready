@@ -147,7 +147,7 @@ def test_nonblocking_hub_shutdown_reports_real_convergence():
         job_threads = tuple(hub.jobs._executor._threads)
         sampler_thread = monitor._thread
         started = time.monotonic()
-        hub.shutdown(blocking=False)
+        hub.shutdown(False)
         assert time.monotonic() - started < 1.0
         status = hub.shutdown_status()
         assert status == {"requested": True, "jobs_done": False, "resources_done": False, "complete": False}
