@@ -197,6 +197,9 @@ class DashboardHub(QObject):
             return
         self._started = False
         self._stopped = True
+        # Do not wait for an executor submission holding the runner lock.
+        # Its lock holder finalizes shutdown after that submission leaves.
+        self.jobs.request_shutdown()
         self._tasks_timer.stop()
         if self._unsubscribe_services is not None:
             self._unsubscribe_services()
@@ -222,7 +225,6 @@ class DashboardHub(QObject):
         self._background_monitoring = False
         self._sync_resource_subscription()
         self.resources.stop(timeout=0)
-        self.jobs.shutdown()
         if blocking:
             self._wait_shutdown(timeout)
 

@@ -14,6 +14,7 @@ import threading
 import time
 import weakref
 from collections.abc import Callable
+from contextlib import contextmanager
 from typing import Any
 
 from PySide6.QtCore import QCoreApplication, QEventLoop, QObject, Qt, Signal, Slot
@@ -34,12 +35,48 @@ class JobRunner(QObject):
         self._watched: dict[int, tuple[Callable[[Any], None], Any]] = {}
         self._lock = threading.Lock()
         self._closed = False
+        self._stop_intent = threading.Event()
         self._shutdown_requested = False
         self._deliveries = 0
         self.completed = 0
         self.failed = 0
         self._finished.connect(self._deliver, Qt.QueuedConnection)
         self._future_done.connect(self._deliver_future, Qt.QueuedConnection)
+
+    @contextmanager
+    def _guard(self):
+        """Finish a deferred stop as the last in-flight lock holder leaves."""
+        self._lock.acquire()
+        try:
+            yield
+        finally:
+            try:
+                if self._stop_intent.is_set() and not self._shutdown_requested:
+                    self._shutdown_locked()
+            finally:
+                self._lock.release()
+            # Covers intent published between the check and releasing the lock.
+            if self._stop_intent.is_set() and not self._shutdown_requested:
+                self.request_shutdown()
+
+    def _shutdown_locked(self):
+        if self._shutdown_requested:
+            return
+        self._closed = True
+        self._callbacks.clear()
+        self._watched.clear()
+        self._executor.shutdown(wait=False, cancel_futures=True)
+        self._shutdown_requested = True
+
+    def request_shutdown(self):
+        """Publish stop without waiting for an in-flight executor submission."""
+        self._stop_intent.set()
+        if not self._lock.acquire(blocking=False):
+            return
+        try:
+            self._shutdown_locked()
+        finally:
+            self._lock.release()
 
     def submit(
         self,
@@ -51,6 +88,8 @@ class JobRunner(QObject):
         **kwargs: Any,
     ) -> int:
         """Planifie ``fn`` ; ``on_done``/``on_error`` s'exécutent dans le thread Qt."""
+        if self._stop_intent.is_set():
+            return 0
         if self._activity_boundary is None:
             return self._submit(fn, args, kwargs, on_done, on_error, owner)
         # Atomically admit submission before an executor thread can be spawned.
@@ -89,8 +128,8 @@ class JobRunner(QObject):
 
         # Serialize executor submission with Hub shutdown. Otherwise shutdown
         # can set _closed after the check but before submit() creates a thread.
-        with self._lock:
-            if self._closed:
+        with self._guard():
+            if self._closed or self._stop_intent.is_set():
                 return 0
             self._callbacks[job_id] = (on_done, on_error, owner_ref)
             try:
@@ -126,8 +165,8 @@ class JobRunner(QObject):
         """
         watch_id = next(self._ids)
         owner_ref = weakref.ref(owner) if owner is not None else None
-        with self._lock:
-            if self._closed:
+        with self._guard():
+            if self._closed or self._stop_intent.is_set():
                 return 0
             self._watched[watch_id] = (on_done, owner_ref)
 
@@ -142,9 +181,9 @@ class JobRunner(QObject):
 
     @Slot(int, object)
     def _deliver_future(self, watch_id: int, future: Any) -> None:
-        with self._lock:
+        with self._guard():
             entry = self._watched.pop(watch_id, None)
-            if entry is None or self._closed:
+            if entry is None or self._closed or self._stop_intent.is_set():
                 return
             self._deliveries += 1
         try:
@@ -152,7 +191,7 @@ class JobRunner(QObject):
             if self._owner_valid(owner_ref):
                 on_done(future)
         finally:
-            with self._lock:
+            with self._guard():
                 self._deliveries -= 1
 
     @staticmethod
@@ -169,14 +208,14 @@ class JobRunner(QObject):
             return True  # legacy fallback when shiboken cannot inspect the owner
 
     def pending(self) -> int:
-        with self._lock:
+        with self._guard():
             return len(self._callbacks)
 
     @Slot(int, bool, object)
     def _deliver(self, job_id: int, ok: bool, result: Any) -> None:
-        with self._lock:
+        with self._guard():
             entry = self._callbacks.pop(job_id, None)
-            if entry is None or self._closed:
+            if entry is None or self._closed or self._stop_intent.is_set():
                 return
             self._deliveries += 1
         try:
@@ -192,7 +231,7 @@ class JobRunner(QObject):
                 if on_error is not None:
                     on_error(result)
         finally:
-            with self._lock:
+            with self._guard():
                 self._deliveries -= 1
 
     def wait_idle(self, timeout: float = 5.0) -> bool:
@@ -208,19 +247,19 @@ class JobRunner(QObject):
         return self.pending() == 0
 
     def shutdown(self) -> None:
-        with self._lock:
-            if self._shutdown_requested:
-                return
-            self._closed = True
-            self._callbacks.clear()
-            self._watched.clear()
-            self._executor.shutdown(wait=False, cancel_futures=True)
-            self._shutdown_requested = True
+        """Compatibility: wait for any in-flight submit lock, then request stop."""
+        self._stop_intent.set()
+        with self._guard():
+            self._shutdown_locked()
+
+    def shutdown_requested(self) -> bool:
+        """Whether executor shutdown has actually been issued."""
+        return self._shutdown_requested
 
     def wait_shutdown(self, timeout: float = 2.0) -> bool:
         """Optionally join pool threads for a bounded time; never join oneself."""
         deadline = time.monotonic() + max(0.0, timeout)
-        with self._lock:
+        with self._guard():
             threads = tuple(self._executor._threads)
         for thread in threads:
             if thread is not threading.current_thread():
@@ -229,8 +268,12 @@ class JobRunner(QObject):
 
     def shutdown_complete(self) -> bool:
         """True only after executor threads and already-started callbacks exit."""
-        with self._lock:
-            if not self._shutdown_requested or self._deliveries:
+        if not self._shutdown_requested or not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._deliveries:
                 return False
             threads = tuple(self._executor._threads)
+        finally:
+            self._lock.release()
         return not any(thread.is_alive() for thread in threads)

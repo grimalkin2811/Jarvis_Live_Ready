@@ -1,5 +1,9 @@
 # Validation de clôture — Runtime Boundary 01.5
 
+## Reprise temporelle la plus récente — autorité sur les sections historiques
+
+**ARCHITECTURAL: PARTIAL · ENVIRONMENTAL: PARTIAL ; 01.5 reste ouvert.** Voir `contrat-temporel-01-5.md` pour préflight, contrat, scénarios réels, inventaire, portée des tests et risques. L'intention STOP_REQUESTED précède maintenant STOPPING ; le gate attend un lancement déjà engagé. La course Hub sur le verrou de submit est traitée sans prétendre qu'aucun hook/verrou externe ne bloque. Un test reproduit une factory custom créant un vrai worker **après** STOPPING : #2 et #5 restent BLOCKING ; #3 et #6 restent BLOCKING ; #1 et #4 NOT_VALIDATED. Les tableaux et conclusions ci-dessous sont historiques, non le verdict actuel.
+
 ## Reprise des six réserves — décision actuelle
 
 **ARCHITECTURAL: PARTIAL** · **ENVIRONMENTAL: PARTIAL**. Le lot 01.5 n'est pas clos. Les six classifications ci-dessous remplacent celles des audits historiques. La branche était un checkout superficiel avec HEAD sur `ec944e2` mais fichiers correspondant exactement au SHA distant `ae477be6c788613a974926377cd7e7570db37794` ; comparaison avec index temporaire, aucun autre fichier non ignoré ni différence suivie hors `.gitignore`, puis avance rapide de référence/index sans toucher aux fichiers. `main` est restée à `ec944e26457b22492b5872ee520d6bb3ce410081`. `.gitignore` préexistant demeure hors commit et de SHA-256 `dd211e71f5d97f965505729839e147c895cec7409d786f3bd33f9dc94b11abce`.

@@ -1,5 +1,9 @@
 # Inventaire statique des dépendances et états de processus
 
+## Reprise temporelle la plus récente
+
+Le tableau OWNED/BORROWED/PRESTARTED/EXTERNAL/UNSUPPORTED, l'inventaire ciblé des workers et la reproduction d'une création par factory custom après STOPPING sont dans `contrat-temporel-01-5.md`. Une factory non contrôlée est classée UNSUPPORTED pour la garantie mais **n'est pas actuellement refusée** ; son partage/ses ressources externes ne sont pas prouvés. Le lot reste ARCHITECTURAL PARTIAL et ENVIRONMENTAL PARTIAL. Les relevés ci-dessous sont historiques.
+
 Généré par `python scripts/inventory_runtime.py`. Les fonctions/méthodes indiquent le consommateur.
 La recherche AST couvre ces noms et constructions explicites, pas les appels dynamiques, alias ou callbacks indirects ; voir les tableaux de responsabilités et exceptions dans `validation-finale-lot-01-5.md`.
 Un getter historique est une compatibilité à examiner, pas une preuve que le registre possède le service ni une raison suffisante pour le migrer. Les lignes AST ci-dessous sont celles du relevé précédent et peuvent avoir changé ; le tableau de clôture en fin de document prime.

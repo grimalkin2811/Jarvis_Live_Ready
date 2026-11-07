@@ -68,6 +68,7 @@ class TaskManager:
         self._ready = threading.Event()
         self._closing = False
         self._runtime_bound = False
+        self._runtime_start_gate = None
         self._runtime_released = False
         self._shutdown_error: Exception | None = None
         self._init_error: BaseException | None = None
@@ -113,7 +114,12 @@ class TaskManager:
             self._init_error = None
             self._ready.clear()
             self._thread = threading.Thread(target=self._run_loop, name="jarvis-background-tasks", daemon=True)
-            self._thread.start()
+            if self._runtime_start_gate is None:
+                self._thread.start()
+            elif not self._runtime_start_gate(self._thread.start):
+                self._thread = None
+                self._closing = True
+                raise RuntimeError("Le gestionnaire de tâches est en cours d'arrêt.")
         if not self._ready.wait(5.0):
             raise RuntimeError("La boucle des tâches d'arrière-plan n'a pas démarré.")
         if self._init_error is not None:
@@ -208,6 +214,11 @@ class TaskManager:
         with self._lock:
             self._runtime_bound = True
             self._runtime_released = False
+
+    def set_runtime_start_gate(self, gate) -> None:
+        """Gate actual thread creation, not the potentially slow readiness wait."""
+        with self._lock:
+            self._runtime_start_gate = gate
 
     def release_runtime(self) -> None:
         with self._lock:

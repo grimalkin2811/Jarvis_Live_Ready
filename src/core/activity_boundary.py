@@ -13,14 +13,20 @@ from contextlib import contextmanager
 class ActivityBoundary:
     def __init__(self):
         self._condition = threading.Condition()
+        # Stop intent is published without waiting for an in-flight launch.
+        # A launch already inside the gate is allowed to finish before the
+        # STOPPING transition; no new admission can enter meanwhile.
+        self._stop_intent = threading.Event()
         self._closing = False
         self._ids = itertools.count(1)
         self._active = {}
 
     @contextmanager
     def activity(self, name):
+        if self._stop_intent.is_set():
+            raise RuntimeError("Runtime en cours d'arrêt : activité refusée.")
         with self._condition:
-            if self._closing:
+            if self._stop_intent.is_set() or self._closing:
                 raise RuntimeError("Runtime en cours d'arrêt : activité refusée.")
             token = next(self._ids)
             self._active[token] = str(name)
@@ -38,8 +44,10 @@ class ActivityBoundary:
         a surrounding activity alone is not permission to start a new worker.
         ``start`` must only enqueue/start work and must never wait for it.
         """
+        if self._stop_intent.is_set():
+            return False
         with self._condition:
-            if self._closing:
+            if self._stop_intent.is_set() or self._closing:
                 return False
             start()
             return True
@@ -68,12 +76,24 @@ class ActivityBoundary:
             lease.__exit__(None, None, None)
             raise
 
+    def begin_stop(self):
+        """Publish stop intent immediately, even while a launch is in flight."""
+        self._stop_intent.set()
+
+    def phase(self):
+        """OPEN, STOP_REQUESTED or STOPPING; no claim of final cleanup."""
+        if not self._stop_intent.is_set():
+            return "OPEN"
+        return "STOPPING" if self._closing else "STOP_REQUESTED"
+
     def reject_new(self):
+        self.begin_stop()
         with self._condition:
             self._closing = True
             self._condition.notify_all()
 
     def drain(self, timeout):
+        self.begin_stop()
         with self._condition:
             self._closing = True
             return self._condition.wait_for(lambda: not self._active, timeout=timeout)

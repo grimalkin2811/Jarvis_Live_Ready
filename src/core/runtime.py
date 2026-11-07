@@ -207,6 +207,9 @@ class CoreRuntime:
 
     def request_stop(self) -> None:
         """Request shutdown from any thread, including while receive() waits."""
+        # Deny new admissions immediately, even if startup holds _stop_lock.
+        # reject_new below waits for a worker start already inside the gate.
+        self.activity_boundary.begin_stop()
         with self._stop_lock:
             if self._stop_requested.is_set():
                 return
@@ -559,7 +562,7 @@ class CoreRuntime:
                     if signal_stop is not None:
                         signal_stop()
                 elif factories.scheduler is _default_scheduler:
-                    scheduler.start()
+                    self.activity_boundary.launch(scheduler.start)
         except Exception as exc:
             log.warning("Scheduler unavailable: %s", redact_secrets(str(exc), limit=300))
         try:
@@ -570,6 +573,8 @@ class CoreRuntime:
                 bind = getattr(manager, "bind_runtime", None)
                 if bind is not None:
                     bind()
+                if factories.tasks is _default_tasks:
+                    manager.set_runtime_start_gate(self.activity_boundary.launch)
                 if self._stop_requested.is_set():
                     signal_tasks = getattr(manager, "request_stop", None)
                     if signal_tasks is not None:
