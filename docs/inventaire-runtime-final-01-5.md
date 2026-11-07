@@ -326,3 +326,22 @@ Les chemins ci-dessous sont appelés par slots/rendu Qt, sauf worker expliciteme
 | Getters/defaults hors Runtime, `system_extras._HISTORY`, déclaration routines | état historique / autonome, caches de déclarations ou données non propriétaires de session ; pas de migration uniquement parce que global | COMPATIBILITY_JUSTIFIED pour usage autonome ; injection concurrente traitée ci-dessus |
 
 L'état du travail et les commandes/résultats réellement exécutés figurent dans `validation-boundary-final-01-5.md`. Les réserves critiques explicitement classées ci-dessus empêchent `ACCEPTED` ; un SDK ou callback bloqué ne peut pas être détruit de force en toute sécurité.
+
+## Reprise six réserves — statut sur le code `2379a94`
+
+Ces décisions priment sur les tableaux précédents. Le rapport de validation contient exactement une classification finale par réserve ; les statuts individuels ci-dessous précisent sa portée. Le point de linéarisation de l'arrêt est la fermeture de `ActivityBoundary`, synchronisée avec le démarrage effectif. Une attente bloquée à l'intérieur de `Thread.start`/`executor.submit` peut toutefois retenir la fermeture : propriété de non-création après transition ≠ garantie d'arrêt non bloquant.
+
+| Élément et thread | Propriétaire / protection / arrêt | Classe individuelle | Limite |
+|---|---|---|---|
+| Orb `_run_routine_async` (Qt → worker) | Core injecté : `start_thread` prend un bail et utilise `launch` ; fallback autonome appartient à l'appelant | NOT_VALIDATED | corps AST et primitive testés ; widget Qt réel et tous les callbacks non exécutés |
+| Catalogue `_run_routine`, `_set_enabled`, `refresh` (Qt → worker) | dépendances et boundary injectées depuis Orb/tray ; bail sur les accès synchrones, start atomique et bail sur worker | NOT_VALIDATED | les widgets et connexions Qt réels restent bloqués par `libGL`; singleton réinjecté uniquement si routine précédente inactive |
+| ProtocolRun et JobRunner face à `reject_new` | Core protège lancement et baux ; Hub possède le pool | TO_CORRECT | T0 admission/T1 fermeture/T2 lancement forcés sur les deux voies sont refusés, mais si la création est déjà dans la section critique elle retient l'arrêt et peut finir après la demande ; propriété stricte dès la demande non démontrée |
+| RuntimeTimers | Core ; `launch` puis annulation et attente | NOT_VALIDATED | passage à la primitive, tests timers existants mais interleaving T0/T1/T2 non reproduit spécifiquement pour le Timer |
+| TaskManager standard / scheduler | Core signale et joint threads connus ; manager protège ses propres mutations et `_closing` | NOT_VALIDATED | factory custom pré-démarrée et certains interleavings d'initialisation/fermeture restent hors preuve ; ne pas conclure zéro création universelle |
+| Hub / JobRunner / ResourceMonitor | Hub terminal, `shutdown_status` mesure threads pool/sampler et livraisons JobRunner | NOT_VALIDATED | blocage possible sur locks/hooks pendant shutdown, signaux Qt externes et SDK hors compteur ; `complete` est limité aux ressources contrôlées |
+| Hub cache conversation/tasks et dialogues modes/tâches | Qt, accès via registre et caches/hook détachés par Hub | NOT_VALIDATED | certains usages synchrones ou callbacks déjà en vol ne détiennent pas de bail complet ; QtWidgets indisponible |
+| Références/singletons empruntés et factories custom | propriété historique externe puis emprunt Core | TO_CORRECT | démarrage avant injection et mutation concurrente possibles ; fermer un emprunt comme propriété exclusive serait incorrect |
+| `ServiceRegistry.close` | propriétaire Core ; callback exécuté au plus une fois | NOT_VALIDATED | échec et in-progress persistants, pas de retry automatique ; Core peut libérer owner après échec malgré état inconnu des dépendances externes |
+| Provider Gemini / SDK externe | provider Core, SDK propriétaire de ses internals | NOT_VALIDATED | STOPPING conserve owner tant que shutdown coroutine ne rend pas ; pas de timeout général ni interruption forcée des internals |
+| ContextEngine | Core/session, sources explicitement demandées | OK_ARCHITECTURAL | snapshots/budget/provenance et séparation mémoire testés ; test offline interdit provider/Qt et lectures d'environnement, pas une preuve d'API externe |
+| Historique autonome non injecté | appelant / processus, hors Runtime | COMPATIBILITY_JUSTIFIED | frontière volontaire séparée ; ne prouve pas isolation lorsqu'une référence est partagée avec Core |
