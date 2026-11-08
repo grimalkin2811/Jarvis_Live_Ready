@@ -518,6 +518,10 @@ class DashboardController(QObject):
         QTimer.singleShot(45_000, lambda: self.check_for_update(manual=False))
 
     def check_for_update(self, manual: bool = False) -> None:
+        # singleShot and already-queued completions can outlive shutdown.
+        if self._quitting:
+            return
+
         def _check():
             from src import updater
             from src.version import __version__
@@ -525,6 +529,8 @@ class DashboardController(QObject):
             return updater.build_update_plan(current=__version__)
 
         def _done(plan: dict) -> None:
+            if self._quitting:
+                return
             general = self.store.config.general
             latest = str(plan.get("latest") or "")
             if not latest:
@@ -548,6 +554,8 @@ class DashboardController(QObject):
                 self.window.toast(f"Jarvis est à jour ({plan.get('current')}).", "success")
 
         def _failed(exc: BaseException) -> None:
+            if self._quitting:
+                return
             self.hub.logs.record_event(f"Vérification des mises à jour impossible : {exc}", level=logging.WARNING,
                                        source="mises à jour", category="general")
             if manual and self.window is not None:

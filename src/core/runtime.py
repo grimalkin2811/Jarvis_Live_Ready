@@ -23,6 +23,10 @@ from ..runtime_status import RUNTIME, EngineState, redact_secrets
 log = logging.getLogger("jarvis.core.runtime")
 
 
+class _StartupStopped(Exception):
+    """Startup was refused because the runtime is shutting down."""
+
+
 @dataclass
 class RuntimeHooks:
     presence: Callable[[str], None] | None = None
@@ -139,6 +143,7 @@ class CoreRuntime:
         self._cleanup_failed = False
         self._cleanup_started = False
         self._provider_needs_close = False
+        self._provider_cleanup_state = "CLEANUP_PENDING"
         self._accept_mic = threading.Event()
         self._mic_tasks: set[asyncio.Task] = set()
 
@@ -210,6 +215,10 @@ class CoreRuntime:
         # Deny new admissions immediately, even if startup holds _stop_lock.
         # reject_new below waits for a worker start already inside the gate.
         self.activity_boundary.begin_stop()
+        # A factory cannot wait for itself to finish. Startup notices intent
+        # at its next admitted step and enters the normal cleanup path.
+        if self.activity_boundary.creating_on_current_thread():
+            return
         with self._stop_lock:
             if self._stop_requested.is_set():
                 return
@@ -253,27 +262,42 @@ class CoreRuntime:
             except RuntimeError:
                 log.debug("Runtime loop already closed")
 
-    async def _close_provider_session(self) -> None:
+    def cleanup_status(self) -> dict[str, Any]:
+        """Observe the provider coroutine and registry, not external SDK threads."""
+        return {"provider": self._provider_cleanup_state, "registry": self.services.cleanup_status()}
+
+    async def _close_provider_session(self) -> bool:
         try:
             await self.provider.close()
             self._provider_needs_close = False
+            return True
         except Exception:
             self._cleanup_failed = True
             log.exception("Provider session close failed")
+            return False
 
     async def _dispose_provider(self) -> None:
+        self._provider_cleanup_state = "CLEANUP_RUNNING"
         if self.provider is None:
+            self._provider_cleanup_state = "CLEANUP_DONE"
             return
-        await self._drain_mic()
-        if self._provider_needs_close:
-            await self._close_provider_session()
-        shutdown = getattr(self.provider, "shutdown", None)
-        if shutdown is not None:
-            try:
-                await shutdown()
-            except Exception:
-                self._cleanup_failed = True
-                log.exception("Provider client shutdown failed")
+        failed = False
+        try:
+            await self._drain_mic()
+            if self._provider_needs_close:
+                failed = not await self._close_provider_session()
+            shutdown = getattr(self.provider, "shutdown", None)
+            if shutdown is not None:
+                try:
+                    await shutdown()
+                except Exception:
+                    failed = True
+                    self._cleanup_failed = True
+                    log.exception("Provider client shutdown failed")
+        except BaseException:
+            self._provider_cleanup_state = "CLEANUP_FAILED"
+            raise
+        self._provider_cleanup_state = "CLEANUP_FAILED" if failed else "CLEANUP_DONE"
 
     async def run(self) -> None:
         if self._started:
@@ -292,6 +316,9 @@ class CoreRuntime:
                 return
             factories = self.factories or default_factories()
             await self._run_pipeline(factories)
+        except _StartupStopped:
+            # Stop intent rejected a not-yet-started construction.
+            pass
         except asyncio.CancelledError:
             if not self._stop_requested.is_set():
                 raise
@@ -530,15 +557,21 @@ class CoreRuntime:
         if thread is not None and thread.is_alive():
             raise RuntimeError(f"{name} thread still running after shutdown")
 
+    def _construct_while_open(self, factory, *args, **kwargs):
+        admitted, result = self.activity_boundary.create(lambda: factory(*args, **kwargs))
+        if not admitted:
+            raise _StartupStopped()
+        return result
+
     async def _run_pipeline(self, factories: RuntimeFactories) -> None:
         cfg, hooks, services = self.config, self.hooks, self.services
         self._notify(hooks.presence, "loading")
-        memory = services.register("memory", factories.memory(
+        memory = services.register("memory", self._construct_while_open(factories.memory,
             cfg.memory_database_path, enabled=cfg.memory_enabled,
             max_results=cfg.memory_max_results, min_importance=cfg.memory_min_importance))
-        factories.set_memory(memory)
+        self._construct_while_open(factories.set_memory, memory)
         self.status.update(memory_state="disabled" if not memory.enabled else "ok" if memory.available else "failed")
-        conversation = services.register("conversation", factories.conversation())
+        conversation = services.register("conversation", self._construct_while_open(factories.conversation))
         conversation.start_new_conversation(reason=hooks.reason)
         self.events.publish(RuntimeEvent("service_registered", "conversation"))
         from ..tools import RuntimeTimers, RuntimeToolBindings
@@ -550,7 +583,7 @@ class CoreRuntime:
                 self._timers.request_stop()
         services.register("tools", self._tool_bindings)
         try:
-            scheduler = factories.scheduler()
+            scheduler = self._construct_while_open(factories.scheduler)
             services.register("scheduler", scheduler, close=lambda: self._stop_scheduler(scheduler))
             with self._stop_lock:
                 self._scheduler = scheduler
@@ -563,10 +596,12 @@ class CoreRuntime:
                         signal_stop()
                 elif factories.scheduler is _default_scheduler:
                     self.activity_boundary.launch(scheduler.start)
+        except _StartupStopped:
+            raise
         except Exception as exc:
             log.warning("Scheduler unavailable: %s", redact_secrets(str(exc), limit=300))
         try:
-            manager = factories.tasks(cfg.api_key)
+            manager = self._construct_while_open(factories.tasks, cfg.api_key)
             services.register("tasks", manager, close=lambda: self._stop_tasks(manager))
             with self._stop_lock:
                 self._tasks_manager = manager
@@ -583,6 +618,8 @@ class CoreRuntime:
                 manager.start()
             self.status.update(tasks_state="ok", tasks_detail="")
             self.events.publish(RuntimeEvent("service_registered", "tasks"))
+        except _StartupStopped:
+            raise
         except Exception as exc:
             signal_tasks = getattr(self._tasks_manager, "request_stop", None)
             if signal_tasks is not None:
@@ -598,7 +635,7 @@ class CoreRuntime:
         def control(name):
             return getattr(controls, name, None) if controls is not None else None
 
-        self.audio = services.register("audio", factories.audio(
+        self.audio = services.register("audio", self._construct_while_open(factories.audio,
             self._mic, presence_hook=hooks.presence, voice_hook=hooks.voice_level,
             mic_enabled=control("get_mic_enabled"), wake_threshold=control("get_wake_threshold"),
             volume_provider=control("get_tts_volume"), listen_mode_provider=control("get_listen_mode"),
@@ -632,7 +669,7 @@ class CoreRuntime:
         except (TypeError, ValueError):
             injection = {}
 
-        provider = factories.provider(
+        provider = self._construct_while_open(factories.provider,
             cfg.api_key, cfg.model, cfg.user, on_audio=audio.play,
             on_turn_complete=audio.extend_listening, on_interrupted=interrupted,
             on_turn_open=audio.note_turn_open, on_turn_resolved=audio.note_turn_resolved,
@@ -651,10 +688,14 @@ class CoreRuntime:
         if self._stop_requested.is_set():
             return
         try:
-            audio.start()
+            self._construct_while_open(audio.start)
+        except _StartupStopped:
+            raise
         except Exception as exc:
             self.status.update(audio_state="failed", audio_detail=f"démarrage audio impossible : {exc}")
             raise
+        if self.activity_boundary.phase() != "OPEN":
+            raise _StartupStopped()
         self.status.update(audio_state="ok", audio_detail="flux micro et haut-parleurs démarrés")
         self.events.publish(RuntimeEvent("audio_started"))
 

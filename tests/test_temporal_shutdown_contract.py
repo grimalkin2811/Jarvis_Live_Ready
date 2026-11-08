@@ -165,8 +165,8 @@ def test_task_manager_stop_between_start_and_actual_thread_creation(tmp_path):
         manager.close(wait=True)
 
 
-def test_custom_scheduler_factory_can_create_worker_after_core_stopping():
-    """Characterize an UNSUPPORTED factory, not a successful boundary proof."""
+def test_custom_scheduler_factory_creation_precedes_core_stopping():
+    """An admitted construction holds STOP_REQUESTED until the factory returns."""
     import asyncio
     from dataclasses import replace
     from src.core.runtime import CoreRuntime
@@ -198,14 +198,19 @@ def test_custom_scheduler_factory_can_create_worker_after_core_stopping():
         except BaseException as exc:
             errors.append(exc)
     runtime_thread = threading.Thread(target=run)
+    stop_thread = threading.Thread(target=core.request_stop)
     runtime_thread.start()
     try:
         assert entered.wait(3)
-        core.request_stop()
-        assert core.activity_boundary.phase() == "STOPPING"
+        stop_thread.start()
+        assert core.activity_boundary._stop_intent.wait(3)
+        assert core.activity_boundary.phase() == "STOP_REQUESTED"
+        assert stop_thread.is_alive()
         resume.set()
         assert created.wait(3)
-        assert observations == ["STOPPING"] and scheduler._thread.ident is not None
+        assert observations == ["STOP_REQUESTED"] and scheduler._thread.ident is not None
+        stop_thread.join(3)
+        assert not stop_thread.is_alive() and core.activity_boundary.phase() == "STOPPING"
         runtime_thread.join(8)
         assert not runtime_thread.is_alive() and scheduler._thread.is_alive() and not errors
         assert core._deferred_cleanup and CoreRuntime._owner is core
@@ -216,6 +221,8 @@ def test_custom_scheduler_factory_can_create_worker_after_core_stopping():
         resume.set()
         worker_exit.set()
         runtime_thread.join(8)
+        if stop_thread.ident is not None:
+            stop_thread.join(3)
         if scheduler._thread.ident is not None:
             scheduler._thread.join(3)
 

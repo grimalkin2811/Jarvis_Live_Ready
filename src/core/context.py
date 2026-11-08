@@ -6,6 +6,7 @@ its sources, perform network I/O, or create a worker until build_async is used.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import re
 import threading
 import unicodedata
@@ -129,9 +130,23 @@ class ContextEngine:
             finally:
                 self._async_gate.release()
 
-        # Shield keeps the worker's result owned after a timeout; no repeated
-        # submissions can accumulate while a source is stuck.
-        task = asyncio.create_task(asyncio.to_thread(work))
+        # Submit synchronously through the launch gate: scheduling a to_thread
+        # coroutine would defer executor submission until after STOPPING.
+        # Preserve to_thread's contextvars propagation and shield the future.
+        loop = asyncio.get_running_loop()
+        context = contextvars.copy_context()
+        submitted = []
+        try:
+            def submit():
+                submitted.append(loop.run_in_executor(None, context.run, work))
+            if self._activity_boundary is None:
+                submit()
+            elif not self._activity_boundary.launch(submit):
+                raise RuntimeError("Runtime en cours d'arrêt : activité refusée.")
+        except BaseException:
+            self._async_gate.release()
+            raise
+        task = submitted[0]
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout)
         except BaseException:

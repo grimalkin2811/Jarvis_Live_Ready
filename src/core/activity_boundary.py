@@ -18,6 +18,8 @@ class ActivityBoundary:
         # STOPPING transition; no new admission can enter meanwhile.
         self._stop_intent = threading.Event()
         self._closing = False
+        self._creations = 0
+        self._creating_threads = {}
         self._ids = itertools.count(1)
         self._active = {}
 
@@ -51,6 +53,35 @@ class ActivityBoundary:
                 return False
             start()
             return True
+
+    def create(self, factory):
+        """Run an admitted factory before STOPPING, without holding the gate lock.
+
+        A factory may block; STOP_REQUESTED remains visible until it returns.
+        Only construction performed before the callable returns is covered;
+        workers secretly started later by external code are not controlled.
+        """
+        if self._stop_intent.is_set():
+            return False, None
+        with self._condition:
+            if self._stop_intent.is_set() or self._closing:
+                return False, None
+            self._creations += 1
+            ident = threading.get_ident()
+            self._creating_threads[ident] = self._creating_threads.get(ident, 0) + 1
+        try:
+            return True, factory()
+        finally:
+            with self._condition:
+                self._creations -= 1
+                self._creating_threads[ident] -= 1
+                if not self._creating_threads[ident]:
+                    del self._creating_threads[ident]
+                self._condition.notify_all()
+
+    def creating_on_current_thread(self):
+        with self._condition:
+            return threading.get_ident() in self._creating_threads
 
     def start_thread(self, target, *, name, daemon=True):
         """Reserve the service lifetime, then atomically start a Python thread."""
@@ -89,13 +120,17 @@ class ActivityBoundary:
     def reject_new(self):
         self.begin_stop()
         with self._condition:
+            if threading.get_ident() in self._creating_threads:
+                raise RuntimeError("Cannot transition to STOPPING inside an admitted factory")
+            self._condition.wait_for(lambda: not self._creations)
             self._closing = True
             self._condition.notify_all()
 
     def drain(self, timeout):
-        self.begin_stop()
+        # Refuse new creations before waiting. A creation already admitted
+        # must finish before STOPPING; this wait is intentionally unbounded.
+        self.reject_new()
         with self._condition:
-            self._closing = True
             return self._condition.wait_for(lambda: not self._active, timeout=timeout)
 
     def snapshot(self):

@@ -62,6 +62,23 @@ class ServiceRegistry:
                 raise TypeError(f"Service {name} is not {expected_type.__name__}")
             return service
 
+    def cleanup_status(self) -> dict[str, Any]:
+        """Observe registry callbacks; running does not assert a safe timeout.
+
+        This does not observe the provider's separate async cleanup or external
+        workers. A callback that never returns remains CLEANUP_RUNNING.
+        """
+        with self._lock:
+            if not self._closed:
+                state = "CLEANUP_PENDING"
+            elif self._close_failures is None:
+                state = "CLEANUP_RUNNING"
+            elif self._close_failures:
+                state = "CLEANUP_FAILED"
+            else:
+                state = "CLEANUP_DONE"
+            return {"state": state, "failed": tuple(self._close_failures or ())}
+
     def close(self) -> list[str]:
         with self._lock:
             if self._closed:
@@ -80,6 +97,13 @@ class ServiceRegistry:
             except Exception:
                 failures.append(name)
                 log.exception("Failed to close service %s", name)
+            except BaseException:
+                # Preserve observable failure even for interruption; do not
+                # claim a still-running callback or swallow the interruption.
+                failures.append(name)
+                with self._lock:
+                    self._close_failures = tuple(failures)
+                raise
         with self._lock:
             self._close_failures = tuple(failures)
         return failures

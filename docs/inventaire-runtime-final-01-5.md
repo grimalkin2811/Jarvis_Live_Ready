@@ -1,5 +1,10 @@
 # Inventaire statique des dépendances et états de processus
 
+
+## Mission finale sur `819c796` — décision courante
+
+**ARCHITECTURAL: PARTIAL · ENVIRONMENTAL: PARTIAL · LOT 01.5: OPEN.** La section « Mission finale » de `contrat-temporel-01-5.md` prime sur tous les encadrés historiques. La factory synchrone entrée est désormais drainée avant STOPPING et Context soumet son executor sous gate ; toutefois un test observe encore une factory qui délègue à un thread externe créant après STOPPED, et un autre observe un thread d'executor de cleanup créé après STOPPING. #2/#3/#5/#6 restent BLOCKING ; #1/#4 NOT_VALIDATED. Les états de cleanup sont observables sans prétendre pouvoir interrompre un SDK externe.
+
 ## Reprise temporelle la plus récente
 
 Le tableau OWNED/BORROWED/PRESTARTED/EXTERNAL/UNSUPPORTED, l'inventaire ciblé des workers et la reproduction d'une création par factory custom après STOPPING sont dans `contrat-temporel-01-5.md`. Une factory non contrôlée est classée UNSUPPORTED pour la garantie mais **n'est pas actuellement refusée** ; son partage/ses ressources externes ne sont pas prouvés. Le lot reste ARCHITECTURAL PARTIAL et ENVIRONMENTAL PARTIAL. Les relevés ci-dessous sont historiques.

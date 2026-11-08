@@ -1,5 +1,10 @@
 # Validation de clôture — Runtime Boundary 01.5
 
+
+## Mission finale sur `819c796` — décision courante
+
+**ARCHITECTURAL: PARTIAL · ENVIRONMENTAL: PARTIAL · LOT 01.5: OPEN.** La section « Mission finale » de `contrat-temporel-01-5.md` prime sur tous les encadrés historiques. La factory synchrone entrée est désormais drainée avant STOPPING et Context soumet son executor sous gate ; toutefois un test observe encore une factory qui délègue à un thread externe créant après STOPPED, et un autre observe un thread d'executor de cleanup créé après STOPPING. #2/#3/#5/#6 restent BLOCKING ; #1/#4 NOT_VALIDATED. Les états de cleanup sont observables sans prétendre pouvoir interrompre un SDK externe.
+
 ## Reprise temporelle la plus récente — autorité sur les sections historiques
 
 **ARCHITECTURAL: PARTIAL · ENVIRONMENTAL: PARTIAL ; 01.5 reste ouvert.** Voir `contrat-temporel-01-5.md` pour préflight, contrat, scénarios réels, inventaire, portée des tests et risques. L'intention STOP_REQUESTED précède maintenant STOPPING ; le gate attend un lancement déjà engagé. La course Hub sur le verrou de submit est traitée sans prétendre qu'aucun hook/verrou externe ne bloque. Un test reproduit une factory custom créant un vrai worker **après** STOPPING : #2 et #5 restent BLOCKING ; #3 et #6 restent BLOCKING ; #1 et #4 NOT_VALIDATED. Les tableaux et conclusions ci-dessous sont historiques, non le verdict actuel.

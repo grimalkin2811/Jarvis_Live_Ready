@@ -1,5 +1,64 @@
 # Reprise temporelle 01.5 — lot ouvert
 
+
+## Mission finale sur `819c796` — verdict courant
+
+**ARCHITECTURAL: PARTIAL ; ENVIRONMENTAL: PARTIAL ; LOT 01.5: OPEN.** Cette section prime sur tout historique ci-dessous ; les contre-exemples restants sont des blocages architecturaux, pas seulement des limitations Qt.
+
+Préflight : branche `arena/8edade8b-jarvis-live-ready`, remote `origin` du dépôt attendu, base distante `819c7967a687b19c636d1a67db4a156b746c0549`, `main` distante `ec944e26457b22492b5872ee520d6bb3ce410081`. Le snapshot avait remis ref/index sur `ec944e` tandis que les fichiers correspondaient à `819c796` : objet fetché, index temporaire `/tmp/jarvis-preflight-819c.RhUYiD`, comparaison sans différence suivie hors `.gitignore` et sans autre fichier non suivi ; avance rapide de ref/index sans toucher aux fichiers. `.gitignore` local seul antérieur, SHA-256 `dd211e71f5d97f965505729839e147c895cec7409d786f3bd33f9dc94b11abce`, préservé et exclu du commit. SHA final : vérifiable par `git rev-parse HEAD`, communiqué après le commit (aucune auto-référence de hash).
+
+| Réserve | Verdict courant | Raisons et portée |
+|---|---|---|
+| #1 Orb / routines | **NOT_VALIDATED** | Chemins injectés déjà gardés ; tests de corps AST et absence de QtWidgets ne démontrent ni tous les callbacks ni les usages standalone. |
+| #2 Protocoles / jobs / workers | **BLOCKING** | Gate de constructions synchrones et soumission Context renforcés ; contre-exemple réel d'un thread `asyncio.to_thread` de cleanup créé après STOPPING. Gemini et autres créations indirectes restent à couvrir. |
+| #3 Hub | **BLOCKING** | Gate de submit et convergence des threads connus testés ; autres verrous/hooks et concurrence QObject non démontrés. |
+| #4 UI / hooks / dialogues | **NOT_VALIDATED** | Callback tardif de vérification de mise à jour protégé, test AST ; inventaire des signaux/QTimers non exhaustif, QtWidgets non exécuté. |
+| #5 Factories / singletons | **BLOCKING** | La factory synchrone déjà entrée ne franchit plus STOPPING ; une factory custom peut déléguer à un thread externe qui crée ensuite un nouveau worker après STOPPED. Elle reste acceptée et n'est pas certifiée ni refusée. |
+| #6 Cleanup / providers | **BLOCKING** | États provider/registre désormais observables ; blocage indéfini, échec et workers SDK externes ne sont pas prouvés terminés ; owner peut être libéré après certaines erreurs, et cleanup peut créer un worker après STOPPING. |
+
+### Contrat effectivement implémenté
+
+`ActivityBoundary.create()` refuse une factory si l'intention est publiée et compte les constructions admises jusqu'au retour (ou exception). Le code de factory tourne **hors verrou de condition**. `reject_new()` publie d'abord l'intention, puis attend le retour de toutes ces constructions et de tout `launch()` déjà dans le gate avant d'écrire `_closing` : c'est le point effectif `STOPPING`. Une construction admise peut créer entre demande et transition, pas pendant ni après cette transition **tant que sa création est synchrone dans l'appel**. Les factories memory, set-memory, conversation, scheduler, tasks, audio, provider et `audio.start()` du pipeline Core passent par `create`. Un appel d'arrêt depuis le même thread d'une factory publie l'intention et revient pour éviter de s'attendre soi-même ; l'étape suivante ou la sortie d'`audio.start` fait entrer le cleanup. `reject_new()` direct depuis une factory est refusé par exception plutôt que deadlocker.
+
+Une factory bloquée peut laisser STOP_REQUESTED indéfiniment et bloquer `request_stop()` ; un thread externe qui demande l'arrêt et qu'une factory attend peut également former un cycle. `drain(timeout)` attend d'abord la fin des constructions sans limite : son timeout ne borne donc pas cette attente. La garantie ne couvre pas les threads déjà existants, une factory qui délègue à d'autres threads, un singleton partagé ou un SDK qui crée des ressources après son retour. Ces intégrations ne sont **pas** proprement refusées actuellement : #5 reste bloquante.
+
+`ContextEngine.build_async` soumet maintenant directement l'executor sous `launch` au lieu de planifier une coroutine `to_thread` susceptible de ne démarrer qu'après STOPPING. La copie `contextvars` et le shield de la future préservent la propagation de contexte et l'attente sans annuler le worker. Un worker déjà créé qui n'a pas encore acquis son bail `context.build` est refusé après la demande ; le verrou mono-build est libéré en cas de refus/exception.
+
+`CoreRuntime.cleanup_status()` expose séparément `provider` et `registry` : `CLEANUP_PENDING`, `CLEANUP_RUNNING`, `CLEANUP_DONE`, `CLEANUP_FAILED`. Un provider bloqué reste `CLEANUP_RUNNING` : on ne peut pas déduire `CLEANUP_BLOCKED` d'un délai arbitraire et il n'existe pas de terminaison forcée garantie. Ces états portent sur le retour des callbacks/coroutines, **pas** sur tous les threads du SDK. Le registre conserve ses échecs, ne rejoue pas les callbacks ; une interruption `BaseException` est propagée et mémorisée comme échec (les callbacks suivants ne sont alors pas exécutés). La distinction Hub `shutdown(False)`/`shutdown(True)` et ses limites sont décrites dans le contrat historique ci-dessous : le premier n'attend pas volontairement la convergence mais peut encore attendre d'autres verrous/hooks, le second ne borne que ses joins, pas tous les verrous.
+
+### Preuves et contournements forcés
+
+- `test_custom_scheduler_factory_creation_precedes_core_stopping` : factory en attente, demande d'arrêt sur autre vrai thread, `STOP_REQUESTED`, création effective du worker, retour de factory, puis `STOPPING`. Le worker actif est observé et la convergence différée est vérifiée. L'ancien test qui constatait la création *dans* STOPPING a été adapté au nouveau contrat ; il ne prouve pas les créations déléguées.
+- `test_multiple_admitted_factories_delay_stopping_and_late_factory_is_refused` : deux vraies factories simultanées ; aucune transition après la libération d'une seule, refus d'une troisième, transition après la seconde ; exception et libération du compteur également testées.
+- `test_external_factory_can_delegate_post_stop_creation_to_untracked_thread` : vraie factory acceptée démarrant un dispatcher, arrêt complet Core, puis dispatcher externe crée réellement un worker en phase STOPPING. Ce test vert **reproduit une violation**, il ne prouve pas sa correction.
+- `test_runtime_cleanup_can_start_asyncio_executor_worker_after_stopping` : un executor asyncio neuf observe un vrai `Thread.start()` de cleanup en phase STOPPING ; le worker est joint en fin de scénario. C'est une seconde violation de la garantie globale ; les opérations `asyncio.to_thread` de cleanup et le waiter différé doivent être repensés sans simplement prétendre qu'ils ne sont pas des workers.
+- `test_context_executor_start_inflight_completes_before_stopping` force `submit` bloqué, demande, vraie création et transition ; `test_async_context_refuses_before_executor_submission_after_stop` observe un executor sans thread ; propagation `contextvars` testée.
+- `test_registry_cleanup_states.py` observe succès, concurrent, attente, exception, répétition et interruption, plus coroutine provider bloquée/libérée et exception. Un état RUNNING n'est pas une preuve de fuite ni de convergence ; le provider partagé et les SDK réels restent non validés.
+- `test_dashboard_update_late_callbacks.py` exécute les corps réels chargés par AST : après `_quitting`, le `singleShot` ne soumet rien et les callbacks déjà capturés ne touchent ni store ni logs ; pas une validation d'intégration Qt.
+- Répétitions déterministes : 15/15 de 10 scénarios factory/gate et arrêt pendant `audio.start` (`/tmp/jarvis-closure3-repeat.log`), 15/15 des quatre tests de contournement factory/cleanup (`/tmp/jarvis-closure3-repeat-external-final.log`, avec assertions STOPPED et owner libéré ; y compris les violations reproduites) et 15/15 des trois tests Context (`/tmp/jarvis-closure3-context-repeat.log`). Events et vrais threads, pas `sleep` comme unique synchronisation.
+
+### Inventaire orienté création
+
+Recherche statique sur `Thread`, `Timer`, `ThreadPoolExecutor`, `QTimer`, `singleShot`, `run_in_executor`, `to_thread`, `create_task`, `ensure_future`, `call_soon_threadsafe` : 70 occurrences, relevé `/tmp/jarvis-closure3-worker-audit.txt`. Il ne couvre ni alias ni création cachée dans un SDK et ne constitue pas un inventaire exhaustif. Chemins principaux :
+
+| Source → admission → création → propriétaire | Lifecycle et limite |
+|---|---|
+| Core `_run_pipeline` → `create` → factories / `audio.start` → Core ou objet externe | appel synchrone borné par STOPPING ; délégation tardive et worker préexistant non contrôlés |
+| Context async → `launch` → executor par défaut → boucle asyncio | soumission gardée ; le pool partagé et les autres utilisateurs ne sont pas possédés par Context |
+| protocoles / timer `src/tools.py` → boundary runtime → `Thread` / `Timer` → Core | tests ciblés existants ; compatibilité autonome hors Core non couverte |
+| scheduler/tasks par défaut → gate de start → thread → singleton/Runtime | singleton préexistant et partage non certifiés |
+| Orb / catalogue → `start_thread` si Core injecté, sinon standalone → thread | standalone, hooks et interface graphique non globalement prouvés |
+| Dashboard → JobRunner gate → `ThreadPoolExecutor` ; ResourceMonitor → verrou propre → thread | ownership Hub limité ; intégration Qt et tous les hooks non prouvés |
+| `runtime.py` cleanup → `asyncio.to_thread` / waiter → pool partagé / thread | création après STOPPING prouvée, **BLOCKING** |
+| Gemini / context / notifications Windows / UI timer et `singleShot` | diverses APIs asyncio/Qt/externes ; pas toutes sous boundary ni toutes auditées |
+
+Le Context Engine conserve son périmètre : snapshots immuables, budget et estimation, provenance/exclusions, sélection déterministe, données d'environnement uniquement explicites et mémoire opt-in ; aucune Memory Engine future ajoutée. Tests de scénario existants et nouveaux tests executor exécutés, mais cela ne suffit pas à clore le lifecycle.
+
+Tests ciblés finaux Core, Context, Hub, UI alternative et nouvelles preuves : **105 passed in 31.80s** (`/tmp/jarvis-closure3-target-last.log`). `ruff check .`, `compileall -q src UI tests`, `pip check`, `git diff --check` hors `.gitignore` sont exécutés séparément. Les tentatives de suite globale démarrées pendant les modifications ont été interrompues volontairement, puis relancées sur le code stabilisé ; seul le résultat de cette dernière peut être comparé au bilan historique. Les assertions STOPPED et owner de la reproduction externe ont été ajoutées après collecte et vérifiées séparément, notamment dans les 15 répétitions finales. Suite globale sur code stabilisé : **1 535 passed, 561 subtests passed, 114 skipped, 16 failed, 21 errors in 540.49s** (`/tmp/jarvis-closure3-full-complete.log`). Les 37 traces contiennent `ImportError: libGL.so.1`, avec les mêmes 16 cas et 21 erreurs Qt que le bilan précédent. Le test de factory renforcé après collecte a été exécuté séparément 15 fois ; le code applicatif n'a pas changé depuis le lancement de la suite. QtWidgets reste bloqué par `libGL.so.1` ; Windows natif, matériel audio et Gemini réel ne sont pas testés.
+
+
+---
+
 **ARCHITECTURAL: PARTIAL ; ENVIRONMENTAL: PARTIAL.** Ce document et l'encadré en tête des deux rapports remplacent leurs conclusions antérieures. Le travail ci-dessous ne valide pas le lot 02 et ne démontre pas l'absence globale de création après STOPPING.
 
 ## Préflight et portée
