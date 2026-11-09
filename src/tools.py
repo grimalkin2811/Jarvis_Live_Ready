@@ -3342,6 +3342,26 @@ TOOL_DECLARATIONS = [
 ]
 
 
+# --- God's Eye View : outils world_* (module géospatial embarqué) ----------
+# Branchement ADDITIF : ni les déclarations ni les fonctions existantes ne
+# sont modifiées. Le module est optionnel — en cas d'échec d'import (jamais
+# attendu), Jarvis démarre sans les outils globe plutôt que de planter.
+try:
+    from .gods_eye.tools import WORLD_TOOL_DECLARATIONS, WORLD_TOOL_FUNCTIONS
+
+    TOOL_DECLARATIONS.extend(WORLD_TOOL_DECLARATIONS)
+    TOOL_FUNCTIONS.update(
+        {name: _guard_tool_function(name, fn) for name, fn in WORLD_TOOL_FUNCTIONS.items()}
+    )
+except Exception:  # pragma: no cover - ne doit jamais bloquer Jarvis
+    import logging
+
+    logging.getLogger(__name__).warning(
+        "Outils God's Eye View (world_*) indisponibles — démarrage sans globe.",
+        exc_info=True,
+    )
+
+
 def _check_registry():
     """Garde-fou : declarations et implementations doivent correspondre."""
     declared = {d["name"] for d in TOOL_DECLARATIONS}
