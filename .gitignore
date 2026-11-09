@@ -67,3 +67,5 @@ user_content/*
 
 # Agent scratch (never ship audit downloads or local test data)
 .arena/
+# Dépendances Node (module web God's Eye View) — jamais versionnées
+node_modules/
