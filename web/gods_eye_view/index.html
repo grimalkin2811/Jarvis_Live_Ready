@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; media-src 'self' blob: https:; connect-src 'self' blob: data: https: wss:; worker-src 'self' blob:; child-src 'self' blob:; font-src 'self' data:"
+    />
+    <meta name="color-scheme" content="dark" />
+    <title>God's Eye View — Jarvis</title>
+    <link rel="stylesheet" href="./src/hud.css" />
+  </head>
+  <body>
+    <div id="jarvis-globe" role="presentation"></div>
+
+    <header id="jarvis-hud-top" aria-hidden="true">
+      <div class="jarvis-hud-block">
+        <span class="jarvis-hud-title">GOD'S EYE VIEW</span>
+        <span class="jarvis-hud-subtitle">Module géospatial Jarvis</span>
+      </div>
+      <div class="jarvis-hud-block jarvis-hud-right">
+        <span id="jarvis-status-dot" data-mode="busy"></span>
+        <span id="jarvis-status-text">INITIALISATION…</span>
+        <span id="jarvis-layer-chip" hidden></span>
+        <button id="jarvis-close" class="jarvis-hud-btn" type="button" title="Fermer (Échap)">FERMER</button>
+      </div>
+    </header>
+
+    <footer id="jarvis-hud-bottom">
+      <div id="jarvis-credits" aria-label="Attributions"></div>
+      <div id="jarvis-hud-hint">Jarvis contrôle ce globe · Échap — fermer</div>
+    </footer>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

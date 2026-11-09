@@ -1,0 +1,152 @@
+/* God's Eye View — HUD Jarvis natif.
+   Aligné sur les rôles de l'overlay desktop de Jarvis : fond quasi-noir,
+   accents cyan/violet, filets fins, typo mono pour les readouts. */
+:root {
+  --jv-bg: #05070d;
+  --jv-panel: rgba(8, 12, 22, 0.72);
+  --jv-cyan: #22d3ee;
+  --jv-cyan-dim: rgba(34, 211, 238, 0.28);
+  --jv-violet: #8b5cf6;
+  --jv-text: #dbe7f3;
+  --jv-text-dim: rgba(219, 231, 243, 0.55);
+  --jv-warn: #fbbf24;
+  --jv-error: #fb7185;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--jv-bg);
+  color: var(--jv-text);
+  font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+#jarvis-globe {
+  position: fixed;
+  inset: 0;
+}
+#jarvis-globe canvas { outline: none; }
+
+#jarvis-hud-top {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 10px 14px;
+  pointer-events: none;
+  z-index: 5;
+}
+.jarvis-hud-block {
+  background: var(--jv-panel);
+  border: 1px solid var(--jv-cyan-dim);
+  border-radius: 10px;
+  padding: 8px 12px;
+  backdrop-filter: blur(10px);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  box-shadow: 0 0 24px rgba(34, 211, 238, 0.08);
+}
+.jarvis-hud-right { pointer-events: auto; }
+
+.jarvis-hud-title {
+  font-size: 13px;
+  letter-spacing: 0.22em;
+  color: var(--jv-cyan);
+  font-weight: 600;
+}
+.jarvis-hud-subtitle {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--jv-text-dim);
+  border-left: 1px solid var(--jv-cyan-dim);
+  padding-left: 12px;
+}
+
+#jarvis-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--jv-cyan);
+  box-shadow: 0 0 8px var(--jv-cyan);
+}
+#jarvis-status-dot[data-mode="busy"] { background: var(--jv-warn); box-shadow: 0 0 8px var(--jv-warn); }
+#jarvis-status-dot[data-mode="warn"] { background: var(--jv-warn); box-shadow: 0 0 8px var(--jv-warn); }
+#jarvis-status-dot[data-mode="error"] { background: var(--jv-error); box-shadow: 0 0 8px var(--jv-error); }
+
+#jarvis-status-text {
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  color: var(--jv-text);
+}
+
+#jarvis-layer-chip {
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  border: 1px solid var(--jv-violet);
+  color: #c4b5fd;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+#jarvis-layer-chip[data-warn="true"] {
+  border-color: var(--jv-warn);
+  color: var(--jv-warn);
+}
+
+.jarvis-hud-btn {
+  pointer-events: auto;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--jv-cyan-dim);
+  color: var(--jv-text);
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  border-radius: 6px;
+  padding: 5px 12px;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+.jarvis-hud-btn:hover { border-color: var(--jv-cyan); color: var(--jv-cyan); }
+
+#jarvis-hud-bottom {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  padding: 8px 14px;
+  pointer-events: none;
+  z-index: 5;
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+}
+#jarvis-credits {
+  max-width: 60%;
+  background: var(--jv-panel);
+  border: 1px solid rgba(219, 231, 243, 0.12);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 10px;
+  color: var(--jv-text-dim);
+  pointer-events: auto;
+}
+#jarvis-credits a { color: var(--jv-cyan); text-decoration: none; }
+#jarvis-hud-hint {
+  background: var(--jv-panel);
+  border: 1px solid rgba(219, 231, 243, 0.12);
+  border-radius: 8px;
+  padding: 4px 10px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--jv-text-dim);
+}
