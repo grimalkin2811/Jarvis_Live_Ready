@@ -629,12 +629,12 @@ Les décisions P1/P2 (LOD points, workers, instancing) restent ouvertes
 - `main` intouché · PR #51 / `feature/v1.9.0` intouchés · aucun merge/push
   avant validation explicite de l'utilisateur.
 - Commits atomiques (branche de session) :
-  1. `44e5800 docs: add God's Eye View integration audit (licence, architecture, performance)`
-  2. `07465b2 feat(web): add Jarvis-native God's Eye View web module`
-  3. `4b26602 feat: add God's Eye View bridge (protocol, controller, Qt host)`
-  4. `095c86d feat: register world_* tools and add demo entry point`
-  5. `673c041 test: add God's Eye View protocol/controller/tools/widget coverage`
-  6. `fc5d406 perf: add headless dispatch benchmark for the world module`
+  1. `1557f7a docs: add God's Eye View integration audit (licence, architecture, performance)`
+  2. `a595d37 feat(web): add Jarvis-native God's Eye View web module`
+  3. `eeccd02 feat: add God's Eye View bridge (protocol, controller, Qt host)`
+  4. `da9f37b feat: register world_* tools and add demo entry point`
+  5. `a366e88 test: add God's Eye View protocol/controller/tools/widget coverage`
+  6. `bbf8483 perf: add headless dispatch benchmark for the world module`
 - Aucune modification de `src/main.py`, `src/gemini_live.py`, `src/audio.py`,
   `src/background_tasks/*`, `UI/boot_sequence.py`, `src/updater.py` — le module
   est **additif** partout.
@@ -712,3 +712,26 @@ autre partie d'amont n'est vendorée.
 - import `src.tools` → registry cohérent (154 déclarations / 154 fonctions) ;
 - aucun fichier manquant : le module est entièrement reconstruisible depuis le
   clone (node_modules/dist exclus du Git, cf. .gitignore).
+
+
+## Annexe D — Incident de persistance du workspace et récupération (2026-11-09)
+
+**Constat :** au démarrage de la session de récupération, le dépôt local avait été
+re-cloné depuis `origin` (reflog : `clone: from https://github.com/grimalkin2811/
+Jarvis_Live_Ready.git` à 20:49 UTC). La branche `arena/961d92ed-jarvis-live-ready`
+pointait sur `ec944e2` (= `main`) et les objets des commits `44e5800`…`b6b1b85`
+**n'existaient plus** dans le magasin d'objets local (`git cat-file` : *not a valid
+object name* ; `git fsck --lost-found` : vide). La branche n'avait jamais été
+poussée (`git ls-remote` : absente d'`origin`).
+
+**Récupération :** l'intégralité du contenu (fichiers untracked + 2 fichiers modifiés)
+était présente intacte dans l'arbre de travail. Les 6 commits ont été re-créés à
+l'identique (mêmes chemins, mêmes messages atomiques) avec de nouveaux hachages
+(`1557f7a`…`bbf8483`), puis ce commit documente la divergence. Le hachage `b6b1b85`
+n'est **pas** récupérable ; le contenu l'est.
+
+**Garantie :** `git diff ec944e2` reproduit l'ensemble du périmètre God's Eye View ;
+la suite `pytest tests/test_gods_eye_*.py` (65 tests) repasse en vert sur l'arbre
+reconstruit — voir CI/session de récupération. Aucun fichier hors périmètre n'a été
+altéré ; `main` (ec944e2), PR #51 (`feature/v1.9.0`) et le chantier shutdown sont
+intouchés.
