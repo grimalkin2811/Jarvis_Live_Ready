@@ -1,0 +1,5040 @@
+{
+  "schema_version": 1,
+  "started_at_utc": "2026-11-10T20:04:08.617751+00:00",
+  "git_head": "d7ab199aee56a101b15dbbe8b8a04783154165c2",
+  "git_branch": "arena/961d92ed-jarvis-live-ready",
+  "environment": {
+    "os": "Windows-10-10.0.26300-SP0",
+    "windows_build": "26300",
+    "cpu": "Intel(R) Pentium(R) Gold G5400 CPU @ 3.70GHz",
+    "logical_cpu_count": 4,
+    "physical_cpu_count": 2,
+    "gpu_from_windows": "Intel(R) UHD Graphics 610",
+    "webgl_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 610 (0x00003E90) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "ram_total_gb": 15.83,
+    "python": "3.11.9",
+    "pyside6": "6.11.1",
+    "qtwebengine": "6.11.1",
+    "screen": {
+      "geometry_px": [
+        1024,
+        768
+      ],
+      "device_pixel_ratio": 1.0
+    },
+    "cesium_version": "1.147.0"
+  },
+  "conditions": {
+    "window_size_px": [
+      1028,
+      720
+    ],
+    "web_build_index_bytes": 1753,
+    "web_build_index_mtime": "2026-11-10T19:24:30.762084+00:00",
+    "measurement": "QWebEngineView avec build Vite/Cesium; postRender de Cesium est la source de FPS/frame-time Cesium; rAF est rapporté séparément.",
+    "gpu_utilization": "PDH GPU Engine 3D par PID benchmark; l'utilisation globale de l'adaptateur n'est pas représentée par ce compteur.",
+    "external_services": "Esri/OSM et adsb.lol selon disponibilité réseau; source inscrite par scénario",
+    "instrumentation": "Sonde postRender et mesures de frames actives uniquement pendant chaque intervalle"
+  },
+  "activation": {
+    "request_open_ms": 3577.01,
+    "ready_from_open_ms": 6758.09,
+    "canvas": {
+      "width": 1028,
+      "height": 720
+    },
+    "page_status": "PRÊT",
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) QtWebEngine/6.11.1 Chrome/140.0.0.0 Safari/537.36",
+    "process_resources_at_ready": {
+      "process_tree_cpu_pct": 64.2,
+      "process_tree_cpu_pct_machine": 16.05,
+      "system_cpu_pct": 66.7,
+      "process_tree_rss_mb": 578.0,
+      "process_count": 2,
+      "processes": [
+        {
+          "pid": 17100,
+          "name": "python.exe"
+        },
+        {
+          "pid": 26336,
+          "name": "QtWebEngineProcess.exe"
+        }
+      ],
+      "gpu_3d_utilization_pct": 15.31,
+      "gpu_3d_engines": [
+        {
+          "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+          "utilization_pct": 15.31
+        }
+      ]
+    }
+  },
+  "world_state_at_ready": {
+    "camera": {
+      "latitude": 48.85660000000001,
+      "longitude": 2.3521999999999994,
+      "altitude_m": 18000000,
+      "heading_deg": 360,
+      "pitch_deg": -90
+    },
+    "baseLayer": "osm",
+    "layers": {
+      "flights": {
+        "enabled": false,
+        "objectCount": 0,
+        "source": "none",
+        "lastError": null,
+        "lastUpdated": null
+      }
+    },
+    "governor": {
+      "installed": true,
+      "mode": "idle",
+      "holds": [],
+      "recentRequests": [
+        {
+          "reason": "camera-settled",
+          "at": 1794341044943
+        }
+      ]
+    },
+    "credit": [
+      "© OpenStreetMap contributors (ODbL 1.0)",
+      "Flights: adsb.lol (ODbL 1.0)"
+    ]
+  },
+  "scenarios": [
+    {
+      "label": "A_globe_idle",
+      "resources_samples": [
+        {
+          "t_s": 0.511,
+          "process_tree_cpu_pct": 25.0,
+          "process_tree_cpu_pct_machine": 6.25,
+          "system_cpu_pct": 59.2,
+          "process_tree_rss_mb": 589.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 5.84,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 5.84
+            }
+          ]
+        },
+        {
+          "t_s": 1.009,
+          "process_tree_cpu_pct": 25.0,
+          "process_tree_cpu_pct_machine": 6.25,
+          "system_cpu_pct": 57.8,
+          "process_tree_rss_mb": 596.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 50.83,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 50.83
+            }
+          ]
+        },
+        {
+          "t_s": 1.506,
+          "process_tree_cpu_pct": 12.5,
+          "process_tree_cpu_pct_machine": 3.12,
+          "system_cpu_pct": 45.5,
+          "process_tree_rss_mb": 597.0,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 2.005,
+          "process_tree_cpu_pct": 6.2,
+          "process_tree_cpu_pct_machine": 1.55,
+          "system_cpu_pct": 29.4,
+          "process_tree_rss_mb": 597.3,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 2.506,
+          "process_tree_cpu_pct": 24.2,
+          "process_tree_cpu_pct_machine": 6.05,
+          "system_cpu_pct": 51.9,
+          "process_tree_rss_mb": 597.6,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 3.01,
+          "process_tree_cpu_pct": 54.9,
+          "process_tree_cpu_pct_machine": 13.72,
+          "system_cpu_pct": 50.8,
+          "process_tree_rss_mb": 599.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 67.6,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 67.6
+            }
+          ]
+        },
+        {
+          "t_s": 3.506,
+          "process_tree_cpu_pct": 45.4,
+          "process_tree_cpu_pct_machine": 11.35,
+          "system_cpu_pct": 72.0,
+          "process_tree_rss_mb": 600.1,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 21.38,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 21.38
+            }
+          ]
+        },
+        {
+          "t_s": 4.005,
+          "process_tree_cpu_pct": 12.9,
+          "process_tree_cpu_pct_machine": 3.23,
+          "system_cpu_pct": 69.8,
+          "process_tree_rss_mb": 600.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 4.502,
+          "process_tree_cpu_pct": 12.1,
+          "process_tree_cpu_pct_machine": 3.02,
+          "system_cpu_pct": 71.2,
+          "process_tree_rss_mb": 600.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        }
+      ],
+      "raf": {
+        "frames": 257,
+        "elapsed_ms": 5042.4,
+        "fps": 50.97,
+        "average_frame_time_ms": 19.519,
+        "p95_frame_time_ms": 33.3,
+        "p99_frame_time_ms": 66.7,
+        "max_frame_time_ms": 266.7
+      },
+      "cesium_post_render": {
+        "frames": 33,
+        "elapsed_ms": 5031.4,
+        "fps": 6.56,
+        "average_frame_time_ms": 98.359,
+        "p95_frame_time_ms": 282.3,
+        "p99_frame_time_ms": 1925.5,
+        "max_frame_time_ms": 1925.5
+      },
+      "long_tasks": {
+        "count": 2,
+        "total_ms": 366,
+        "durations_ms": [
+          266,
+          100
+        ]
+      },
+      "raw_frame_intervals_ms": {
+        "raf": [
+          16.600000000000364,
+          16.69999999999891,
+          266.7000000000007,
+          100,
+          16.600000000000364,
+          16.69999999999891,
+          33.30000000000109,
+          16.69999999999891,
+          33.30000000000109,
+          33.399999999999636,
+          33.29999999999927,
+          50,
+          33.30000000000109,
+          16.599999999998545,
+          16.700000000000728,
+          50,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.799999999999272,
+          16.600000000000364,
+          16.700000000000728,
+          16.599999999998545,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.799999999999272,
+          16.600000000000364,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.600000000000364,
+          33.399999999999636,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.600000000000364,
+          33.30000000000109,
+          66.69999999999891,
+          16.700000000000728,
+          33.399999999999636,
+          33.29999999999927,
+          33.30000000000109,
+          33.29999999999927,
+          50.100000000000364,
+          16.600000000000364,
+          16.69999999999891,
+          49.900000000001455,
+          33.399999999999636,
+          33.29999999999927,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.69999999999891,
+          16.600000000000364,
+          16.799999999999272,
+          16.600000000000364,
+          16.700000000000728,
+          16.600000000000364,
+          16.599999999998545,
+          16.80000000000109,
+          16.600000000000364,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.700000000000728,
+          16.600000000000364,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.700000000000728,
+          16.69999999999891,
+          16.600000000000364,
+          16.600000000000364,
+          16.799999999999272,
+          16.600000000000364
+        ],
+        "cesium_post_render": [
+          14.799999997019768,
+          282.30000001192093,
+          105.09999999403954,
+          6.4000000059604645,
+          9.599999994039536,
+          23.299999997019768,
+          26.900000005960464,
+          29.5,
+          25.799999997019768,
+          35.5,
+          22.299999997019768,
+          91.40000000596046,
+          22.799999997019768,
+          1925.5,
+          16.400000005960464,
+          20.69999998807907,
+          33.1000000089407,
+          15.5,
+          8.599999994039536,
+          14.100000008940697,
+          28.69999998807907,
+          26.900000005960464,
+          73,
+          20.200000002980232,
+          26.799999997019768,
+          40.79999999701977,
+          23.299999997019768,
+          32.5,
+          62.1000000089407,
+          11,
+          18.599999994039536,
+          54
+        ]
+      },
+      "action_result": null,
+      "action_elapsed_ms": null,
+      "active_action_capture": null
+    },
+    {
+      "label": "B_camera_flyto",
+      "resources_samples": [
+        {
+          "t_s": 0.529,
+          "process_tree_cpu_pct": 54.4,
+          "process_tree_cpu_pct_machine": 13.6,
+          "system_cpu_pct": 59.6,
+          "process_tree_rss_mb": 626.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 33.66,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 33.66
+            }
+          ]
+        },
+        {
+          "t_s": 1.009,
+          "process_tree_cpu_pct": 96.8,
+          "process_tree_cpu_pct_machine": 24.2,
+          "system_cpu_pct": 80.8,
+          "process_tree_rss_mb": 633.7,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 58.92,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 58.92
+            }
+          ]
+        },
+        {
+          "t_s": 1.514,
+          "process_tree_cpu_pct": 109.4,
+          "process_tree_cpu_pct_machine": 27.35,
+          "system_cpu_pct": 64.3,
+          "process_tree_rss_mb": 640.6,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 50.43,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 50.43
+            }
+          ]
+        },
+        {
+          "t_s": 2.042,
+          "process_tree_cpu_pct": 45.7,
+          "process_tree_cpu_pct_machine": 11.43,
+          "system_cpu_pct": 56.0,
+          "process_tree_rss_mb": 646.0,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 40.52,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 40.52
+            }
+          ]
+        },
+        {
+          "t_s": 2.522,
+          "process_tree_cpu_pct": 90.0,
+          "process_tree_cpu_pct_machine": 22.5,
+          "system_cpu_pct": 63.9,
+          "process_tree_rss_mb": 648.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 48.37,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 48.37
+            }
+          ]
+        },
+        {
+          "t_s": 3.008,
+          "process_tree_cpu_pct": 26.7,
+          "process_tree_cpu_pct_machine": 6.67,
+          "system_cpu_pct": 58.2,
+          "process_tree_rss_mb": 649.0,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 17.78,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 17.78
+            }
+          ]
+        },
+        {
+          "t_s": 3.502,
+          "process_tree_cpu_pct": 37.5,
+          "process_tree_cpu_pct_machine": 9.38,
+          "system_cpu_pct": 79.5,
+          "process_tree_rss_mb": 649.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 14.14,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 14.14
+            }
+          ]
+        }
+      ],
+      "raf": {
+        "frames": 163,
+        "elapsed_ms": 4011.1,
+        "fps": 40.64,
+        "average_frame_time_ms": 24.539,
+        "p95_frame_time_ms": 50,
+        "p99_frame_time_ms": 100,
+        "max_frame_time_ms": 116.6
+      },
+      "cesium_post_render": {
+        "frames": 88,
+        "elapsed_ms": 4011.1,
+        "fps": 21.94,
+        "average_frame_time_ms": 45.037,
+        "p95_frame_time_ms": 118,
+        "p99_frame_time_ms": 138.6,
+        "max_frame_time_ms": 138.6
+      },
+      "long_tasks": {
+        "count": 3,
+        "total_ms": 271,
+        "durations_ms": [
+          65,
+          110,
+          96
+        ]
+      },
+      "raw_frame_intervals_ms": {
+        "raf": [
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          33.29999999999927,
+          16.700000000000728,
+          16.599999999998545,
+          66.70000000000073,
+          33.399999999999636,
+          116.60000000000036,
+          16.700000000000728,
+          33.399999999999636,
+          16.5,
+          33.399999999999636,
+          33.399999999999636,
+          49.899999999999636,
+          16.700000000000728,
+          33.29999999999927,
+          16.700000000000728,
+          33.29999999999927,
+          16.700000000000728,
+          66.70000000000073,
+          33.29999999999927,
+          33.399999999999636,
+          16.600000000000364,
+          66.70000000000073,
+          33.19999999999891,
+          33.5,
+          33.20000000000073,
+          33.399999999999636,
+          33.29999999999927,
+          33.400000000001455,
+          33.20000000000073,
+          33.39999999999782,
+          16.700000000000728,
+          16.599999999998545,
+          33.30000000000291,
+          66.79999999999927,
+          49.89999999999782,
+          16.700000000000728,
+          100,
+          16.600000000002183,
+          33.39999999999782,
+          16.700000000000728,
+          33.29999999999927,
+          16.700000000000728,
+          33.29999999999927,
+          33.29999999999927,
+          16.700000000000728,
+          33.29999999999927,
+          16.700000000000728,
+          33.29999999999927,
+          33.30000000000291,
+          33.39999999999782,
+          33.29999999999927,
+          33.30000000000291,
+          33.39999999999782,
+          33.29999999999927,
+          50,
+          33.30000000000291,
+          66.69999999999709,
+          33.30000000000291,
+          16.69999999999709,
+          33.30000000000291,
+          33.39999999999782,
+          16.700000000000728,
+          33.29999999999927,
+          66.60000000000218,
+          33.39999999999782,
+          33.29999999999927,
+          33.30000000000291,
+          16.599999999998545,
+          33.400000000001455,
+          33.39999999999782,
+          33.29999999999927,
+          16.600000000002183,
+          33.39999999999782,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.799999999999272,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.799999999999272,
+          16.600000000002183,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183
+        ],
+        "cesium_post_render": [
+          12.5,
+          22.5,
+          37.900000005960464,
+          20.899999991059303,
+          9.5,
+          8.600000008940697,
+          79.59999999403954,
+          20.099999994039536,
+          138.6000000089407,
+          7.799999997019768,
+          30.400000005960464,
+          23.599999994039536,
+          10.900000005960464,
+          25.599999994039536,
+          41,
+          44.400000005960464,
+          25.399999991059303,
+          24.700000002980232,
+          21.200000002980232,
+          25.799999997019768,
+          19.400000005960464,
+          72.5,
+          31.299999997019768,
+          31.899999991059303,
+          24.5,
+          78.1000000089407,
+          24.200000002980232,
+          19.399999991059303,
+          36.5,
+          50.6000000089407,
+          25.299999997019768,
+          23.399999991059303,
+          56.6000000089407,
+          12.799999997019768,
+          9.099999994039536,
+          28.900000005960464,
+          44.29999999701977,
+          74.40000000596046,
+          22.700000002980232,
+          112,
+          7.899999991059303,
+          25.200000002980232,
+          19.200000002980232,
+          23.799999997019768,
+          28,
+          42.29999999701977,
+          15.900000005960464,
+          24.200000002980232,
+          23.69999998807907,
+          23.600000008940697,
+          23.5,
+          30.200000002980232,
+          36,
+          30.19999998807907,
+          41.30000001192093,
+          22.799999997019768,
+          49.29999999701977,
+          20.900000005960464,
+          68.69999998807907,
+          13.700000002980232,
+          70.79999999701977,
+          37.6000000089407,
+          19.899999991059303,
+          20.100000008940697,
+          39.599999994039536,
+          21.299999997019768,
+          31.100000008940697,
+          71.29999999701977,
+          34.099999994039536,
+          24.5,
+          24.200000002980232,
+          35.5,
+          27.200000002980232,
+          41.599999994039536,
+          21.600000008940697,
+          113.8999999910593,
+          114.20000000298023,
+          113.90000000596046,
+          117.09999999403954,
+          115.1000000089407,
+          128.19999998807907,
+          108,
+          119.1000000089407,
+          115.70000000298023,
+          116.09999999403954,
+          119.20000000298023,
+          118
+        ]
+      },
+      "action_result": {
+        "id": null,
+        "ok": true,
+        "action": "world_set_camera",
+        "camera": {
+          "latitude": 35.67620000000007,
+          "longitude": 139.6503,
+          "altitude_m": 1999999.9999977786,
+          "heading_deg": 360,
+          "pitch_deg": -35.000000000000014
+        },
+        "arrived": true
+      },
+      "action_elapsed_ms": 2554.18,
+      "active_action_capture": {
+        "elapsed_ms": 2544.6,
+        "raf": {
+          "frames": 75,
+          "elapsed_ms": 2544.6,
+          "fps": 29.47,
+          "average_frame_time_ms": 33.333,
+          "p95_frame_time_ms": 66.7,
+          "p99_frame_time_ms": 116.6,
+          "max_frame_time_ms": 116.6
+        },
+        "cesium_post_render": {
+          "frames": 76,
+          "elapsed_ms": 2544.6,
+          "fps": 29.87,
+          "average_frame_time_ms": 33.596,
+          "p95_frame_time_ms": 78.1,
+          "p99_frame_time_ms": 138.6,
+          "max_frame_time_ms": 138.6
+        }
+      }
+    },
+    {
+      "label": "C_flights_on",
+      "resources_samples": [
+        {
+          "t_s": 0.5,
+          "process_tree_cpu_pct": 24.6,
+          "process_tree_cpu_pct_machine": 6.15,
+          "system_cpu_pct": 53.6,
+          "process_tree_rss_mb": 663.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 18.59,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 18.59
+            }
+          ]
+        },
+        {
+          "t_s": 1.006,
+          "process_tree_cpu_pct": 31.2,
+          "process_tree_cpu_pct_machine": 7.8,
+          "system_cpu_pct": 62.3,
+          "process_tree_rss_mb": 664.3,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 28.35,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 28.35
+            }
+          ]
+        },
+        {
+          "t_s": 1.507,
+          "process_tree_cpu_pct": 18.8,
+          "process_tree_cpu_pct_machine": 4.7,
+          "system_cpu_pct": 60.6,
+          "process_tree_rss_mb": 664.7,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 23.52,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 23.52
+            }
+          ]
+        },
+        {
+          "t_s": 2.007,
+          "process_tree_cpu_pct": 36.3,
+          "process_tree_cpu_pct_machine": 9.07,
+          "system_cpu_pct": 59.3,
+          "process_tree_rss_mb": 665.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 21.88,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 21.88
+            }
+          ]
+        },
+        {
+          "t_s": 2.504,
+          "process_tree_cpu_pct": 26.7,
+          "process_tree_cpu_pct_machine": 6.67,
+          "system_cpu_pct": 54.0,
+          "process_tree_rss_mb": 666.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 26.97,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 26.97
+            }
+          ]
+        },
+        {
+          "t_s": 3.006,
+          "process_tree_cpu_pct": 25.0,
+          "process_tree_cpu_pct_machine": 6.25,
+          "system_cpu_pct": 45.7,
+          "process_tree_rss_mb": 665.0,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 25.96,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 25.96
+            }
+          ]
+        },
+        {
+          "t_s": 3.508,
+          "process_tree_cpu_pct": 37.5,
+          "process_tree_cpu_pct_machine": 9.38,
+          "system_cpu_pct": 48.1,
+          "process_tree_rss_mb": 665.7,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 22.57,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 22.57
+            }
+          ]
+        },
+        {
+          "t_s": 4.0,
+          "process_tree_cpu_pct": 36.4,
+          "process_tree_cpu_pct_machine": 9.1,
+          "system_cpu_pct": 40.3,
+          "process_tree_rss_mb": 666.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 24.38,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 24.38
+            }
+          ]
+        },
+        {
+          "t_s": 4.503,
+          "process_tree_cpu_pct": 29.0,
+          "process_tree_cpu_pct_machine": 7.25,
+          "system_cpu_pct": 44.0,
+          "process_tree_rss_mb": 667.3,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 26.67,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 26.67
+            }
+          ]
+        }
+      ],
+      "raf": {
+        "frames": 300,
+        "elapsed_ms": 5015.8,
+        "fps": 59.81,
+        "average_frame_time_ms": 16.666,
+        "p95_frame_time_ms": 16.7,
+        "p99_frame_time_ms": 16.8,
+        "max_frame_time_ms": 16.8
+      },
+      "cesium_post_render": {
+        "frames": 43,
+        "elapsed_ms": 5015.8,
+        "fps": 8.57,
+        "average_frame_time_ms": 116.76,
+        "p95_frame_time_ms": 123.6,
+        "p99_frame_time_ms": 124.5,
+        "max_frame_time_ms": 124.5
+      },
+      "long_tasks": {
+        "count": 0,
+        "total_ms": 0,
+        "durations_ms": []
+      },
+      "raw_frame_intervals_ms": {
+        "raf": [
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.599999999998545,
+          16.799999999999272,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000002183,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.799999999999272,
+          16.599999999998545,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.799999999999272,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.799999999999272,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.799999999999272,
+          16.5,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000002183,
+          16.799999999999272,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.700000000000728,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.5,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.799999999999272,
+          16.599999999998545,
+          16.700000000000728,
+          16.599999999998545,
+          16.600000000002183,
+          16.799999999999272,
+          16.599999999998545,
+          16.700000000000728,
+          16.600000000002183,
+          16.799999999999272,
+          16.599999999998545,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.700000000000728,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.599999999998545,
+          16.799999999999272,
+          16.600000000002183,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728,
+          16.600000000002183,
+          16.599999999998545,
+          16.799999999999272,
+          16.600000000002183,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.600000000002183,
+          16.700000000000728,
+          16.69999999999709,
+          16.700000000000728
+        ],
+        "cesium_post_render": [
+          114.80000001192093,
+          123.59999999403954,
+          120.70000000298023,
+          118.79999999701977,
+          111.20000000298023,
+          115.5,
+          116.8999999910593,
+          118.30000001192093,
+          110.29999999701977,
+          120.3999999910593,
+          111,
+          121.20000000298023,
+          116.5,
+          116.5,
+          115.40000000596046,
+          123.59999999403954,
+          116.90000000596046,
+          107.20000000298023,
+          121.8999999910593,
+          111.90000000596046,
+          120.29999999701977,
+          118.40000000596046,
+          118.19999998807907,
+          115.30000001192093,
+          113.5,
+          118.5,
+          111.5,
+          124,
+          116.79999999701977,
+          110.29999999701977,
+          120.40000000596046,
+          119.69999998807907,
+          116.6000000089407,
+          111.20000000298023,
+          118.69999998807907,
+          112.80000001192093,
+          123,
+          114,
+          115.3999999910593,
+          113.40000000596046,
+          124.5,
+          114.79999999701977
+        ]
+      },
+      "action_result": null,
+      "action_elapsed_ms": null,
+      "active_action_capture": null,
+      "enable_ms": 71.39,
+      "enable_result": {
+        "id": null,
+        "ok": true,
+        "action": "world_enable_layer",
+        "layer_id": "flights",
+        "enabled": true,
+        "changed": true
+      },
+      "flight_state": {
+        "enabled": true,
+        "objectCount": 48,
+        "source": "synthetic-sample",
+        "lastError": "adsb.lol indisponible (Failed to fetch)",
+        "lastUpdated": 1794341063016
+      },
+      "flight_update_profile": {
+        "elapsedMs": 12211.70000000298,
+        "updates": [
+          {
+            "atMs": 51.900000005960464,
+            "source": "synthetic-sample",
+            "inputCount": 48,
+            "renderedCount": 48,
+            "timings": {
+              "removeAllMs": 0.09999999403953552,
+              "normalizeMs": 2.2000000029802322,
+              "sortAndCapMs": 0,
+              "billboardCreationMs": 3.4000000059604645
+            }
+          },
+          {
+            "atMs": 11979.20000000298,
+            "source": "synthetic-sample",
+            "inputCount": 48,
+            "renderedCount": 48,
+            "timings": {
+              "removeAllMs": 0.7999999970197678,
+              "normalizeMs": 0,
+              "sortAndCapMs": 0,
+              "billboardCreationMs": 1
+            }
+          }
+        ]
+      },
+      "flight_update_observation_resources": [
+        {
+          "t_s": 0.502,
+          "process_tree_cpu_pct": 25.8,
+          "process_tree_cpu_pct_machine": 6.45,
+          "system_cpu_pct": 78.0,
+          "process_tree_rss_mb": 669.0,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 22.63,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 22.63
+            }
+          ]
+        },
+        {
+          "t_s": 1.013,
+          "process_tree_cpu_pct": 18.8,
+          "process_tree_cpu_pct_machine": 4.7,
+          "system_cpu_pct": 58.1,
+          "process_tree_rss_mb": 663.7,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 28.15,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 28.15
+            }
+          ]
+        },
+        {
+          "t_s": 1.509,
+          "process_tree_cpu_pct": 18.8,
+          "process_tree_cpu_pct_machine": 4.7,
+          "system_cpu_pct": 60.0,
+          "process_tree_rss_mb": 663.2,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 23.25,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 23.25
+            }
+          ]
+        },
+        {
+          "t_s": 2.005,
+          "process_tree_cpu_pct": 3.2,
+          "process_tree_cpu_pct_machine": 0.8,
+          "system_cpu_pct": 60.0,
+          "process_tree_rss_mb": 662.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 22.83,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 22.83
+            }
+          ]
+        },
+        {
+          "t_s": 2.52,
+          "process_tree_cpu_pct": 9.1,
+          "process_tree_cpu_pct_machine": 2.27,
+          "system_cpu_pct": 35.6,
+          "process_tree_rss_mb": 660.1,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 26.57,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 26.57
+            }
+          ]
+        },
+        {
+          "t_s": 3.018,
+          "process_tree_cpu_pct": 18.8,
+          "process_tree_cpu_pct_machine": 4.7,
+          "system_cpu_pct": 55.8,
+          "process_tree_rss_mb": 657.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 23.46,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 23.46
+            }
+          ]
+        },
+        {
+          "t_s": 3.514,
+          "process_tree_cpu_pct": 12.5,
+          "process_tree_cpu_pct_machine": 3.12,
+          "system_cpu_pct": 70.8,
+          "process_tree_rss_mb": 656.3,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 22.8,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 22.8
+            }
+          ]
+        },
+        {
+          "t_s": 4.017,
+          "process_tree_cpu_pct": 30.3,
+          "process_tree_cpu_pct_machine": 7.58,
+          "system_cpu_pct": 55.9,
+          "process_tree_rss_mb": 656.0,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 22.41,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 22.41
+            }
+          ]
+        },
+        {
+          "t_s": 4.505,
+          "process_tree_cpu_pct": 22.6,
+          "process_tree_cpu_pct_machine": 5.65,
+          "system_cpu_pct": 64.6,
+          "process_tree_rss_mb": 656.6,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 27.05,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 27.05
+            }
+          ]
+        },
+        {
+          "t_s": 5.016,
+          "process_tree_cpu_pct": 34.4,
+          "process_tree_cpu_pct_machine": 8.6,
+          "system_cpu_pct": 29.2,
+          "process_tree_rss_mb": 657.2,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 24.31,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 24.31
+            }
+          ]
+        },
+        {
+          "t_s": 5.519,
+          "process_tree_cpu_pct": 12.1,
+          "process_tree_cpu_pct_machine": 3.02,
+          "system_cpu_pct": 63.9,
+          "process_tree_rss_mb": 657.9,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 22.6,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 22.6
+            }
+          ]
+        },
+        {
+          "t_s": 6.003,
+          "process_tree_cpu_pct": 35.5,
+          "process_tree_cpu_pct_machine": 8.88,
+          "system_cpu_pct": 66.4,
+          "process_tree_rss_mb": 659.3,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 23.08,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 23.08
+            }
+          ]
+        },
+        {
+          "t_s": 6.512,
+          "process_tree_cpu_pct": 31.2,
+          "process_tree_cpu_pct_machine": 7.8,
+          "system_cpu_pct": 54.4,
+          "process_tree_rss_mb": 659.6,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 24.37,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 24.37
+            }
+          ]
+        },
+        {
+          "t_s": 7.012,
+          "process_tree_cpu_pct": 56.2,
+          "process_tree_cpu_pct_machine": 14.05,
+          "system_cpu_pct": 50.8,
+          "process_tree_rss_mb": 671.7,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 29.48,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 29.48
+            }
+          ]
+        }
+      ],
+      "measured_update_intervals_ms": [
+        11927.3
+      ],
+      "scene_diagnostics": {
+        "camera": {
+          "latitude": 35.67620000000007,
+          "longitude": 139.6503,
+          "altitude_m": 1999999.9999977786,
+          "heading_deg": 360,
+          "pitch_deg": -35.000000000000014
+        },
+        "scene": {
+          "requestRenderMode": true,
+          "primitiveCount": 1,
+          "globeVisible": true
+        },
+        "governor": {
+          "installed": true,
+          "mode": "idle",
+          "holds": [],
+          "recentRequests": [
+            {
+              "reason": "camera-settled",
+              "at": 1794341044943
+            },
+            {
+              "reason": "camera-settled",
+              "at": 1794341054999
+            },
+            {
+              "reason": "camera-flight-complete",
+              "at": 1794341059443
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341063016
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341074944
+            }
+          ]
+        },
+        "flights": {
+          "enabled": true,
+          "objectCount": 48,
+          "source": "synthetic-sample",
+          "lastError": "adsb.lol indisponible (Failed to fetch)",
+          "lastUpdated": 1794341074943
+        },
+        "flightInternals": {
+          "enabled": true,
+          "objectCount": 48,
+          "source": "synthetic-sample",
+          "timerScheduled": true,
+          "collectionAlive": true,
+          "benchmarkOverride": false
+        }
+      }
+    },
+    {
+      "label": "D_flights_off",
+      "resources_samples": [
+        {
+          "t_s": 0.501,
+          "process_tree_cpu_pct": 15.0,
+          "process_tree_cpu_pct_machine": 3.75,
+          "system_cpu_pct": 37.8,
+          "process_tree_rss_mb": 672.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 27.53,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 27.53
+            }
+          ]
+        },
+        {
+          "t_s": 1.01,
+          "process_tree_cpu_pct": 33.3,
+          "process_tree_cpu_pct_machine": 8.32,
+          "system_cpu_pct": 69.9,
+          "process_tree_rss_mb": 673.1,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 21.95,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 21.95
+            }
+          ]
+        },
+        {
+          "t_s": 1.508,
+          "process_tree_cpu_pct": 28.1,
+          "process_tree_cpu_pct_machine": 7.03,
+          "system_cpu_pct": 54.6,
+          "process_tree_rss_mb": 673.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 27.15,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 27.15
+            }
+          ]
+        },
+        {
+          "t_s": 2.006,
+          "process_tree_cpu_pct": 38.7,
+          "process_tree_cpu_pct_machine": 9.68,
+          "system_cpu_pct": 46.9,
+          "process_tree_rss_mb": 674.4,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 23.59,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 23.59
+            }
+          ]
+        },
+        {
+          "t_s": 2.505,
+          "process_tree_cpu_pct": 18.8,
+          "process_tree_cpu_pct_machine": 4.7,
+          "system_cpu_pct": 66.4,
+          "process_tree_rss_mb": 674.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 23.48,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 23.48
+            }
+          ]
+        }
+      ],
+      "raf": {
+        "frames": 179,
+        "elapsed_ms": 3022.5,
+        "fps": 59.22,
+        "average_frame_time_ms": 16.759,
+        "p95_frame_time_ms": 16.8,
+        "p99_frame_time_ms": 16.8,
+        "max_frame_time_ms": 33.4
+      },
+      "cesium_post_render": {
+        "frames": 25,
+        "elapsed_ms": 3022.4,
+        "fps": 8.27,
+        "average_frame_time_ms": 117.275,
+        "p95_frame_time_ms": 123.7,
+        "p99_frame_time_ms": 126.5,
+        "max_frame_time_ms": 126.5
+      },
+      "long_tasks": {
+        "count": 0,
+        "total_ms": 0,
+        "durations_ms": []
+      },
+      "raw_frame_intervals_ms": {
+        "raf": [
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          16.5,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          33.400000000001455,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.799999999995634,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.799999999995634,
+          16.599999999998545,
+          16.60000000000582,
+          16.799999999995634,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.799999999995634,
+          16.5,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.599999999998545,
+          16.700000000004366
+        ],
+        "cesium_post_render": [
+          115.59999999403954,
+          114.20000000298023,
+          116.1000000089407,
+          114.59999999403954,
+          123.70000000298023,
+          113.3999999910593,
+          118.20000000298023,
+          114.5,
+          118.6000000089407,
+          116.09999999403954,
+          112.59999999403954,
+          123,
+          126.5,
+          117.6000000089407,
+          117.79999999701977,
+          121.79999999701977,
+          109,
+          118.90000000596046,
+          117.20000000298023,
+          113.79999999701977,
+          115.8999999910593,
+          118,
+          115.80000001192093,
+          121.69999998807907
+        ]
+      },
+      "action_result": null,
+      "action_elapsed_ms": null,
+      "active_action_capture": null,
+      "disable_ms": 26.92,
+      "disable_result": {
+        "id": null,
+        "ok": true,
+        "action": "world_disable_layer",
+        "layer_id": "flights",
+        "enabled": false,
+        "changed": true
+      },
+      "scene_diagnostics": {
+        "camera": {
+          "latitude": 35.67620000000007,
+          "longitude": 139.6503,
+          "altitude_m": 1999999.9999977786,
+          "heading_deg": 360,
+          "pitch_deg": -35.000000000000014
+        },
+        "scene": {
+          "requestRenderMode": true,
+          "primitiveCount": 0,
+          "globeVisible": true
+        },
+        "governor": {
+          "installed": true,
+          "mode": "idle",
+          "holds": [],
+          "recentRequests": [
+            {
+              "reason": "camera-settled",
+              "at": 1794341044943
+            },
+            {
+              "reason": "camera-settled",
+              "at": 1794341054999
+            },
+            {
+              "reason": "camera-flight-complete",
+              "at": 1794341059443
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341063016
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341074944
+            },
+            {
+              "reason": "flights-disabled",
+              "at": 1794341075200
+            }
+          ]
+        },
+        "flights": {
+          "enabled": false,
+          "objectCount": 0,
+          "source": "synthetic-sample",
+          "lastError": null,
+          "lastUpdated": 1794341074943
+        },
+        "flightInternals": {
+          "enabled": false,
+          "objectCount": 0,
+          "source": "synthetic-sample",
+          "timerScheduled": false,
+          "collectionAlive": false,
+          "benchmarkOverride": false
+        }
+      }
+    },
+    {
+      "label": "E_layer_churn_x10",
+      "cycles": [
+        {
+          "cycle": 1,
+          "enable_ms": 34.96,
+          "disable_ms": 22.96,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 2,
+          "enable_ms": 24.33,
+          "disable_ms": 24.15,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 3,
+          "enable_ms": 21.97,
+          "disable_ms": 25.34,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 4,
+          "enable_ms": 51.11,
+          "disable_ms": 40.71,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 5,
+          "enable_ms": 85.51,
+          "disable_ms": 45.26,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 6,
+          "enable_ms": 83.5,
+          "disable_ms": 64.97,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 7,
+          "enable_ms": 38.74,
+          "disable_ms": 46.23,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 8,
+          "enable_ms": 79.23,
+          "disable_ms": 41.44,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 9,
+          "enable_ms": 58.72,
+          "disable_ms": 23.89,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        },
+        {
+          "cycle": 10,
+          "enable_ms": 37.06,
+          "disable_ms": 55.21,
+          "enable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_enable_layer",
+            "layer_id": "flights",
+            "enabled": true,
+            "changed": true
+          },
+          "disable_result": {
+            "id": null,
+            "ok": true,
+            "action": "world_disable_layer",
+            "layer_id": "flights",
+            "enabled": false,
+            "changed": true
+          }
+        }
+      ],
+      "average_enable_ms": 51.51,
+      "average_disable_ms": 39.02,
+      "resources_before_settle": {
+        "process_tree_cpu_pct": 58.7,
+        "process_tree_cpu_pct_machine": 14.68,
+        "system_cpu_pct": 65.4,
+        "process_tree_rss_mb": 696.5,
+        "process_count": 2,
+        "processes": [
+          {
+            "pid": 17100,
+            "name": "python.exe"
+          },
+          {
+            "pid": 26336,
+            "name": "QtWebEngineProcess.exe"
+          }
+        ],
+        "gpu_3d_utilization_pct": 47.04,
+        "gpu_3d_engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 47.04
+          }
+        ]
+      },
+      "resources_after_2s_settle": {
+        "process_tree_cpu_pct": 3.1,
+        "process_tree_cpu_pct_machine": 0.78,
+        "system_cpu_pct": 19.5,
+        "process_tree_rss_mb": 696.7,
+        "process_count": 2,
+        "processes": [
+          {
+            "pid": 17100,
+            "name": "python.exe"
+          },
+          {
+            "pid": 26336,
+            "name": "QtWebEngineProcess.exe"
+          }
+        ],
+        "gpu_3d_utilization_pct": 1.03,
+        "gpu_3d_engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 1.03
+          }
+        ]
+      },
+      "rss_delta_after_settle_mb": 0.2
+    },
+    {
+      "label": "F_synthetic_600_flights",
+      "resources_samples": [
+        {
+          "t_s": 0.5,
+          "process_tree_cpu_pct": 57.6,
+          "process_tree_cpu_pct_machine": 14.4,
+          "system_cpu_pct": 62.9,
+          "process_tree_rss_mb": 752.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 55.32,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 55.32
+            }
+          ]
+        },
+        {
+          "t_s": 1.006,
+          "process_tree_cpu_pct": 6.4,
+          "process_tree_cpu_pct_machine": 1.6,
+          "system_cpu_pct": 74.6,
+          "process_tree_rss_mb": 753.1,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 1.502,
+          "process_tree_cpu_pct": 12.1,
+          "process_tree_cpu_pct_machine": 3.02,
+          "system_cpu_pct": 72.1,
+          "process_tree_rss_mb": 753.3,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 2.007,
+          "process_tree_cpu_pct": 12.9,
+          "process_tree_cpu_pct_machine": 3.23,
+          "system_cpu_pct": 74.2,
+          "process_tree_rss_mb": 753.9,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 2.501,
+          "process_tree_cpu_pct": 18.8,
+          "process_tree_cpu_pct_machine": 4.7,
+          "system_cpu_pct": 55.7,
+          "process_tree_rss_mb": 754.2,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 3.007,
+          "process_tree_cpu_pct": 9.4,
+          "process_tree_cpu_pct_machine": 2.35,
+          "system_cpu_pct": 27.1,
+          "process_tree_rss_mb": 754.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 3.509,
+          "process_tree_cpu_pct": 24.3,
+          "process_tree_cpu_pct_machine": 6.08,
+          "system_cpu_pct": 49.6,
+          "process_tree_rss_mb": 754.4,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 4.006,
+          "process_tree_cpu_pct": 29.0,
+          "process_tree_cpu_pct_machine": 7.25,
+          "system_cpu_pct": 39.4,
+          "process_tree_rss_mb": 754.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        },
+        {
+          "t_s": 4.501,
+          "process_tree_cpu_pct": 6.2,
+          "process_tree_cpu_pct_machine": 1.55,
+          "system_cpu_pct": 40.5,
+          "process_tree_rss_mb": 754.9,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 0.0,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 0.0
+            }
+          ]
+        }
+      ],
+      "raf": {
+        "frames": 300,
+        "elapsed_ms": 5028.8,
+        "fps": 59.66,
+        "average_frame_time_ms": 16.777,
+        "p95_frame_time_ms": 16.8,
+        "p99_frame_time_ms": 16.8,
+        "max_frame_time_ms": 33.4
+      },
+      "cesium_post_render": {
+        "frames": 2,
+        "elapsed_ms": 5028.8,
+        "fps": 0.4,
+        "average_frame_time_ms": 323.2,
+        "p95_frame_time_ms": 323.2,
+        "p99_frame_time_ms": 323.2,
+        "max_frame_time_ms": 323.2
+      },
+      "long_tasks": {
+        "count": 0,
+        "total_ms": 0,
+        "durations_ms": []
+      },
+      "raw_frame_intervals_ms": {
+        "raf": [
+          33.299999999995634,
+          33.400000000001455,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.799999999995634,
+          16.599999999998545,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.799999999995634,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          16.700000000004366,
+          16.5,
+          16.69999999999709,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.799999999995634,
+          16.60000000000582,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.5,
+          16.80000000000291,
+          16.69999999999709,
+          16.5,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.799999999995634,
+          16.60000000000582,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709
+        ],
+        "cesium_post_render": [
+          323.20000000298023
+        ]
+      },
+      "action_result": null,
+      "action_elapsed_ms": null,
+      "active_action_capture": null,
+      "camera_action": {
+        "id": null,
+        "ok": true,
+        "action": "world_set_camera",
+        "camera": {
+          "latitude": 48.85659999999997,
+          "longitude": 2.3521999999999985,
+          "altitude_m": 8000000.000000006,
+          "heading_deg": 360,
+          "pitch_deg": -35.000000000000014
+        },
+        "arrived": true
+      },
+      "camera_action_ms": 2572.76,
+      "enable_ms": 62.33,
+      "enable_result": {
+        "id": null,
+        "ok": true,
+        "action": "world_enable_layer",
+        "layer_id": "flights",
+        "enabled": true,
+        "changed": true
+      },
+      "load_wall_ms": 59.87,
+      "load_profile": {
+        "inputCount": 600,
+        "enabled": true,
+        "objectCount": 600,
+        "source": "synthetic-benchmark",
+        "lastError": "adsb.lol indisponible (Failed to fetch)",
+        "lastUpdated": 1794341083881,
+        "applyRowsMs": 5.700000002980232,
+        "timings": {
+          "removeAllMs": 0,
+          "normalizeMs": 0.6000000089406967,
+          "sortAndCapMs": 0.09999999403953552,
+          "billboardCreationMs": 4.799999997019768
+        }
+      }
+    },
+    {
+      "label": "G_synthetic_600_flights_camera_move",
+      "resources_samples": [
+        {
+          "t_s": 0.512,
+          "process_tree_cpu_pct": 45.5,
+          "process_tree_cpu_pct_machine": 11.38,
+          "system_cpu_pct": 50.2,
+          "process_tree_rss_mb": 758.9,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 36.59,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 36.59
+            }
+          ]
+        },
+        {
+          "t_s": 1.018,
+          "process_tree_cpu_pct": 99.9,
+          "process_tree_cpu_pct_machine": 24.98,
+          "system_cpu_pct": 72.4,
+          "process_tree_rss_mb": 765.6,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 57.98,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 57.98
+            }
+          ]
+        },
+        {
+          "t_s": 1.513,
+          "process_tree_cpu_pct": 65.6,
+          "process_tree_cpu_pct_machine": 16.4,
+          "system_cpu_pct": 80.2,
+          "process_tree_rss_mb": 771.2,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 62.32,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 62.32
+            }
+          ]
+        },
+        {
+          "t_s": 2.012,
+          "process_tree_cpu_pct": 40.6,
+          "process_tree_cpu_pct_machine": 10.15,
+          "system_cpu_pct": 63.8,
+          "process_tree_rss_mb": 773.7,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 56.84,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 56.84
+            }
+          ]
+        },
+        {
+          "t_s": 2.521,
+          "process_tree_cpu_pct": 68.8,
+          "process_tree_cpu_pct_machine": 17.2,
+          "system_cpu_pct": 61.8,
+          "process_tree_rss_mb": 775.2,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 61.87,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 61.87
+            }
+          ]
+        },
+        {
+          "t_s": 3.002,
+          "process_tree_cpu_pct": 29.1,
+          "process_tree_cpu_pct_machine": 7.28,
+          "system_cpu_pct": 57.1,
+          "process_tree_rss_mb": 775.5,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 6.47,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 6.47
+            }
+          ]
+        },
+        {
+          "t_s": 3.506,
+          "process_tree_cpu_pct": 21.2,
+          "process_tree_cpu_pct_machine": 5.3,
+          "system_cpu_pct": 49.6,
+          "process_tree_rss_mb": 775.8,
+          "process_count": 2,
+          "processes": [
+            {
+              "pid": 17100,
+              "name": "python.exe"
+            },
+            {
+              "pid": 26336,
+              "name": "QtWebEngineProcess.exe"
+            }
+          ],
+          "gpu_3d_utilization_pct": 3.95,
+          "gpu_3d_engines": [
+            {
+              "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+              "utilization_pct": 3.95
+            }
+          ]
+        }
+      ],
+      "raf": {
+        "frames": 164,
+        "elapsed_ms": 4013.4,
+        "fps": 40.86,
+        "average_frame_time_ms": 24.39,
+        "p95_frame_time_ms": 50,
+        "p99_frame_time_ms": 66.7,
+        "max_frame_time_ms": 233.4
+      },
+      "cesium_post_render": {
+        "frames": 77,
+        "elapsed_ms": 4013.2,
+        "fps": 19.19,
+        "average_frame_time_ms": 39.761,
+        "p95_frame_time_ms": 75.5,
+        "p99_frame_time_ms": 515.4,
+        "max_frame_time_ms": 515.4
+      },
+      "long_tasks": {
+        "count": 1,
+        "total_ms": 229,
+        "durations_ms": [
+          229
+        ]
+      },
+      "raw_frame_intervals_ms": {
+        "raf": [
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          33.30000000000291,
+          50,
+          50,
+          33.400000000001455,
+          16.599999999998545,
+          33.299999999995634,
+          33.30000000000291,
+          66.69999999999709,
+          16.700000000004366,
+          33.299999999995634,
+          50,
+          16.700000000004366,
+          50,
+          16.69999999999709,
+          33.200000000004366,
+          50.099999999998545,
+          33.299999999995634,
+          233.40000000000146,
+          16.599999999998545,
+          66.60000000000582,
+          33.39999999999418,
+          16.700000000004366,
+          33.299999999995634,
+          33.30000000000291,
+          33.30000000000291,
+          33.299999999995634,
+          16.80000000000291,
+          33.299999999995634,
+          33.400000000001455,
+          33.200000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          33.30000000000291,
+          33.30000000000291,
+          33.39999999999418,
+          33.30000000000291,
+          33.400000000001455,
+          33.19999999999709,
+          33.400000000001455,
+          16.599999999998545,
+          16.700000000004366,
+          33.39999999999418,
+          50,
+          16.60000000000582,
+          33.39999999999418,
+          33.30000000000291,
+          33.400000000001455,
+          33.19999999999709,
+          33.400000000001455,
+          33.30000000000291,
+          33.39999999999418,
+          33.30000000000291,
+          16.599999999998545,
+          16.700000000004366,
+          50.099999999998545,
+          33.299999999995634,
+          16.60000000000582,
+          33.39999999999418,
+          16.700000000004366,
+          16.599999999998545,
+          33.30000000000291,
+          50,
+          33.39999999999418,
+          33.200000000004366,
+          33.400000000001455,
+          33.299999999995634,
+          16.700000000004366,
+          33.299999999995634,
+          33.30000000000291,
+          33.400000000001455,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.69999999999709,
+          16.60000000000582,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.799999999995634,
+          16.5,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.5,
+          16.69999999999709,
+          16.700000000004366,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.599999999998545,
+          16.80000000000291,
+          16.599999999998545,
+          16.69999999999709,
+          16.700000000004366,
+          16.599999999998545,
+          16.69999999999709,
+          16.599999999998545,
+          16.700000000004366,
+          16.69999999999709,
+          16.700000000004366
+        ],
+        "cesium_post_render": [
+          14.400000005960464,
+          22,
+          20.799999997019768,
+          21.899999991059303,
+          3.4000000059604645,
+          26,
+          27.299999997019768,
+          70.20000000298023,
+          42.900000005960464,
+          22.5,
+          27.399999991059303,
+          23.700000002980232,
+          28.599999994039536,
+          75.5,
+          22.900000005960464,
+          23,
+          42.599999994039536,
+          30.100000008940697,
+          37,
+          28.899999991059303,
+          24.100000008940697,
+          74.79999999701977,
+          242.40000000596046,
+          13,
+          10.599999994039536,
+          79.29999999701977,
+          21.100000008940697,
+          18.399999991059303,
+          26.299999997019768,
+          49.5,
+          22.30000001192093,
+          36.19999998807907,
+          14.100000008940697,
+          24.599999994039536,
+          39.70000000298023,
+          30.200000002980232,
+          19.200000002980232,
+          24.299999997019768,
+          33.20000000298023,
+          34.3999999910593,
+          20.900000005960464,
+          41.099999994039536,
+          40.70000000298023,
+          22.200000002980232,
+          25.399999991059303,
+          20.900000005960464,
+          24.299999997019768,
+          26.900000005960464,
+          46.20000000298023,
+          29.5,
+          30.899999991059303,
+          42.70000000298023,
+          22.400000005960464,
+          48,
+          15.299999997019768,
+          34.29999999701977,
+          31.299999997019768,
+          28.400000005960464,
+          18.799999997019768,
+          33.29999999701977,
+          46.79999999701977,
+          21.700000002980232,
+          25,
+          21.299999997019768,
+          19.200000002980232,
+          25.100000008940697,
+          28.5,
+          43.69999998807907,
+          51.20000000298023,
+          23.5,
+          27.200000002980232,
+          46.900000005960464,
+          15.099999994039536,
+          35.599999994039536,
+          23.30000001192093,
+          515.3999999910593
+        ]
+      },
+      "action_result": {
+        "id": null,
+        "ok": true,
+        "action": "world_set_camera",
+        "camera": {
+          "latitude": 48.856600000000064,
+          "longitude": 2.3522000000000003,
+          "altitude_m": 1999999.999997314,
+          "heading_deg": 360,
+          "pitch_deg": -74.99999999999999
+        },
+        "arrived": true
+      },
+      "action_elapsed_ms": 2551.77,
+      "active_action_capture": {
+        "elapsed_ms": 2535.8,
+        "raf": {
+          "frames": 75,
+          "elapsed_ms": 2535.8,
+          "fps": 29.58,
+          "average_frame_time_ms": 33.109,
+          "p95_frame_time_ms": 50.1,
+          "p99_frame_time_ms": 233.4,
+          "max_frame_time_ms": 233.4
+        },
+        "cesium_post_render": {
+          "frames": 76,
+          "elapsed_ms": 2535.6,
+          "fps": 29.97,
+          "average_frame_time_ms": 33.419,
+          "p95_frame_time_ms": 74.8,
+          "p99_frame_time_ms": 242.4,
+          "max_frame_time_ms": 242.4
+        }
+      },
+      "flight_state": {
+        "enabled": true,
+        "objectCount": 600,
+        "source": "synthetic-benchmark",
+        "lastError": "adsb.lol indisponible (Failed to fetch)",
+        "lastUpdated": 1794341083881
+      },
+      "scene_diagnostics": {
+        "camera": {
+          "latitude": 48.856600000000064,
+          "longitude": 2.3522000000000003,
+          "altitude_m": 1999999.999997314,
+          "heading_deg": 360,
+          "pitch_deg": -74.99999999999999
+        },
+        "scene": {
+          "requestRenderMode": true,
+          "primitiveCount": 1,
+          "globeVisible": true
+        },
+        "governor": {
+          "installed": true,
+          "mode": "idle",
+          "holds": [],
+          "recentRequests": [
+            {
+              "reason": "flights-disabled",
+              "at": 1794341078734
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341078809
+            },
+            {
+              "reason": "flights-disabled",
+              "at": 1794341078836
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341078944
+            },
+            {
+              "reason": "flights-disabled",
+              "at": 1794341078966
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341079038
+            },
+            {
+              "reason": "flights-disabled",
+              "at": 1794341079063
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341079095
+            },
+            {
+              "reason": "flights-disabled",
+              "at": 1794341079123
+            },
+            {
+              "reason": "camera-settled",
+              "at": 1794341081214
+            },
+            {
+              "reason": "camera-flight-complete",
+              "at": 1794341083736
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341083809
+            },
+            {
+              "reason": "flights-poll",
+              "at": 1794341083881
+            },
+            {
+              "reason": "camera-settled",
+              "at": 1794341084252
+            },
+            {
+              "reason": "camera-flight-complete",
+              "at": 1794341091507
+            },
+            {
+              "reason": "camera-settled",
+              "at": 1794341092021
+            }
+          ]
+        },
+        "flights": {
+          "enabled": true,
+          "objectCount": 600,
+          "source": "synthetic-benchmark",
+          "lastError": "adsb.lol indisponible (Failed to fetch)",
+          "lastUpdated": 1794341083881
+        },
+        "flightInternals": {
+          "enabled": true,
+          "objectCount": 600,
+          "source": "synthetic-benchmark",
+          "timerScheduled": false,
+          "collectionAlive": true,
+          "benchmarkOverride": true
+        }
+      }
+    }
+  ],
+  "camera_governor_settle": {
+    "elapsed_after_capture_ms": 2009.51,
+    "governor_idle_at_capture_end": true,
+    "elapsed_until_idle_ms": 0.0,
+    "diagnostics": {
+      "camera": {
+        "latitude": 35.67620000000007,
+        "longitude": 139.6503,
+        "altitude_m": 1999999.9999977786,
+        "heading_deg": 360,
+        "pitch_deg": -35.000000000000014
+      },
+      "scene": {
+        "requestRenderMode": true,
+        "primitiveCount": 0,
+        "globeVisible": true
+      },
+      "governor": {
+        "installed": true,
+        "mode": "idle",
+        "holds": [],
+        "recentRequests": [
+          {
+            "reason": "camera-settled",
+            "at": 1794341044943
+          },
+          {
+            "reason": "camera-settled",
+            "at": 1794341054999
+          },
+          {
+            "reason": "camera-flight-complete",
+            "at": 1794341059443
+          }
+        ]
+      },
+      "flights": {
+        "enabled": false,
+        "objectCount": 0,
+        "source": "none",
+        "lastError": null,
+        "lastUpdated": null
+      },
+      "flightInternals": {
+        "enabled": false,
+        "objectCount": 0,
+        "source": "none",
+        "timerScheduled": false,
+        "collectionAlive": false,
+        "benchmarkOverride": false
+      }
+    },
+    "resources_samples": [
+      {
+        "t_s": 0.521,
+        "process_tree_cpu_pct": 13.6,
+        "process_tree_cpu_pct_machine": 3.4,
+        "system_cpu_pct": 57.0,
+        "process_tree_rss_mb": 651.0,
+        "process_count": 2,
+        "processes": [
+          {
+            "pid": 17100,
+            "name": "python.exe"
+          },
+          {
+            "pid": 26336,
+            "name": "QtWebEngineProcess.exe"
+          }
+        ],
+        "gpu_3d_utilization_pct": 12.15,
+        "gpu_3d_engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 12.15
+          }
+        ]
+      },
+      {
+        "t_s": 1.046,
+        "process_tree_cpu_pct": 14.3,
+        "process_tree_cpu_pct_machine": 3.58,
+        "system_cpu_pct": 38.6,
+        "process_tree_rss_mb": 651.0,
+        "process_count": 2,
+        "processes": [
+          {
+            "pid": 17100,
+            "name": "python.exe"
+          },
+          {
+            "pid": 26336,
+            "name": "QtWebEngineProcess.exe"
+          }
+        ],
+        "gpu_3d_utilization_pct": 7.93,
+        "gpu_3d_engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 7.93
+          }
+        ]
+      },
+      {
+        "t_s": 1.586,
+        "process_tree_cpu_pct": 20.6,
+        "process_tree_cpu_pct_machine": 5.15,
+        "system_cpu_pct": 45.7,
+        "process_tree_rss_mb": 651.4,
+        "process_count": 2,
+        "processes": [
+          {
+            "pid": 17100,
+            "name": "python.exe"
+          },
+          {
+            "pid": 26336,
+            "name": "QtWebEngineProcess.exe"
+          }
+        ],
+        "gpu_3d_utilization_pct": 12.1,
+        "gpu_3d_engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 12.1
+          }
+        ]
+      }
+    ]
+  },
+  "camera_events_camera_flyto": {
+    "events": [
+      {
+        "event": "moveStart",
+        "atMs": 15398.60000000894
+      }
+    ]
+  },
+  "scene_diagnostics_after_camera": {
+    "camera": {
+      "latitude": 35.67620000000007,
+      "longitude": 139.6503,
+      "altitude_m": 1999999.9999977786,
+      "heading_deg": 360,
+      "pitch_deg": -35.000000000000014
+    },
+    "scene": {
+      "requestRenderMode": true,
+      "primitiveCount": 0,
+      "globeVisible": true
+    },
+    "governor": {
+      "installed": true,
+      "mode": "idle",
+      "holds": [],
+      "recentRequests": [
+        {
+          "reason": "camera-settled",
+          "at": 1794341044943
+        },
+        {
+          "reason": "camera-settled",
+          "at": 1794341054999
+        },
+        {
+          "reason": "camera-flight-complete",
+          "at": 1794341059443
+        }
+      ]
+    },
+    "flights": {
+      "enabled": false,
+      "objectCount": 0,
+      "source": "none",
+      "lastError": null,
+      "lastUpdated": null
+    },
+    "flightInternals": {
+      "enabled": false,
+      "objectCount": 0,
+      "source": "none",
+      "timerScheduled": false,
+      "collectionAlive": false,
+      "benchmarkOverride": false
+    }
+  },
+  "flight_lifecycle_after_churn": {
+    "enabled": false,
+    "objectCount": 0,
+    "source": "synthetic-sample",
+    "timerScheduled": false,
+    "collectionAlive": false,
+    "benchmarkOverride": false
+  },
+  "interface": {
+    "screenshot": "docs\\benchmark_gev_real_final_repeat_ui.png",
+    "screenshot_bytes": 45948,
+    "status": "BENCHMARK SYNTHÉTIQUE",
+    "canvas": {
+      "width": 1028,
+      "height": 720
+    },
+    "webgl_renderer": "ANGLE (Intel, Intel(R) UHD Graphics 610 (0x00003E90) Direct3D11 vs_5_0 ps_5_0, D3D11)",
+    "benchmark_label_visible": true,
+    "flight_count": 600
+  },
+  "destruction": {
+    "flights_600_disable_ms": 22.23,
+    "elapsed_wall_ms": 58.58,
+    "disable_result": {
+      "id": null,
+      "ok": true,
+      "action": "world_disable_layer",
+      "layer_id": "flights",
+      "enabled": false,
+      "changed": true
+    },
+    "verified_final_layer_state": {
+      "enabled": false,
+      "objectCount": 0,
+      "source": "synthetic-benchmark",
+      "lastError": null,
+      "lastUpdated": 1794341083881
+    },
+    "verified_final_flight_internals": {
+      "enabled": false,
+      "objectCount": 0,
+      "source": "synthetic-benchmark",
+      "timerScheduled": false,
+      "collectionAlive": false,
+      "benchmarkOverride": false
+    },
+    "window_close_ms": 78.26,
+    "lifecycle_after_close": "idle"
+  },
+  "controller_stats": {
+    "dispatched": 0,
+    "completed": 0,
+    "timeouts": 0,
+    "stale_responses": 0,
+    "duplicate_responses": 0,
+    "protocol_errors": 0,
+    "layer_enable_requests": 0,
+    "layer_disable_requests": 0,
+    "layer_toggles_noop": 0,
+    "opens": 1,
+    "closes": 1,
+    "lifecycle": "idle",
+    "pending": 0
+  },
+  "gpu_profile": {
+    "max_engine_utilization_pct": 67.6,
+    "mean_engine_utilization_pct": 23.94,
+    "samples": [
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 0.511,
+        "max_engine_utilization_pct": 5.84,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 5.84
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 1.009,
+        "max_engine_utilization_pct": 50.83,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 50.83
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 1.506,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 2.005,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 2.506,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 3.01,
+        "max_engine_utilization_pct": 67.6,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 67.6
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 3.506,
+        "max_engine_utilization_pct": 21.38,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 21.38
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 4.005,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "A_globe_idle",
+        "t_s": 4.502,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 0.529,
+        "max_engine_utilization_pct": 33.66,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 33.66
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 1.009,
+        "max_engine_utilization_pct": 58.92,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 58.92
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 1.514,
+        "max_engine_utilization_pct": 50.43,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 50.43
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 2.042,
+        "max_engine_utilization_pct": 40.52,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 40.52
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 2.522,
+        "max_engine_utilization_pct": 48.37,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 48.37
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 3.008,
+        "max_engine_utilization_pct": 17.78,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 17.78
+          }
+        ]
+      },
+      {
+        "scenario": "B_camera_flyto",
+        "t_s": 3.502,
+        "max_engine_utilization_pct": 14.14,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 14.14
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 0.5,
+        "max_engine_utilization_pct": 18.59,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 18.59
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 1.006,
+        "max_engine_utilization_pct": 28.35,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 28.35
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 1.507,
+        "max_engine_utilization_pct": 23.52,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 23.52
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 2.007,
+        "max_engine_utilization_pct": 21.88,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 21.88
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 2.504,
+        "max_engine_utilization_pct": 26.97,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 26.97
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 3.006,
+        "max_engine_utilization_pct": 25.96,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 25.96
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 3.508,
+        "max_engine_utilization_pct": 22.57,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 22.57
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 4.0,
+        "max_engine_utilization_pct": 24.38,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 24.38
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 4.503,
+        "max_engine_utilization_pct": 26.67,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 26.67
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 0.502,
+        "max_engine_utilization_pct": 22.63,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 22.63
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 1.013,
+        "max_engine_utilization_pct": 28.15,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 28.15
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 1.509,
+        "max_engine_utilization_pct": 23.25,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 23.25
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 2.005,
+        "max_engine_utilization_pct": 22.83,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 22.83
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 2.52,
+        "max_engine_utilization_pct": 26.57,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 26.57
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 3.018,
+        "max_engine_utilization_pct": 23.46,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 23.46
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 3.514,
+        "max_engine_utilization_pct": 22.8,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 22.8
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 4.017,
+        "max_engine_utilization_pct": 22.41,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 22.41
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 4.505,
+        "max_engine_utilization_pct": 27.05,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 27.05
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 5.016,
+        "max_engine_utilization_pct": 24.31,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 24.31
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 5.519,
+        "max_engine_utilization_pct": 22.6,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 22.6
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 6.003,
+        "max_engine_utilization_pct": 23.08,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 23.08
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 6.512,
+        "max_engine_utilization_pct": 24.37,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 24.37
+          }
+        ]
+      },
+      {
+        "scenario": "C_flights_on",
+        "t_s": 7.012,
+        "max_engine_utilization_pct": 29.48,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 29.48
+          }
+        ]
+      },
+      {
+        "scenario": "D_flights_off",
+        "t_s": 0.501,
+        "max_engine_utilization_pct": 27.53,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 27.53
+          }
+        ]
+      },
+      {
+        "scenario": "D_flights_off",
+        "t_s": 1.01,
+        "max_engine_utilization_pct": 21.95,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 21.95
+          }
+        ]
+      },
+      {
+        "scenario": "D_flights_off",
+        "t_s": 1.508,
+        "max_engine_utilization_pct": 27.15,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 27.15
+          }
+        ]
+      },
+      {
+        "scenario": "D_flights_off",
+        "t_s": 2.006,
+        "max_engine_utilization_pct": 23.59,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 23.59
+          }
+        ]
+      },
+      {
+        "scenario": "D_flights_off",
+        "t_s": 2.505,
+        "max_engine_utilization_pct": 23.48,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 23.48
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 0.5,
+        "max_engine_utilization_pct": 55.32,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 55.32
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 1.006,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 1.502,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 2.007,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 2.501,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 3.007,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 3.509,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 4.006,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "F_synthetic_600_flights",
+        "t_s": 4.501,
+        "max_engine_utilization_pct": 0.0,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 0.0
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 0.512,
+        "max_engine_utilization_pct": 36.59,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 36.59
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 1.018,
+        "max_engine_utilization_pct": 57.98,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 57.98
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 1.513,
+        "max_engine_utilization_pct": 62.32,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 62.32
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 2.012,
+        "max_engine_utilization_pct": 56.84,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 56.84
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 2.521,
+        "max_engine_utilization_pct": 61.87,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 61.87
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 3.002,
+        "max_engine_utilization_pct": 6.47,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 6.47
+          }
+        ]
+      },
+      {
+        "scenario": "G_synthetic_600_flights_camera_move",
+        "t_s": 3.506,
+        "max_engine_utilization_pct": 3.95,
+        "engines": [
+          {
+            "instance": "pid_17100_luid_0x00000000_0x0000E3A3_phys_0_eng_0_engtype_3D",
+            "utilization_pct": 3.95
+          }
+        ]
+      }
+    ],
+    "measurement_scope": "Moteur 3D le plus chargé parmi les instances PDH GPU Engine associées aux PID Python/QtWebEngine du benchmark; ne représente pas l'utilisation globale du GPU."
+  },
+  "metrics_not_measured": {
+    "gpu_total_utilization": "NON MESURÉE — le compteur PDH retenu suit les moteurs 3D associés aux PID du benchmark, pas l'ensemble de l'adaptateur.",
+    "gpu_frame_time": "NON MESURÉE — seuls les événements Cesium Scene.postRender sont mesurés.",
+    "browser_heap": "NON MESURÉE — aucune API heap stable n'est exposée par QtWebEngine.",
+    "adsb_live_600": "NON MESURÉE — le scénario 600 est déterministe et synthétique afin de garantir exactement 600 objets; le flux live est mesuré séparément dans C_flights_on."
+  },
+  "completed_at_utc": "2026-11-10T20:04:53.234635+00:00"
+}

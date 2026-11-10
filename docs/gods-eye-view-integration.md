@@ -1,17 +1,16 @@
 # God's Eye View × Jarvis — Integration Audit & Plan
 
-**Date :** 2026-11-09
-**Branche de travail :** `arena/961d92ed-jarvis-live-ready` (pointe sur `main` = `ec944e26457b22492b5872ee520d6bb3ce410081`, tree propre)
+**Audit initial :** 2026-11-09 · **Mise à jour de validation :** 2026-11-10
+**Branche de travail :** `arena/961d92ed-jarvis-live-ready`
 **Amont étudié :** `bilawalsidhu/gods-eye-view` @ `581ef7e` (depth 1, cloné en lecture seule hors dépôt, jamais copié
 tel quel)
 **PR #51 / `feature/v1.9.0` :** non modifiée, non fusionnée (`OPEN`, base `main`, HEAD `43ff0029…`)
 **Module :** « God's Eye View » (nom de travail ; le nom commercial peut changer plus tard)
 
-> Ce document est la trace d'audit demandée par la mission. Il est écrit **avant** tout code
-> d'intégration. Les mesures annoncées sont soit issues des documents publics du dépôt amont
-> (citées et encadrées comme telles), soit mesurées localement dans ce sandbox (et étiquetées
-> comme telles). Aucune mesure navigateur/GPU n'est fabriquée : ce sandbox est headless, sans
-> Chrome ni WebGL, et le PC cible (Pentium Gold G5400 / UHD 610 / 16 Go) n'est pas mesurable ici.
+> Les sections d'audit initial sont historiques. La mesure navigateur/GPU réelle sur la machine
+> cible a depuis été exécutée avec QtWebEngine/Cesium et est publiée dans
+> [la validation cible](./gods-eye-view-target-validation.md). Aucune valeur d'un benchmark amont
+> ou d'une autre machine n'est substituée à ces mesures.
 
 ---
 
@@ -398,17 +397,18 @@ photogrammétrie 3D par défaut.
 10. **Subdivision cross-thread** : fetch + parse dans un Web Worker (phase 2) si le profilage
     le justifie ; en v1, parse JSON natif suffisant (≤ 10 000 objets).
 
-### 5.4 Mesures de ce sandbox (honnêtes) et lacunes
+### 5.4 Mesures de l'audit initial (historiques) et lacunes
 
-Mesurable ici (réalisé, §11) :
+Mesures réalisées par l'audit initial :
 - tests Python (protocol/controller/tools) — dispatch, idempotence, fuites logiques ;
 - poids du bundle Cesium après build (`dist/`) — ordre de grandeur (~8-12 Mo JS + tuiles workers) ;
 - bench dispatch Python (`scripts/benchmark_gods_eye.py`).
 
-**Non mesurable ici** (headless, pas de Chrome/WebGL, réseau OSINT bloquée hors hosts npm/github) :
-FPS, frame-time, GPU, heap navigateur, démarrage Cesium réel, fetch adsb.lol. Ces mesures
-sont planifiées sur la machine cible via `web/gods_eye_view` en navigateur + journal de
-benchmarks §11 — **aucune valeur inventée n'est publiée**.
+À la date de l'audit initial, le sandbox était headless et ne pouvait pas mesurer le navigateur.
+Depuis, FPS Cesium `Scene.postRender`, frame-time, CPU/RSS processus, GPU 3D par PID, démarrage,
+flights synthétiques et churn ont été mesurés sur le G5400/UHD 610. Les limitations restantes
+(heap JS, profil CPU JS par fonction, GPU global, flux ADS-B à 600 objets) sont détaillées dans
+[la validation cible](./gods-eye-view-target-validation.md).
 
 ## 6. Stratégie de performance (ROI) — hypotheses → mesure → modif → vérification
 
@@ -562,72 +562,62 @@ Windows/Linux avec libs GL. Le module doit y être revalidé avant merge.
 
 ### 10.4 BASELINE vs OPTIMIZED — honnêteté des mesures
 
-Ce sandbox n'a **ni navigateur, ni WebGL, ni GPU**. Aucune mesure de FPS,
-frame-time, heap JS, démarrage Cesium ou réseau adsb.lol n'est publiée ici.
-Ce qui EST mesuré : le chemin Python (négligeable), le poids du build, la
-correction fonctionnelle.
+L'absence de navigateur dans l'environnement de l'audit initial ne s'applique plus :
+le benchmark réel est [`scripts/benchmark_gev_real.py`](../scripts/benchmark_gev_real.py).
+Il lance `QWebEngineView → build Vite/Cesium`, mesure les frames via
+`Scene.postRender` et conserve `requestAnimationFrame` séparément.
 
-**Verdict perf : non mesurable dans ce sandbox.** Le module est conçu pour
-le pire cas (UHD 610, G5400) mais n'y est pas encore mesuré. Protocole
-BASELINE→OPTIMIZED sur le PC cible (à exécuter après `npm run build`) :
+**VÉRIFIÉ :** baseline avant correctif puis runs complets après correctif,
+flights ON/OFF, churn ×10, mouvement caméra et 600 objets; les fichiers JSON,
+logs et captures sont liés dans [le rapport cible](./gods-eye-view-target-validation.md).
+Le problème établi était un hold `world-camera` non libéré après `flyTo`; le callback
+`complete` le libère maintenant. Les FPS des runs varient, donc aucun gain global
+de FPS n'est revendiqué. La queue p99 avec 600 objets reste à reproduire.
 
-```
-# 1. Lancer le module dans Chrome/Edge Windows sur cef
-cd web/gods_eye_view && npm run preview
-# 2. DevTools → Rendering → FPS meter ; Performance monitor → JS heap
-# 3. scénarios (5 s chacun, page visible) :
-#    a. globe idle (0 couche)                    → attendu governor idle : ~0 frame
-#    b. vol caméra Paris (world_set_camera)      → frames pendant 2,5 s seulement
-#    c. flights ON → attente 15 s (1 poll 600)   → puis idle à nouveau
-#    d. flights OFF                              → 0 objet, 0 timer web, 0 hold
-#    e. enable/disable ×10                       → heap stable (DevTools), 0 leak
-#    f. 600 vols + globe 2D/3D                   → frame-time noté (cible < 100 ms)
-# 4. Comparaison : GEV complet (npm run dev amont, M5) ≠ comparable ; seule
-#    la même machine Windows fait foi. Consigner les 6 scénarios avant tout
-#    merge dans main.
-```
-
-Les décisions P1/P2 (LOD points, workers, instancing) restent ouvertes
-**jusqu'à ces mesures** — aucune n'est appliquée « au jugé ».
+**NON MESURÉ :** heap Chromium, profil CPU JavaScript par fonction et GPU global.
+La capture Cesium et les contraintes de comparabilité sont documentées dans le rapport cible.
 
 ## 11. Risques
 
 | # | Risque | Sévérité | Mitigation |
 |---|---|---|---|
-| R1 | QtWebEngine exclu du packaging Jarvis actuel (`jarvis.spec`, `launcher.spec`) → module inutilisable en release tant que l'exclusion n'est pas levée | **Haute** (bloquant distribution) | Décision packaging séparée + spec modifiée derrière release-note ; installeur +~150-250 Mo ; PR dédiée, hors ce chantier |
+| R1 | L'ancien packaging excluait QtWebEngine et omettait `web/gods_eye_view/dist` | **Moyenne** | Corrigé dans `jarvis.spec`, `build_windows.ps1` et la CI; onedir et ZIP de validation contrôlés. L'ouverture depuis l'exécutable frozen et Inno Setup restent à valider — voir [validation cible](./gods-eye-view-target-validation.md) |
 | R2 | Jarvis sans licence + données ODbL embarquées à l'avenir | Moyenne | Aucune donnée embarquée en v1 ; attributions rendues in-app ; tableau §1 tenu à jour |
 | R3 | adsb.lol indisponible / rate-limit / hors ligne | Moyenne | Repli échantillon synthétique étiqueté « ÉCHANTILLON » ; aucun faux « direct » affiché |
-| R4 | Performance réelle UHD 610 inconnue | **Haute** (critère GO) | Protocole §10.4 ; module borné (600 objets max, 1 couche, governor) ; mesurer AVANT merge |
-| R5 | Cesium 14 Mo `dist/` non versionné → build web obligatoire au packaging | Basse | `npm ci && npm run build` documenté ; à câbler dans build_windows.ps1 (futur) |
-| R6 | PR #51 chevauche l'UX dashboard | Moyenne | Module isolé (nouveaux fichiers + 30 lignes dans tools.py) ; aucun conflit attendu ; merge après PR #51 ou rebase |
+| R4 | Performance réelle sur G5400/UHD 610 mesurée, avec queue p99 caméra 600 élevée et variabilité entre runs | **Moyenne** | Mesures `Scene.postRender` répétées et enregistrées; aucun NO-GO fondé sur une valeur isolée. Reproduire les p99 et confirmer les limites réseau avant toute décision de distribution |
+| R5 | Cesium `dist/` non versionné → build web obligatoire au packaging | Basse | Câblé dans `build_windows.ps1` (`npm ci && npm run build`) et CI (Node 22); build Vite/Cesium et assets PyInstaller vérifiés |
+| R6 | PR #51 chevauche l'UX dashboard | Moyenne | Module isolé; aucune intégration dans PR #51 ni merge dans `main` dans le cadre de cette validation |
 | R7 | Drift Python↔JS (régions, bornes) | Basse | Test de parité `tests/test_gods_eye_protocol.py::JsParityTests` |
 | R8 | CSP QWebEngine trop permissive | Basse | CSP meta stricte dans index.html ; QWebEngine : contenu local uniquement |
 | R9 | Usage voix → hallucination d'actions (mauvais layer/région) | Basse | Enums fermés + réponses explicites ; world_get_state avant/après action |
-| R10 | Fuite de mémoire JS si couche mal détruite | Moyenne | destroy synchrone ; test churn ; vérification `performance.memory` sur cible |
+| R10 | Heap Chromium non exposé par QtWebEngine; une fuite JS ne peut pas être exclue par une mesure de heap | Moyenne | Lifecycle, timers, collection et RSS sont vérifiés sur churn ×10; heap JS reste explicitement NON MESURÉ |
 | R11 | Écran faible (Pentium) + QtWebEngine + Cesium = UX dégradée | Moyenne | Mode « globe léger » documenté : maximumScreenSpaceError=2.5, msaa=1, pas de bloom |
 | R12 | API Cesium change entre 1.124 et 1.147 (épinglage caret) | Basse | package-lock.json épinglé (cesium 1.147.0 résolu) ; CI de build web recommandée |
 
-## 12. Décisions de packaging (à faire séparément, PAS ici)
+## 12. Validation de packaging QtWebEngine
 
-1. `packaging/jarvis.spec` + `packaging/launcher.spec` : retirer
-   `PySide6.QtWebEngineCore`/`QtWebEngineWidgets` des `excludes` (launcher
-   exclut aussi QtNetwork — requis par WebEngine : à arbitrer séparément).
-2. `datas += [("web/gods_eye_view/dist", "web/gods_eye_view/dist")]` après build.
-3. Installer Inno Setup : aucun changement prévu (dossiers embarqués).
-4. Smoke-test étendu : lancer `python scripts/run_gods_eye_demo.py`.
-5. Installer size impact : mesurer (`dist/Jarvis/` avant/après) ; documenter
-   dans la release note. Si refusé → module reste dev-only (placeholder affiche
-   les instructions d'installation de QtWebEngine au lieu du globe).
+1. `build_windows.ps1` construit le web GEV via Node 22 + `npm ci` + Vite; le
+   workflow Windows installe Node 22 explicitement.
+2. `packaging/jarvis.spec` inclut les imports QtWebEngine, son hook PyInstaller
+   et `web/gods_eye_view/dist`; `validate_build.py --require-gods-eye` vérifie
+   les modules, le process, les ressources Chromium et les assets référencés.
+3. **VÉRIFIÉ :** build PyInstaller onedir Python 3.11, smoke test Jarvis et ZIP
+   de validation avec 8 772 entrées; `validate_build.py` passe sur le dossier et
+   le ZIP. Un probe de runtime a chargé le Cesium packagé avec le process et les
+   ressources QtWebEngine issus du bundle.
+4. Taille mesurée : 1 750 675 372 octets onedir et 656 584 987 octets ZIP;
+   taille incrémentale attribuable au seul QtWebEngine : **NON MESURÉE**
+   (pas d'ancien build comparable).
+5. Inno Setup et l'ouverture du module depuis l'interface complète de
+   l'exécutable frozen restent **NON MESURÉS**. Les détails et limites figurent
+   dans [la validation cible](./gods-eye-view-target-validation.md).
 
 ## 13. Git / branches / commits
 
-- Branche de session : `arena/961d92ed-jarvis-live-ready` (imposée par le
-  tracking Arena — ÉTAPE 0 demandait `feature/gods-eye-view` ; la branche de
-  session pointe exactement sur `main` (ec944e2) et n'est **pas** un chantier
-  shutdown/Arena 01.5 : la création d'une branche parallèle aurait orpheliné
-  le travail. Écart documenté, pas de rename possible.)
-- `main` intouché · PR #51 / `feature/v1.9.0` intouchés · aucun merge/push
-  avant validation explicite de l'utilisateur.
+- Branche de travail : `arena/961d92ed-jarvis-live-ready`.
+- `main`, `feature/v1.9.0`, PR #51, `background_tasks` et le workstream
+  shutdown sont hors périmètre et restent inchangés.
+- Aucun merge dans `main`.
 - Commits atomiques (branche de session) :
   1. `1557f7a docs: add God's Eye View integration audit (licence, architecture, performance)`
   2. `a595d37 feat(web): add Jarvis-native God's Eye View web module`
@@ -641,37 +631,41 @@ Les décisions P1/P2 (LOD points, workers, instancing) restent ouvertes
 
 ## 14. Verdict GO / NO-GO
 
-**GO CONDITIONNEL** pour la poursuite (prototype → intégration packaging),
-sous les conditions explicites suivantes :
+**GO conditionnel** pour poursuivre le prototype sur cette branche. Le
+benchmark réel sur le poste cible, le correctif du governor caméra et la
+validation PyInstaller onedir/ZIP sont maintenant documentés dans
+[la validation cible](./gods-eye-view-target-validation.md).
 
-1. **NO-GO** pour tout merge dans `main` avant : mesure §10.4 sur le PC cible
-   (frame-time globe+Vols, idle ~0 frame, churn enable/disable heap stable) ;
-   validation Windows du module (PySide6 + QtWebEngine + build PyInstaller) ;
-   feu vert packaging (§12).
-2. **GO** pour continuer le prototype sur cette branche : l'audit licencie OK,
-   l'architecture Isolée tient (zéro patch au core), 65 tests verts, zéro
-   régression (1095 vs 1030 passés), banc Python mesuré, divergence JS/Python
-   protégée par test.
-3. **NO-GO** (permanent) : intégrer TeleGeography, Bhote Koshi, OpenSky en
-   distribution ; donner au LLM autre chose que les 6 outils ; toucher au
-   shutdown/TaskManager/JobRunner.
+1. **VÉRIFIÉ :** les 65 tests GEV passent; les tests de packaging et les checks
+   d'artefacts QtWebEngine/GEV passent aussi.
+2. **À suivre avant une release :** reproduire le p99 élevé du mouvement avec
+   600 flights, valider l'ouverture depuis l'interface frozen et Inno Setup,
+   et refaire le contrôle sur build Windows 26200 si cette version est la
+   cible stricte.
+3. Les limites réseau ADS-B/cartographie et la mesure d'heap Chromium restent
+   explicites; aucune valeur non mesurée n'est extrapolée.
+4. **NO-GO permanent :** intégrer TeleGeography, Bhote Koshi ou OpenSky en
+   distribution sans nouvelle revue/licence; élargir l'ensemble d'outils du
+   LLM; toucher au shutdown/TaskManager/JobRunner dans ce chantier.
 
-Risque principal résiduel : **performance non mesurée sur cible**. C'est le
-seul critère qui peut transformer le GO en NO-GO. L'audit préfère un NO-GO
-mesuré à une intégration fragile — le protocole §10.4 tranche.
+**Aucun merge dans `main` n'est effectué.** Les mesures ne permettent pas de
+revendiquer un gain global de FPS; le bénéfice démontré est la libération du
+hold caméra et l'absence de rendu continu résiduel.
 
 ## 15. Prochaines étapes (ordre recommandé)
 
-1. `npm ci && npm run build` sur le PC cible ; exécuter §10.4 ; consigner.
-2. Si idle≈0 frame et frame-time Vols OK → PR « intégration packaging »
-   (§12) avec release note dédiée ; référencer PR #51 (attendre son merge ou
-   rebaser).
-3. Mini-lot UX : entrée de menu « God's Eye View » (après PR #51, là où vivent
-   les entrées Dashboard) — pas avant.
-4. v2 : couche satellites (UCS, PD/libre), earthquakes (USGS, PD) — mêmes
+1. Répéter le scénario 600 flights pour déterminer si le p99 supérieur à 500 ms
+   est reproductible; conserver chaque run brut.
+2. Tester l'ouverture de God's Eye View depuis l'interface de l'exécutable
+   frozen et valider l'installateur Inno Setup.
+3. Si Windows build 26200 est la cible de release, refaire la mesure sur cette
+   build; la machine testée ici est 26300.
+4. Mini-lot UX : entrée de menu « God's Eye View » après résolution du
+   chevauchement avec PR #51.
+5. v2 : couche satellites (UCS, PD/libre), earthquakes (USGS, PD) — mêmes
    invariants (primitives + cap + governor + test de churn) ; vessels/FIRMS
    seulement avec bench.
-5. worldPacket v2 : `world_get_state` étendu (entités trackées, densité par
+6. worldPacket v2 : `world_get_state` étendu (entités trackées, densité par
    région) en s'inspirant de `src/agent/worldPacket.js` (amont).
 
 ---
