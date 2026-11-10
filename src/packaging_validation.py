@@ -38,9 +38,10 @@ doit faire échouer le build et empêcher une release.
 
 from __future__ import annotations
 
+import re
 import zipfile
-from pathlib import Path
-from typing import Iterable
+from pathlib import Path, PurePosixPath
+from typing import Callable, Iterable
 
 # ---------------------------------------------------------------------------
 # Listes de fichiers critiques
@@ -94,6 +95,20 @@ REQUIRED_WAKEWORD_MODELS: list[str] = [
 WAKEWORD_MODEL_DIRS: list[str] = [
     "_internal/openwakeword/resources/models",
     "_internal/resources/openwakeword",
+]
+
+# Required parts of the embedded God's Eye View runtime in a frozen app.
+GODS_EYE_INDEX = "_internal/web/gods_eye_view/dist/index.html"
+GODS_EYE_REQUIRED_FILES: list[str] = [
+    GODS_EYE_INDEX,
+    "_internal/web/gods_eye_view/dist/cesium/Cesium.js",
+    "_internal/web/gods_eye_view/dist/cesium/Widgets/widgets.css",
+    "_internal/PySide6/QtWebEngineCore.pyd",
+    "_internal/PySide6/QtWebEngineWidgets.pyd",
+    "_internal/PySide6/QtWebEngineProcess.exe",
+    "_internal/PySide6/resources/icudtl.dat",
+    "_internal/PySide6/resources/qtwebengine_resources.pak",
+    "_internal/PySide6/translations/qtwebengine_locales/en-US.pak",
 ]
 
 
@@ -168,6 +183,107 @@ def validate_install_dir(install_path: str | Path) -> tuple[bool, list[str], lis
 
     is_valid = len(missing) == 0 and len(forbidden) == 0
     return is_valid, missing, forbidden
+
+
+def _local_web_asset_references(index_html: str) -> list[str]:
+    """Return local script/stylesheet references from the built GEV index."""
+    references = re.findall(r"""(?:src|href)=["']([^"']+)["']""", index_html)
+    return [
+        reference.split("#", 1)[0].split("?", 1)[0]
+        for reference in references
+        if reference
+        and not reference.startswith(
+            ("http://", "https://", "//", "data:", "blob:", "#")
+        )
+    ]
+
+
+def _validate_gods_eye_references(
+    index_html: str,
+    *,
+    exists: Callable[[str], bool],
+    prefix: str = "",
+) -> tuple[list[str], list[str]]:
+    missing: list[str] = []
+    found: list[str] = []
+    base = PurePosixPath("_internal/web/gods_eye_view/dist")
+    suffixes: set[str] = set()
+    for reference in _local_web_asset_references(index_html):
+        relative = PurePosixPath(reference.lstrip("/"))
+        if ".." in relative.parts:
+            missing.append(f"{base}/{reference} (référence hors du build web)")
+            continue
+        packaged = str(base / relative)
+        packaged = f"{prefix}{packaged}"
+        if exists(packaged):
+            found.append(packaged)
+            suffixes.add(relative.suffix.lower())
+        else:
+            missing.append(packaged)
+    if ".js" not in suffixes:
+        missing.append(f"{base} (aucun script JavaScript local référencé)")
+    if ".css" not in suffixes:
+        missing.append(f"{base} (aucune feuille CSS locale référencée)")
+    return missing, found
+
+
+def validate_gods_eye_package(app_path: str | Path) -> tuple[bool, list[str], list[str]]:
+    """Validate embedded web assets and QtWebEngine runtime files in an app."""
+    base = Path(app_path)
+    missing = [rel for rel in GODS_EYE_REQUIRED_FILES if not (base / rel).is_file()]
+    found = [rel for rel in GODS_EYE_REQUIRED_FILES if (base / rel).is_file()]
+    index_path = base / GODS_EYE_INDEX
+    if index_path.is_file():
+        try:
+            index_html = index_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            missing.append(f"{GODS_EYE_INDEX} (lecture impossible: {error})")
+        else:
+            reference_missing, reference_found = _validate_gods_eye_references(
+                index_html,
+                exists=lambda rel: (base / Path(*PurePosixPath(rel).parts)).is_file(),
+            )
+            missing.extend(reference_missing)
+            found.extend(reference_found)
+    return (not missing), missing, found
+
+
+def validate_gods_eye_zip(zip_path: str | Path) -> tuple[bool, list[str], list[str]]:
+    """Validate GEV assets and QtWebEngine files in a portable ZIP."""
+    path = Path(zip_path)
+    if not path.is_file():
+        return False, [f"ZIP introuvable: {path}"], []
+    try:
+        with zipfile.ZipFile(path, "r") as archive:
+            names = {name.replace("\\", "/") for name in archive.namelist()}
+            prefix = "app/" if any(name.startswith("app/") for name in names) else ""
+            missing = [
+                f"{prefix}{rel}"
+                for rel in GODS_EYE_REQUIRED_FILES
+                if f"{prefix}{rel}" not in names
+            ]
+            found = [
+                f"{prefix}{rel}"
+                for rel in GODS_EYE_REQUIRED_FILES
+                if f"{prefix}{rel}" in names
+            ]
+            index_name = f"{prefix}{GODS_EYE_INDEX}"
+            if index_name in names:
+                try:
+                    index_html = archive.read(index_name).decode("utf-8")
+                except (KeyError, UnicodeError, OSError) as error:
+                    missing.append(f"{index_name} (lecture impossible: {error})")
+                else:
+                    reference_missing, reference_found = _validate_gods_eye_references(
+                        index_html,
+                        prefix=prefix,
+                        exists=lambda rel: rel in names,
+                    )
+                    missing.extend(reference_missing)
+                    found.extend(reference_found)
+    except (OSError, zipfile.BadZipFile) as error:
+        return False, [f"Erreur lecture ZIP: {error}"], []
+    return (not missing), missing, found
 
 
 # ---------------------------------------------------------------------------

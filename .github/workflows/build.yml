@@ -163,6 +163,12 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/gods_eye_view/package-lock.json
+
       # La v1.5.0 a été étiquetée sur la tête de la branche Deezer (PR #27),
       # coupée depuis v1.1.2 : les binaires publiés ont embarqué une UI
       # antérieure à la 1.2.0 (plus de fonds d'items, menus superposés), et
@@ -208,7 +214,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== Test 1: PyInstaller layout ===" -ForegroundColor Cyan
-          python scripts/validate_build.py --pyinstaller dist/Jarvis --require-wakeword
+          python scripts/validate_build.py --pyinstaller dist/Jarvis --require-wakeword --require-gods-eye
           if ($LASTEXITCODE -ne 0) { throw "Test 1 FAILED: PyInstaller layout invalide" }
 
           # Vérifications explicites supplémentaires

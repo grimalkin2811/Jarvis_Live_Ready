@@ -68,6 +68,14 @@ hiddenimports += [
     "src.music.providers.deezer",
 ]
 
+# God's Eye View is loaded lazily by the tools; keep its Qt imports and web
+# build in the frozen application so the embedded globe works after install.
+hiddenimports += [
+    "src.gods_eye.widget",
+    "PySide6.QtWebEngineCore",
+    "PySide6.QtWebEngineWidgets",
+]
+
 # openwakeword télécharge parfois ses modèles dans resources/models ;
 # on les récupère s'ils existent déjà (CI les télécharge avant le build).
 datas += collect_data_files("openwakeword", include_py_files=False)
@@ -75,6 +83,15 @@ datas += collect_data_files("openwakeword", include_py_files=False)
 # Ressources du dépôt (modèles téléchargés par scripts/download_models.py).
 base_dir = os.path.dirname(os.path.abspath(SPEC))
 root = os.path.dirname(base_dir)
+web_dist = os.path.join(root, "web", "gods_eye_view", "dist")
+web_index = os.path.join(web_dist, "index.html")
+if not os.path.isfile(web_index):
+    raise SystemExit(
+        "God's Eye View web build missing; run npm ci and npm run build "
+        "in web/gods_eye_view before packaging."
+    )
+datas.append((web_dist, "web/gods_eye_view/dist"))
+
 resources_dir = os.path.join(root, "resources")
 if os.path.isdir(resources_dir):
     for f in os.listdir(resources_dir):
@@ -119,8 +136,6 @@ a = Analysis(
         "pandas",
         "IPython",
         "notebook",
-        "PySide6.QtWebEngineCore",
-        "PySide6.QtWebEngineWidgets",
         "PySide6.QtQml",
         "PySide6.QtQuick",
     ],

@@ -22,10 +22,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.packaging_validation import (
     CRITICAL_APP_FILES,
     FORBIDDEN_FLATTENED_FILES,
+    GODS_EYE_REQUIRED_FILES,
     format_validation_result,
     format_wakeword_result,
     validate_app_dir,
     validate_install_dir,
+    validate_gods_eye_package,
+    validate_gods_eye_zip,
     validate_wakeword_models,
     validate_zip,
     validate_zip_wakeword_models,
@@ -62,6 +65,17 @@ def _make_zip(zip_path: Path, files: dict[str, bytes]) -> None:
     with zipfile.ZipFile(zip_path, "w") as archive:
         for name, content in files.items():
             archive.writestr(name, content)
+
+
+def _fake_gods_eye_files() -> dict[str, bytes]:
+    files = {path: b"test" for path in GODS_EYE_REQUIRED_FILES}
+    files["_internal/web/gods_eye_view/dist/index.html"] = (
+        b'<script src="./assets/app.js"></script>'
+        b'<link href="./assets/app.css" rel="stylesheet">'
+    )
+    files["_internal/web/gods_eye_view/dist/assets/app.js"] = b""
+    files["_internal/web/gods_eye_view/dist/assets/app.css"] = b""
+    return files
 
 
 class PackagingValidationTests(unittest.TestCase):
@@ -148,6 +162,43 @@ class PackagingValidationTests(unittest.TestCase):
 
         is_valid, missing, forbidden = validate_install_dir(install_dir)
         self.assertTrue(is_valid, f"Install valide rejetée: {missing}, {forbidden}")
+
+    def test_validate_gods_eye_package_requires_webengine_and_assets(self):
+        app_dir = _make_fake_app_dir(self.root)
+        for relative, content in _fake_gods_eye_files().items():
+            path = app_dir / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+
+        is_valid, missing, found = validate_gods_eye_package(app_dir)
+        self.assertTrue(is_valid, f"GEV packagé rejeté: missing={missing}")
+        self.assertEqual(missing, [])
+        self.assertIn("_internal/PySide6/QtWebEngineProcess.exe", found)
+        self.assertIn("_internal/web/gods_eye_view/dist/assets/app.js", found)
+
+    def test_validate_gods_eye_package_detects_missing_runtime(self):
+        app_dir = _make_fake_app_dir(self.root)
+        for relative, content in _fake_gods_eye_files().items():
+            path = app_dir / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        (app_dir / "_internal/PySide6/QtWebEngineProcess.exe").unlink()
+
+        is_valid, missing, _found = validate_gods_eye_package(app_dir)
+        self.assertFalse(is_valid)
+        self.assertIn("_internal/PySide6/QtWebEngineProcess.exe", missing)
+
+    def test_validate_gods_eye_zip_with_app_prefix(self):
+        zip_path = self.root / "gev.zip"
+        _make_zip(
+            zip_path,
+            {f"app/{name}": content for name, content in _fake_gods_eye_files().items()},
+        )
+
+        is_valid, missing, found = validate_gods_eye_zip(zip_path)
+        self.assertTrue(is_valid, f"GEV ZIP rejeté: missing={missing}")
+        self.assertEqual(missing, [])
+        self.assertIn("app/_internal/PySide6/QtWebEngineProcess.exe", found)
 
     def test_validate_install_dir_flattened(self):
         install_dir = self.root / "install_flat"
@@ -364,6 +415,18 @@ class WakewordValidationTests(unittest.TestCase):
         self.assertIn("openwakeword/resources/models", text)
         self.assertIn("resources/openwakeword", text)
         self.assertIn("src.wakeword", text)
+
+    def test_jarvis_spec_bundles_gods_eye_and_qtwebengine(self):
+        """Le build frozen doit inclure le globe et son moteur QtWebEngine."""
+        spec = Path(__file__).resolve().parents[1] / "packaging" / "jarvis.spec"
+        text = spec.read_text(encoding="utf-8")
+        self.assertIn("web/gods_eye_view/dist", text)
+        self.assertIn("src.gods_eye.widget", text)
+        self.assertIn("PySide6.QtWebEngineCore", text)
+        self.assertIn("PySide6.QtWebEngineWidgets", text)
+        excludes = text.split("excludes=[", maxsplit=1)[1].split("]", maxsplit=1)[0]
+        self.assertNotIn("PySide6.QtWebEngineCore", excludes)
+        self.assertNotIn("PySide6.QtWebEngineWidgets", excludes)
 
     def test_launcher_spec_bundles_gui_windowed(self):
         """Garde-fou : le spec du launcher embarque PySide6 en mode windowed."""

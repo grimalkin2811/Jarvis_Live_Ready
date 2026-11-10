@@ -60,6 +60,30 @@ if ($LASTEXITCODE -ne 0) { throw "pip install requirements échoué" }
 & $venvPython -m pip install pyinstaller
 if ($LASTEXITCODE -ne 0) { throw "pip install pyinstaller échoué" }
 
+# --- Build God's Eye View (Vite/Cesium) ---
+$nodeCommand = Get-Command node -ErrorAction SilentlyContinue
+if (-not $nodeCommand) { throw "Node.js >= 22 est requis pour embarquer God's Eye View." }
+$nodeMajor = [int](((& node --version).Trim().TrimStart("v").Split(".")[0]))
+if ($nodeMajor -lt 22) { throw "Node.js >= 22 est requis (version détectée: $nodeMajor)." }
+if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+    throw "npm est requis pour construire God's Eye View."
+}
+
+$webDir = Join-Path (Get-Location) "web\gods_eye_view"
+Write-Host "[build] Construction du globe Cesium dans $webDir..."
+Push-Location $webDir
+try {
+    & npm ci
+    if ($LASTEXITCODE -ne 0) { throw "npm ci God's Eye View échoué." }
+    & npm run build
+    if ($LASTEXITCODE -ne 0) { throw "Build Vite/Cesium God's Eye View échoué." }
+} finally {
+    Pop-Location
+}
+if (-not (Test-Path (Join-Path $webDir "dist\index.html"))) {
+    throw "Build God's Eye View invalide : web/gods_eye_view/dist/index.html absent."
+}
+
 # --- Modèles OpenWakeWord ---
 if (-not $SkipModels) {
     Write-Host "[build] Téléchargement des modèles OpenWakeWord..."
@@ -111,7 +135,7 @@ if (Test-Path $onedirFlattenedDll) {
 
 # Validation via Python pour plus de robustesse
 Write-Host "[build] Validation Python du dossier PyInstaller..."
-& $venvPython scripts/validate_build.py --pyinstaller $onedir
+& $venvPython scripts/validate_build.py --pyinstaller $onedir --require-gods-eye
 if ($LASTEXITCODE -ne 0) { throw "Validation PyInstaller échouée (Python)" }
 
 Write-Host "[build] PyInstaller output: OK" -ForegroundColor Green
@@ -183,7 +207,7 @@ if (Test-Path $flattenedBase) {
 
 # Validation Python supplémentaire
 Write-Host "[build] Validation Python du dossier app..."
-& $venvPython scripts/validate_build.py --app-dir $appDir
+& $venvPython scripts/validate_build.py --app-dir $appDir --require-gods-eye
 if ($LASTEXITCODE -ne 0) { throw "Validation app dir échouée (Python)" }
 
 Write-Host "[build] Application layout: OK" -ForegroundColor Green
@@ -232,7 +256,7 @@ if (-not (Test-Path $zipPath)) {
 Write-Host ""
 Write-Host "=== Validating portable ZIP ===" -ForegroundColor Cyan
 Write-Host "[build] Validation Python du ZIP..."
-& $venvPython scripts/validate_build.py --zip $zipPath --require-wakeword
+& $venvPython scripts/validate_build.py --zip $zipPath --require-wakeword --require-gods-eye
 if ($LASTEXITCODE -ne 0) {
     throw "Validation ZIP échouée: $zipPath est invalide (structure _internal manquante ou aplatie, ou modèles wake word absents)"
 }

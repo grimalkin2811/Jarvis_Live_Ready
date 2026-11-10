@@ -24,6 +24,8 @@ sys.path.insert(0, str(ROOT))
 from src.logging_setup import force_utf8_stdio  # noqa: E402
 from src.packaging_validation import (  # noqa: E402
     format_validation_result,
+    validate_gods_eye_package,
+    validate_gods_eye_zip,
     format_wakeword_result,
     validate_app_dir,
     validate_install_dir,
@@ -62,7 +64,42 @@ def _check_wakeword_zip(path: Path, *, require: bool) -> int:
     return 0
 
 
-def _validate_app_dir(path: Path, strict: bool = False, require_wakeword: bool = False) -> int:
+def _check_gods_eye_dir(path: Path, *, require: bool) -> int:
+    is_valid, missing, found = validate_gods_eye_package(path)
+    print(format_validation_result(is_valid, missing, []))
+    if is_valid:
+        print("[OK] Assets God's Eye View et QtWebEngine presents")
+        for rel in found:
+            print(f"  {rel}: OK")
+        return 0
+    if require:
+        print(f"ERROR: Assets God's Eye View ou QtWebEngine manquants dans {path} (--require-gods-eye)")
+        return 1
+    print("WARNING: Assets God's Eye View ou QtWebEngine manquants (non bloquant sans --require-gods-eye)")
+    return 0
+
+
+def _check_gods_eye_zip(path: Path, *, require: bool) -> int:
+    is_valid, missing, found = validate_gods_eye_zip(path)
+    print(format_validation_result(is_valid, missing, []))
+    if is_valid:
+        print("[OK] Assets God's Eye View et QtWebEngine presents dans le ZIP")
+        for rel in found:
+            print(f"  {rel}: OK")
+        return 0
+    if require:
+        print(f"ERROR: Assets God's Eye View ou QtWebEngine manquants dans {path} (--require-gods-eye)")
+        return 1
+    print("WARNING: Assets God's Eye View ou QtWebEngine manquants (non bloquant sans --require-gods-eye)")
+    return 0
+
+
+def _validate_app_dir(
+    path: Path,
+    strict: bool = False,
+    require_wakeword: bool = False,
+    require_gods_eye: bool = False,
+) -> int:
     print(f"=== Validating application layout: {path} ===")
     is_valid, missing, forbidden = validate_app_dir(path, strict=strict)
     print(format_validation_result(is_valid, missing, forbidden))
@@ -79,7 +116,11 @@ def _validate_app_dir(path: Path, strict: bool = False, require_wakeword: bool =
             print(f"    {forbidden_name} at root: {'FOUND (BAD)' if exists else 'OK (not present)'}")
         print("  Checking wake word models...")
         wakeword_rc = _check_wakeword_dir(path, require=require_wakeword)
-        return wakeword_rc
+        if wakeword_rc:
+            return wakeword_rc
+        if require_gods_eye:
+            return _check_gods_eye_dir(path, require=True)
+        return 0
     else:
         print(f"ERROR: Expected file missing or flattened structure detected in {path}")
         if missing:
@@ -91,7 +132,11 @@ def _validate_app_dir(path: Path, strict: bool = False, require_wakeword: bool =
         return 1
 
 
-def _validate_zip(path: Path, require_wakeword: bool = False) -> int:
+def _validate_zip(
+    path: Path,
+    require_wakeword: bool = False,
+    require_gods_eye: bool = False,
+) -> int:
     print(f"=== Validating portable ZIP: {path} ===")
     is_valid, missing, forbidden = validate_zip(path)
     print(format_validation_result(is_valid, missing, forbidden))
@@ -106,13 +151,22 @@ def _validate_zip(path: Path, require_wakeword: bool = False) -> int:
                 found = any(n.replace("\\", "/").endswith(critical) or n.replace("\\", "/") == critical for n in names)
                 print(f"  {critical}: {'OK' if found else 'MISSING'}")
         print("  Checking wake word models...")
-        return _check_wakeword_zip(path, require=require_wakeword)
+        wakeword_rc = _check_wakeword_zip(path, require=require_wakeword)
+        if wakeword_rc:
+            return wakeword_rc
+        if require_gods_eye:
+            return _check_gods_eye_zip(path, require=True)
+        return 0
     else:
         print(f"ERROR: ZIP validation failed for {path}")
         return 1
 
 
-def _validate_install_dir(path: Path, require_wakeword: bool = False) -> int:
+def _validate_install_dir(
+    path: Path,
+    require_wakeword: bool = False,
+    require_gods_eye: bool = False,
+) -> int:
     print(f"=== Validating installed application: {path} ===")
     is_valid, missing, forbidden = validate_install_dir(path)
     print(format_validation_result(is_valid, missing, forbidden))
@@ -120,15 +174,29 @@ def _validate_install_dir(path: Path, require_wakeword: bool = False) -> int:
         print("  app/Jarvis.exe: OK")
         print("  app/_internal/python311.dll: OK")
         print("  Checking wake word models...")
-        return _check_wakeword_dir(path / "app", require=require_wakeword)
+        wakeword_rc = _check_wakeword_dir(path / "app", require=require_wakeword)
+        if wakeword_rc:
+            return wakeword_rc
+        if require_gods_eye:
+            return _check_gods_eye_dir(path / "app", require=True)
+        return 0
     else:
         print(f"ERROR: Installation validation failed for {path}")
         return 1
 
 
-def _validate_pyinstaller(path: Path, require_wakeword: bool = False) -> int:
+def _validate_pyinstaller(
+    path: Path,
+    require_wakeword: bool = False,
+    require_gods_eye: bool = False,
+) -> int:
     print(f"=== Validating PyInstaller output: {path} ===")
-    return _validate_app_dir(path, strict=False, require_wakeword=require_wakeword)
+    return _validate_app_dir(
+        path,
+        strict=False,
+        require_wakeword=require_wakeword,
+        require_gods_eye=require_gods_eye,
+    )
 
 
 def main() -> int:
@@ -144,16 +212,38 @@ def main() -> int:
         action="store_true",
         help="Exige la présence des modèles ONNX OpenWakeWord (défaut : avertissement).",
     )
+    parser.add_argument(
+        "--require-gods-eye",
+        action="store_true",
+        help="Exige le build web GEV et les binaires/ressources QtWebEngine.",
+    )
     args = parser.parse_args()
 
     if args.app_dir:
-        return _validate_app_dir(args.app_dir, strict=args.strict, require_wakeword=args.require_wakeword)
+        return _validate_app_dir(
+            args.app_dir,
+            strict=args.strict,
+            require_wakeword=args.require_wakeword,
+            require_gods_eye=args.require_gods_eye,
+        )
     if args.pyinstaller:
-        return _validate_pyinstaller(args.pyinstaller, require_wakeword=args.require_wakeword)
+        return _validate_pyinstaller(
+            args.pyinstaller,
+            require_wakeword=args.require_wakeword,
+            require_gods_eye=args.require_gods_eye,
+        )
     if args.zip:
-        return _validate_zip(args.zip, require_wakeword=args.require_wakeword)
+        return _validate_zip(
+            args.zip,
+            require_wakeword=args.require_wakeword,
+            require_gods_eye=args.require_gods_eye,
+        )
     if args.install_dir:
-        return _validate_install_dir(args.install_dir, require_wakeword=args.require_wakeword)
+        return _validate_install_dir(
+            args.install_dir,
+            require_wakeword=args.require_wakeword,
+            require_gods_eye=args.require_gods_eye,
+        )
     return 1
 
 
