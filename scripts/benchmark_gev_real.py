@@ -133,6 +133,7 @@ HARNESS_JS = r"""
   const bench = {
     rafFrames: 0,
     rafTimes: [],
+    rafTimestamps: [],
     rafLast: null,
     rafHandle: null,
     startedAt: 0,
@@ -147,11 +148,13 @@ HARNESS_JS = r"""
         this.rafTimes.push(ts - this.rafLast);
       }
       this.rafLast = ts;
+      this.rafTimestamps.push(ts - this.startedAt);
       this.rafHandle = requestAnimationFrame((next) => this.tick(next));
     },
     startCapture() {
       this.rafFrames = 0;
       this.rafTimes = [];
+      this.rafTimestamps = [];
       this.rafLast = null;
       this.startedAt = performance.now();
       this.longTasks = [];
@@ -162,7 +165,8 @@ HARNESS_JS = r"""
           PerformanceObserver.supportedEntryTypes.includes('longtask')) {
         this.longTaskObserver = new PerformanceObserver((list) => {
           for (const entry of list.getEntries()) this.longTasks.push({
-            startTimeMs: entry.startTime,
+            startTimeMs: entry.startTime - this.startedAt,
+            pageStartTimeMs: entry.startTime,
             durationMs: entry.duration,
             name: entry.name
           });
@@ -179,7 +183,11 @@ HARNESS_JS = r"""
       const elapsedMs = performance.now() - this.startedAt;
       return JSON.stringify({
         elapsedMs,
-        raf: { frames: this.rafFrames, frameTimesMs: this.rafTimes },
+        raf: {
+          frames: this.rafFrames,
+          frameTimesMs: this.rafTimes,
+          timestampsMs: this.rafTimestamps
+        },
         cesium: JSON.parse(window.jarvisWorld.__benchmark.stopRenderProbe()),
         actionCapture: this.actionCapture,
         longTasks: this.longTasks,
@@ -197,7 +205,11 @@ HARNESS_JS = r"""
           if (this.rafHandle !== null) {
             this.actionCapture = {
               elapsedMs: performance.now() - this.startedAt,
-              raf: { frames: this.rafFrames, frameTimesMs: [...this.rafTimes] },
+              raf: {
+                frames: this.rafFrames,
+                frameTimesMs: [...this.rafTimes],
+                timestampsMs: [...this.rafTimestamps]
+              },
               cesium: JSON.parse(window.jarvisWorld.__benchmark.snapshotRenderProbe())
             };
           }
@@ -461,7 +473,26 @@ def _capture_for(
                 active_action_capture["cesium"]["frames"],
                 active_action_capture["cesium"]["elapsedMs"],
             ),
+            "raw_frame_intervals_ms": {
+                "raf": active_action_capture["raf"]["frameTimesMs"],
+                "cesium_post_render": active_action_capture["cesium"]["frameTimesMs"],
+            },
+            "raw_frame_timestamps_ms": {
+                "raf": active_action_capture["raf"]["timestampsMs"],
+                "cesium_post_render": active_action_capture["cesium"]["renderTimesMs"],
+            },
+            "long_tasks": [
+                task
+                for task in raw["longTasks"]
+                if task["startTimeMs"] <= active_action_capture["elapsedMs"]
+            ],
         }
+        action_elapsed_s = active_action_capture["elapsedMs"] / 1000
+        action_resources = [
+            sample for sample in samples if sample["t_s"] <= action_elapsed_s
+        ]
+        active_action_capture["resources_samples"] = action_resources
+        active_action_capture["resource_summary"] = _resource_summary(action_resources)
     return {
         "label": label,
         "resources_samples": samples,
