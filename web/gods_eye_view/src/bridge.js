@@ -10,7 +10,7 @@
  */
 import * as Cesium from 'cesium';
 
-import { governorRequestRender } from './vendor/renderGovernor.js';
+import { governorRequestRender, releaseContinuousRender } from './vendor/renderGovernor.js';
 import { getCameraState } from './viewer.js';
 import { resolveRegion, REGION_NAMES } from './regions.js';
 
@@ -54,6 +54,72 @@ export function getWorldState({ viewer, governor, layers, base }) {
 
 export function installBridge({ viewer, governor, layers }) {
   let baseLayer = 'pending';
+  let renderProbe = null;
+  let cameraProbe = null;
+
+  function startRenderProbe() {
+    if (renderProbe) viewer.scene.postRender.removeEventListener(renderProbe.listener);
+    const probe = { frames: 0, times: [], last: null, startedAt: performance.now(), listener: null };
+    probe.listener = () => {
+      const now = performance.now();
+      if (probe.last !== null) probe.times.push(now - probe.last);
+      probe.last = now;
+      probe.frames++;
+    };
+    viewer.scene.postRender.addEventListener(probe.listener);
+    renderProbe = probe;
+  }
+
+  function stopRenderProbe() {
+    if (!renderProbe) throw new Error('Sonde Cesium non démarrée');
+    const probe = renderProbe;
+    const snapshot = JSON.parse(snapshotRenderProbe());
+    viewer.scene.postRender.removeEventListener(probe.listener);
+    renderProbe = null;
+    return JSON.stringify(snapshot);
+  }
+
+  function snapshotRenderProbe() {
+    if (!renderProbe) throw new Error('Sonde Cesium non démarrée');
+    return JSON.stringify({
+      frames: renderProbe.frames,
+      elapsedMs: performance.now() - renderProbe.startedAt,
+      frameTimesMs: [...renderProbe.times],
+    });
+  }
+
+  function getBenchmarkDiagnostics() {
+    return JSON.stringify({
+      camera: getCameraState(viewer),
+      scene: {
+        requestRenderMode: viewer.scene.requestRenderMode,
+        primitiveCount: viewer.scene.primitives.length,
+        globeVisible: viewer.scene.globe.show,
+      },
+      governor: governor.diagnostics(),
+      flights: layers.flights.getState(),
+      flightInternals: JSON.parse(layers.flights.getBenchmarkDiagnostics()),
+    });
+  }
+
+  function startCameraProbe() {
+    if (cameraProbe) stopCameraProbe();
+    const probe = { events: [], startListener: null, endListener: null };
+    probe.startListener = () => probe.events.push({ event: 'moveStart', atMs: performance.now() });
+    probe.endListener = () => probe.events.push({ event: 'moveEnd', atMs: performance.now() });
+    viewer.camera.moveStart.addEventListener(probe.startListener);
+    viewer.camera.moveEnd.addEventListener(probe.endListener);
+    cameraProbe = probe;
+  }
+
+  function stopCameraProbe() {
+    if (!cameraProbe) return JSON.stringify({ events: [] });
+    const probe = cameraProbe;
+    viewer.camera.moveStart.removeEventListener(probe.startListener);
+    viewer.camera.moveEnd.removeEventListener(probe.endListener);
+    cameraProbe = null;
+    return JSON.stringify({ events: probe.events });
+  }
 
   function flyCamera({ latitude, longitude, altitude_m, heading_deg = 0, pitch_deg = -35, duration_s = 2.5 }) {
     // Le vol recentre aussi la couche vols sur la nouvelle zone (une seule
@@ -69,6 +135,7 @@ export function installBridge({ viewer, governor, layers }) {
         },
         duration: duration_s,
         complete: () => {
+          releaseContinuousRender('world-camera');
           governorRequestRender('camera-flight-complete');
           resolve(true);
         },
@@ -174,6 +241,21 @@ export function installBridge({ viewer, governor, layers }) {
   window.jarvisWorld = {
     version: '0.1.0',
     ready: false,
+    __benchmark: {
+      cesiumVersion: Cesium.VERSION,
+      startRenderProbe,
+      snapshotRenderProbe,
+      stopRenderProbe,
+      getDiagnostics: getBenchmarkDiagnostics,
+      startCameraProbe,
+      stopCameraProbe,
+      startFlightProfile: layers.flights.startBenchmarkProfile,
+      getFlightProfile: layers.flights.getBenchmarkProfile,
+      stopFlightProfile: layers.flights.stopBenchmarkProfile,
+      loadSyntheticFlights(rows) {
+        return JSON.stringify(layers.flights.loadBenchmarkRows(rows));
+      },
+    },
     setBaseLayer(name) {
       baseLayer = name;
     },
