@@ -459,40 +459,42 @@ def _capture_for(
     raf = raw["raf"]
     long_tasks = raw["longTasks"]
     long_task_durations = [entry["durationMs"] for entry in long_tasks]
-    active_action_capture = raw.get("actionCapture")
-    if active_action_capture is not None:
+    action_capture = raw.get("actionCapture")
+    active_action_capture = None
+    if action_capture is not None:
+        action_elapsed_ms = action_capture["elapsedMs"]
+        action_elapsed_s = action_elapsed_ms / 1000
+        action_resources = [
+            sample for sample in samples if sample["t_s"] <= action_elapsed_s
+        ]
         active_action_capture = {
-            "elapsed_ms": round(active_action_capture["elapsedMs"], 2),
+            "elapsed_ms": round(action_elapsed_ms, 2),
             "raf": _frame_summary(
-                active_action_capture["raf"]["frameTimesMs"],
-                active_action_capture["raf"]["frames"],
-                active_action_capture["elapsedMs"],
+                action_capture["raf"]["frameTimesMs"],
+                action_capture["raf"]["frames"],
+                action_elapsed_ms,
             ),
             "cesium_post_render": _frame_summary(
-                active_action_capture["cesium"]["frameTimesMs"],
-                active_action_capture["cesium"]["frames"],
-                active_action_capture["cesium"]["elapsedMs"],
+                action_capture["cesium"]["frameTimesMs"],
+                action_capture["cesium"]["frames"],
+                action_capture["cesium"]["elapsedMs"],
             ),
             "raw_frame_intervals_ms": {
-                "raf": active_action_capture["raf"]["frameTimesMs"],
-                "cesium_post_render": active_action_capture["cesium"]["frameTimesMs"],
+                "raf": action_capture["raf"]["frameTimesMs"],
+                "cesium_post_render": action_capture["cesium"]["frameTimesMs"],
             },
             "raw_frame_timestamps_ms": {
-                "raf": active_action_capture["raf"]["timestampsMs"],
-                "cesium_post_render": active_action_capture["cesium"]["renderTimesMs"],
+                "raf": action_capture["raf"]["timestampsMs"],
+                "cesium_post_render": action_capture["cesium"]["renderTimesMs"],
             },
             "long_tasks": [
                 task
                 for task in raw["longTasks"]
-                if task["startTimeMs"] <= active_action_capture["elapsedMs"]
+                if task["startTimeMs"] <= action_elapsed_ms
             ],
+            "resources_samples": action_resources,
+            "resource_summary": _resource_summary(action_resources),
         }
-        action_elapsed_s = active_action_capture["elapsedMs"] / 1000
-        action_resources = [
-            sample for sample in samples if sample["t_s"] <= action_elapsed_s
-        ]
-        active_action_capture["resources_samples"] = action_resources
-        active_action_capture["resource_summary"] = _resource_summary(action_resources)
     return {
         "label": label,
         "resources_samples": samples,
