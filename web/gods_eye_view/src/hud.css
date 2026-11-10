@@ -88,6 +88,17 @@ html, body {
   color: var(--jv-text);
 }
 
+#jarvis-imagery-status {
+  border-left: 1px solid var(--jv-cyan-dim);
+  padding-left: 10px;
+  color: var(--jv-cyan);
+  font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+#jarvis-imagery-status[data-mode="warn"] { color: var(--jv-warn); }
+
 #jarvis-layer-chip {
   font-family: "Cascadia Mono", ui-monospace, Consolas, monospace;
   font-size: 10px;
@@ -141,6 +152,24 @@ html, body {
   pointer-events: auto;
 }
 #jarvis-credits a { color: var(--jv-cyan); text-decoration: none; }
+#jarvis-location-readout {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  background: var(--jv-panel);
+  border: 1px solid var(--jv-cyan-dim);
+  border-radius: 8px;
+  padding: 4px 10px;
+  color: var(--jv-cyan);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+#jarvis-location-region {
+  color: var(--jv-text);
+  font-weight: 600;
+}
+#jarvis-location-coordinates { color: var(--jv-text-dim); }
 #jarvis-hud-hint {
   background: var(--jv-panel);
   border: 1px solid rgba(219, 231, 243, 0.12);
@@ -149,4 +178,13 @@ html, body {
   font-size: 10px;
   letter-spacing: 0.1em;
   color: var(--jv-text-dim);
+}
+
+@media (max-width: 900px) {
+  .jarvis-hud-subtitle,
+  #jarvis-imagery-status { display: none; }
+  #jarvis-hud-bottom { gap: 6px; }
+  #jarvis-credits { max-width: 40%; }
+  #jarvis-location-readout,
+  #jarvis-hud-hint { font-size: 9px; }
 }

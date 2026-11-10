@@ -22,6 +22,14 @@ function setHudStatus(text, mode) {
   if (dot) dot.dataset.mode = mode || 'ok';
 }
 
+function setImageryStatus({ source, errors }) {
+  const el = document.getElementById('jarvis-imagery-status');
+  if (!el) return;
+  const label = source === 'esri' ? 'ESRI' : 'OSM';
+  el.textContent = errors > 0 ? `FOND ${label} · ÉCHECS ${errors}` : `FOND ${label}`;
+  el.dataset.mode = errors > 0 ? 'warn' : 'ok';
+}
+
 function setLayerChip(state) {
   const chip = document.getElementById('jarvis-layer-chip');
   if (!chip) return;
@@ -62,7 +70,7 @@ async function boot() {
     layers: { flights },
   });
 
-  const base = await createBaseImagery(viewer);
+  const base = await createBaseImagery(viewer, { onStatus: setImageryStatus });
   bridge.setBaseLayer(base);
   bridge.markReady();
   governorRequestRender('boot-complete');

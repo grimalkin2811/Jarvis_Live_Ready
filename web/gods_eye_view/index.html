@@ -14,7 +14,7 @@
   <body>
     <div id="jarvis-globe" role="presentation"></div>
 
-    <header id="jarvis-hud-top" aria-hidden="true">
+    <header id="jarvis-hud-top">
       <div class="jarvis-hud-block">
         <span class="jarvis-hud-title">GOD'S EYE VIEW</span>
         <span class="jarvis-hud-subtitle">Module géospatial Jarvis</span>
@@ -22,6 +22,9 @@
       <div class="jarvis-hud-block jarvis-hud-right">
         <span id="jarvis-status-dot" data-mode="busy"></span>
         <span id="jarvis-status-text">INITIALISATION…</span>
+        <span id="jarvis-imagery-status" data-mode="busy" aria-live="polite">
+          FOND — INITIALISATION
+        </span>
         <span id="jarvis-layer-chip" hidden></span>
         <button id="jarvis-close" class="jarvis-hud-btn" type="button" title="Fermer (Échap)">FERMER</button>
       </div>
@@ -29,6 +32,10 @@
 
     <footer id="jarvis-hud-bottom">
       <div id="jarvis-credits" aria-label="Attributions"></div>
+      <div id="jarvis-location-readout" aria-label="Région et coordonnées courantes" aria-live="polite">
+        <span id="jarvis-location-region">VUE GLOBALE</span>
+        <span id="jarvis-location-coordinates">48.8566° N · 2.3522° E</span>
+      </div>
       <div id="jarvis-hud-hint">Jarvis contrôle ce globe · Échap — fermer</div>
     </footer>
 

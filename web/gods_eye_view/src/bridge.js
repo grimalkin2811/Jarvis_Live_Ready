@@ -54,8 +54,25 @@ export function getWorldState({ viewer, governor, layers, base }) {
 
 export function installBridge({ viewer, governor, layers }) {
   let baseLayer = 'pending';
+  let currentRegion = 'VUE GLOBALE';
   let renderProbe = null;
   let cameraProbe = null;
+
+  function updateLocationReadout(region = currentRegion) {
+    currentRegion = region;
+    const camera = getCameraState(viewer);
+    const regionElement = document.getElementById('jarvis-location-region');
+    const coordinatesElement = document.getElementById('jarvis-location-coordinates');
+    if (regionElement) regionElement.textContent = currentRegion;
+    if (coordinatesElement) {
+      const latitude = `${Math.abs(camera.latitude).toFixed(4)}° ${camera.latitude < 0 ? 'S' : 'N'}`;
+      const longitude = `${Math.abs(camera.longitude).toFixed(4)}° ${camera.longitude < 0 ? 'W' : 'E'}`;
+      coordinatesElement.textContent = `${latitude} · ${longitude}`;
+    }
+  }
+
+  updateLocationReadout();
+  viewer.camera.moveEnd.addEventListener(() => updateLocationReadout('VUE LIBRE'));
 
   function startRenderProbe() {
     if (renderProbe) viewer.scene.postRender.removeEventListener(renderProbe.listener);
@@ -146,10 +163,12 @@ export function installBridge({ viewer, governor, layers }) {
         complete: () => {
           releaseContinuousRender('world-camera');
           governorRequestRender('camera-flight-complete');
+          updateLocationReadout();
           resolve(true);
         },
         cancel: () => {
           governorRequestRender('camera-flight-cancelled');
+          updateLocationReadout('VUE LIBRE');
           resolve(false);
         },
       });
@@ -182,6 +201,7 @@ export function installBridge({ viewer, governor, layers }) {
         duration_s: clampNumber(args.duration_s, [durMin, durMax], 2.5),
       };
       const arrived = await flyCamera(camera);
+      updateLocationReadout('POSITION PERSONNALISÉE');
       return ok('world_set_camera', { camera: getCameraState(viewer), arrived });
     },
 
@@ -203,6 +223,7 @@ export function installBridge({ viewer, governor, layers }) {
         pitch_deg: -40,
         duration_s: 2.5,
       });
+      updateLocationReadout(region.label.toUpperCase());
       return ok('world_focus_region', {
         region: regionName,
         label: region.label,

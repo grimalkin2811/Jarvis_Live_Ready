@@ -168,7 +168,13 @@ HARNESS_JS = r"""
             startTimeMs: entry.startTime - this.startedAt,
             pageStartTimeMs: entry.startTime,
             durationMs: entry.duration,
-            name: entry.name
+            name: entry.name,
+            attribution: Array.from(entry.attribution || [], (item) => ({
+              name: item.name,
+              containerType: item.containerType,
+              containerName: item.containerName,
+              containerSrc: item.containerSrc
+            }))
           });
         });
         this.longTaskObserver.observe({ entryTypes: ['longtask'] });
@@ -232,6 +238,9 @@ HARNESS_JS = r"""
       return JSON.stringify({
         title: document.title,
         status: document.querySelector('#jarvis-status-text')?.textContent || null,
+        imageryStatus: document.querySelector('#jarvis-imagery-status')?.textContent || null,
+        locationRegion: document.querySelector('#jarvis-location-region')?.textContent || null,
+        locationCoordinates: document.querySelector('#jarvis-location-coordinates')?.textContent || null,
         canvas: canvas ? { width: canvas.width, height: canvas.height } : null,
         webglRenderer: renderer,
         userAgent: navigator.userAgent,
@@ -761,6 +770,8 @@ def run_benchmark(
         raise RuntimeError(
             f"Canvas Cesium effectif {page_info['canvas']}; attendu {expected_canvas_info}"
         )
+    if not page_info.get("locationRegion") or not page_info.get("locationCoordinates"):
+        raise RuntimeError("Readout de région/coordonnées absent de l'interface GEV")
     benchmark_info = _run_js(page, app, "JSON.stringify(window.jarvisWorld.__benchmark);")
     if not isinstance(benchmark_info, dict) or not benchmark_info.get("cesiumVersion"):
         raise RuntimeError("La sonde Cesium postRender n'est pas disponible")
@@ -1071,6 +1082,9 @@ def run_benchmark(
             "screenshot": screenshot_name,
             "screenshot_bytes": screenshot_path.stat().st_size,
             "status": page_info["status"],
+            "imagery_status": page_info["imageryStatus"],
+            "location_region": page_info["locationRegion"],
+            "location_coordinates": page_info["locationCoordinates"],
             "canvas": page_info["canvas"],
             "webgl_renderer": environment["webgl_renderer"],
             "benchmark_label_visible": "BENCHMARK" in str(page_info["status"]),
@@ -1080,6 +1094,9 @@ def run_benchmark(
         results["interface"] = {
             "screenshot": "NON MESURÉE — QPixmap.grab().save() a échoué",
             "status": page_info["status"],
+            "imagery_status": page_info["imageryStatus"],
+            "location_region": page_info["locationRegion"],
+            "location_coordinates": page_info["locationCoordinates"],
             "canvas": page_info["canvas"],
             "webgl_renderer": environment["webgl_renderer"],
         }

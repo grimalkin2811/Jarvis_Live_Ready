@@ -20,7 +20,16 @@ export const ESRI_IMAGERY_URL =
   'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer';
 export const OSM_IMAGERY_URL = 'https://tile.openstreetmap.org/';
 
-export async function createBaseImagery(viewer) {
+function observeImageryProvider(provider, source, onStatus) {
+  let errors = 0;
+  provider.errorEvent.addEventListener(() => {
+    errors++;
+    onStatus?.({ source, errors, state: 'error' });
+  });
+  onStatus?.({ source, errors, state: 'loading' });
+}
+
+export async function createBaseImagery(viewer, { onStatus = null } = {}) {
   try {
     const provider = await Cesium.ArcGisMapServerImageryProvider.fromUrl(
       ESRI_IMAGERY_URL,
@@ -31,6 +40,7 @@ export async function createBaseImagery(viewer) {
         enablePickFeatures: false,
       },
     );
+    observeImageryProvider(provider, 'esri', onStatus);
     viewer.imageryLayers.add(new Cesium.ImageryLayer(provider));
     governorRequestRender('base-imagery:esri');
     return 'esri-imagery';
@@ -40,6 +50,7 @@ export async function createBaseImagery(viewer) {
       url: OSM_IMAGERY_URL,
       credit: '© OpenStreetMap contributors',
     });
+    observeImageryProvider(provider, 'osm', onStatus);
     viewer.imageryLayers.add(new Cesium.ImageryLayer(provider));
     governorRequestRender('base-imagery:osm');
     return 'osm';
