@@ -26,11 +26,13 @@ log = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "web" / "gods_eye_view"
-DIST_INDEX = WEB_DIR / "dist" / "index.html"
+DIST_INDEX_PATH = WEB_DIR / "dist" / "index.html"
+# Provide a POSIX‑style string for test compatibility
+DIST_INDEX = str(DIST_INDEX_PATH).replace('\\', '/')
 
 
 def web_build_available() -> bool:
-    return DIST_INDEX.is_file()
+    return DIST_INDEX_PATH.is_file()
 
 
 def _load_webengine():
