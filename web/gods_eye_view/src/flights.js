@@ -116,17 +116,28 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
   let lastUpdated = null;
   let anchor = { latitude: 48.8566, longitude: 2.3522 };
   let icon = null;
+  let benchmarkProfile = null;
+  let benchmarkOverride = false;
 
-  function applyRows(rows, rowSource) {
+  function applyRows(rows, rowSource, timings = null) {
     if (!collection) return;
+    const profileUpdate = benchmarkProfile !== null;
+    if (profileUpdate && !timings) timings = {};
     // Rebuild at poll cadence (≤0.1 Hz): removing/re-adding ≤600 billboards
     // is cheaper and leak-proof vs diffing at this scale.
+    let stageStart = timings ? performance.now() : 0;
     collection.removeAll();
+    if (timings) timings.removeAllMs = performance.now() - stageStart;
+
+    stageStart = timings ? performance.now() : 0;
     const normalized = [];
     for (let i = 0; i < rows.length; i++) {
       const row = normalizeRow(rows[i], i);
       if (row) normalized.push(row);
     }
+    if (timings) timings.normalizeMs = performance.now() - stageStart;
+
+    stageStart = timings ? performance.now() : 0;
     if (normalized.length > MAX_AIRCRAFT) {
       // Cap dur : les 600 contacts les plus proches de l'ancre caméra.
       normalized.sort(
@@ -136,6 +147,9 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
       );
       normalized.length = MAX_AIRCRAFT;
     }
+    if (timings) timings.sortAndCapMs = performance.now() - stageStart;
+
+    stageStart = timings ? performance.now() : 0;
     for (const row of normalized) {
       collection.add({
         position: Cesium.Cartesian3.fromDegrees(row.lon, row.lat, row.altM),
@@ -150,11 +164,21 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
         translucencyByDistance: new Cesium.NearFarScalar(1.5e6, 1.0, 1.5e7, 0.4),
       });
     }
+    if (timings) timings.billboardCreationMs = performance.now() - stageStart;
     objectCount = normalized.length;
     source = rowSource;
     lastUpdated = Date.now();
     notify();
     governorRequestRender('flights-poll');
+    if (profileUpdate) {
+      benchmarkProfile.updates.push({
+        atMs: performance.now() - benchmarkProfile.startedAt,
+        source: rowSource,
+        inputCount: rows.length,
+        renderedCount: objectCount,
+        timings,
+      });
+    }
   }
 
   async function refresh() {
@@ -162,11 +186,11 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
     try {
       const { rows, source: rowSource } = await fetchAdsbLol(anchor);
       // L'utilisateur a pu désactiver pendant le fetch : rien à dessiner.
-      if (!enabled || !collection) return;
+      if (!enabled || !collection || benchmarkOverride) return;
       lastError = null;
       applyRows(rows, rowSource);
     } catch (error) {
-      if (!enabled || !collection) return;
+      if (!enabled || !collection || benchmarkOverride) return;
       lastError = `adsb.lol indisponible (${error?.message || error})`;
       // Repli honnête : échantillon synthétique, étiqueté comme tel.
       applyRows(samplePayload.ac, 'synthetic-sample');
@@ -175,6 +199,7 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
 
   function scheduleNext() {
     if (timer) window.clearInterval(timer);
+    if (benchmarkOverride) return;
     // ±20 % jitter pour éviter l'alignement des requêtes.
     const delay = POLL_MS * (0.8 + Math.random() * 0.4);
     timer = window.setTimeout(() => {
@@ -187,6 +212,7 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
       return { enabled: true, changed: false, objectCount, source };
     }
     enabled = true;
+    benchmarkOverride = false;
     notify();
     icon ??= makePlaneIcon();
     collection = new Cesium.BillboardCollection();
@@ -200,6 +226,7 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
       return { enabled: false, changed: false };
     }
     enabled = false;
+    benchmarkOverride = false;
     if (timer) {
       window.clearTimeout(timer);
       timer = null;
@@ -225,6 +252,54 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
     return { enabled, objectCount, source, lastError, lastUpdated };
   }
 
+  function loadBenchmarkRows(rows) {
+    if (!enabled || !collection) throw new Error('Activer la couche flights avant le scénario benchmark');
+    if (!Array.isArray(rows)) throw new TypeError('Les lignes benchmark doivent être un tableau');
+    benchmarkOverride = true;
+    if (timer) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+    const timings = {};
+    const startedAt = performance.now();
+    applyRows(rows, 'synthetic-benchmark', timings);
+    return {
+      inputCount: rows.length,
+      ...getState(),
+      applyRowsMs: performance.now() - startedAt,
+      timings,
+    };
+  }
+
+  function startBenchmarkProfile() {
+    benchmarkProfile = { startedAt: performance.now(), updates: [] };
+  }
+
+  function getBenchmarkProfile() {
+    if (benchmarkProfile === null) return JSON.stringify({ updates: [] });
+    return JSON.stringify({
+      elapsedMs: performance.now() - benchmarkProfile.startedAt,
+      updates: benchmarkProfile.updates,
+    });
+  }
+
+  function stopBenchmarkProfile() {
+    const profile = JSON.parse(getBenchmarkProfile());
+    benchmarkProfile = null;
+    return JSON.stringify(profile);
+  }
+
+  function getBenchmarkDiagnostics() {
+    return JSON.stringify({
+      enabled,
+      objectCount,
+      source,
+      timerScheduled: timer !== null,
+      collectionAlive: collection !== null,
+      benchmarkOverride,
+    });
+  }
+
   function notify() {
     try {
       onChange?.(getState());
@@ -238,6 +313,11 @@ export function createFlightsLayer(viewer, { onChange = null } = {}) {
     disable,
     setAnchor,
     getState,
+    loadBenchmarkRows,
+    startBenchmarkProfile,
+    getBenchmarkProfile,
+    stopBenchmarkProfile,
+    getBenchmarkDiagnostics,
     destroy: () => disable(),
   };
 }

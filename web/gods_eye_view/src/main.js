@@ -27,9 +27,12 @@ function setLayerChip(state) {
   if (!chip) return;
   if (state.enabled) {
     const suffix = state.source === 'synthetic-sample' ? ' · ÉCHANTILLON' : '';
+    const benchmarkSuffix = state.source === 'synthetic-benchmark' ? ' · BENCHMARK' : '';
     chip.hidden = false;
-    chip.textContent = `FLIGHTS — ${state.objectCount}${suffix}`;
-    chip.dataset.warn = state.source === 'synthetic-sample' ? 'true' : 'false';
+    chip.textContent = `FLIGHTS — ${state.objectCount}${suffix}${benchmarkSuffix}`;
+    chip.dataset.warn = state.source === 'synthetic-sample' || state.source === 'synthetic-benchmark'
+      ? 'true'
+      : 'false';
   } else {
     chip.hidden = true;
     chip.textContent = '';
@@ -44,6 +47,8 @@ async function boot() {
       setLayerChip(state);
       if (state.lastError && state.source === 'synthetic-sample') {
         setHudStatus('HORS LIGNE — ÉCHANTILLON', 'warn');
+      } else if (state.source === 'synthetic-benchmark') {
+        setHudStatus('BENCHMARK SYNTHÉTIQUE', 'warn');
       } else if (state.enabled) {
         setHudStatus('EN DIRECT · adsb.lol', 'ok');
       } else {
