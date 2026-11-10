@@ -6,6 +6,7 @@ Modes disponibles :
 * ``--ui``      : orbe morphing interactif (menus radiaux) + assistant vocal.
 * ``--desktop`` : overlay halo plein écran + assistant vocal.
 * ``--smoke-test`` : test rapide sans audio/Gemini (pour CI packaging).
+* ``--gods-eye-smoke-test`` : ouvre le globe QtWebEngine et valide le runtime embarqué.
 * ``--version`` : affiche la version.
 
 Exemples :
@@ -176,6 +177,115 @@ def _run_smoke_test() -> int:
         print("  (non bloquant en developpement : lancez scripts/download_models.py)")
 
     print("SMOKE TEST PASSED")
+    return 0
+
+
+def _run_gods_eye_smoke_test() -> int:
+    """Open the embedded globe and verify the frozen QtWebEngine runtime."""
+    import json
+    import time
+    from pathlib import Path
+
+    from PySide6.QtCore import QLibraryInfo, Qt
+    from PySide6.QtWidgets import QApplication
+
+    from .gods_eye.widget import active_window, get_default_controller, request_open
+
+    if not getattr(sys, "frozen", False):
+        print("GOD'S EYE FROZEN SMOKE TEST FAILED: exige l'exécutable PyInstaller")
+        return 2
+
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
+    app = QApplication.instance() or QApplication(sys.argv[:1])
+    app.setQuitOnLastWindowClosed(False)
+    if not request_open(timeout=12.0):
+        print("GOD'S EYE FROZEN SMOKE TEST FAILED: request_open() a échoué")
+        return 1
+
+    controller = get_default_controller()
+    deadline = time.perf_counter() + 45.0
+    while controller.lifecycle != "ready" and time.perf_counter() < deadline:
+        app.processEvents()
+        time.sleep(0.02)
+    if controller.lifecycle != "ready":
+        print(f"GOD'S EYE FROZEN SMOKE TEST FAILED: lifecycle={controller.lifecycle}")
+        return 1
+
+    window = active_window()
+    page = window._transport._page if window is not None else None
+    if page is None:
+        print("GOD'S EYE FROZEN SMOKE TEST FAILED: QWebEnginePage absente")
+        return 1
+
+    result: list[str | None] = []
+    page.runJavaScript(
+        """JSON.stringify({
+          ready: Boolean(window.jarvisWorld && window.jarvisWorld.ready),
+          cesiumVersion: window.jarvisWorld?.__benchmark?.cesiumVersion || null,
+          canvas: (() => {
+            const canvas = document.querySelector('#jarvis-globe canvas');
+            return canvas ? {width: canvas.width, height: canvas.height} : null;
+          })(),
+          status: document.querySelector('#jarvis-status-text')?.textContent || null
+        })""",
+        result.append,
+    )
+    js_deadline = time.perf_counter() + 10.0
+    while not result and time.perf_counter() < js_deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    if not result or not result[0]:
+        print("GOD'S EYE FROZEN SMOKE TEST FAILED: sonde JavaScript sans résultat")
+        return 1
+
+    page_state = json.loads(result[0])
+    bundle_root = Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    bundle_root = bundle_root.resolve()
+    web_index = bundle_root / "web" / "gods_eye_view" / "dist" / "index.html"
+    webengine_process = bundle_root / "PySide6" / "QtWebEngineProcess.exe"
+    qt_resources = bundle_root / "PySide6" / "resources"
+    qt_executables_path = Path(
+        QLibraryInfo.path(QLibraryInfo.LibraryPath.LibraryExecutablesPath)
+    ).resolve()
+    qt_data_path = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.DataPath)).resolve()
+    qt_paths_inside_bundle = all(
+        path == bundle_root or bundle_root in path.parents
+        for path in (qt_executables_path, qt_data_path)
+    )
+    runtime_paths = {
+        "bundle_root": str(bundle_root),
+        "web_index_exists": web_index.is_file(),
+        "qtwebengine_process_exists": webengine_process.is_file(),
+        "qt_resources_exists": qt_resources.is_dir(),
+        "qt_library_executables_path": str(qt_executables_path),
+        "qt_library_data_path": str(qt_data_path),
+        "qt_paths_inside_bundle": qt_paths_inside_bundle,
+    }
+    print("GOD'S EYE FROZEN SMOKE TEST")
+    print(f"  Frozen: {getattr(sys, 'frozen', False)}")
+    print(f"  Page: {json.dumps(page_state, ensure_ascii=False)}")
+    print(f"  Runtime: {json.dumps(runtime_paths, ensure_ascii=False)}")
+    if (
+        not page_state.get("ready")
+        or not page_state.get("cesiumVersion")
+        or not page_state.get("canvas")
+        or page_state["canvas"]["width"] <= 0
+        or page_state["canvas"]["height"] <= 0
+        or not runtime_paths["web_index_exists"]
+        or not runtime_paths["qtwebengine_process_exists"]
+        or not runtime_paths["qt_resources_exists"]
+        or not runtime_paths["qt_paths_inside_bundle"]
+    ):
+        print("GOD'S EYE FROZEN SMOKE TEST FAILED")
+        return 1
+
+    window.close()
+    app.processEvents()
+    if controller.lifecycle != "idle":
+        print(f"GOD'S EYE FROZEN SMOKE TEST FAILED: lifecycle={controller.lifecycle}")
+        return 1
+    app.quit()
+    print("GOD'S EYE FROZEN SMOKE TEST PASSED")
     return 0
 
 
@@ -389,6 +499,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Test rapide de l'exécutable (pour CI, sans audio/API).",
     )
     group.add_argument(
+        "--gods-eye-smoke-test",
+        action="store_true",
+        help="Ouvre God's Eye View et valide le runtime QtWebEngine embarqué.",
+    )
+    group.add_argument(
         "--version",
         action="store_true",
         help="Affiche la version et quitte.",
@@ -407,6 +522,8 @@ def main(argv=None) -> int:
     # Smoke test pour CI
     if getattr(args, "smoke_test", False):
         return _run_smoke_test()
+    if getattr(args, "gods_eye_smoke_test", False):
+        return _run_gods_eye_smoke_test()
 
     # Journalisation : un exécutable distribué ne dépend pas d'une console.
     is_gui = args.ui or args.desktop
