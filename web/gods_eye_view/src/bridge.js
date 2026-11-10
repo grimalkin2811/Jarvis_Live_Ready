@@ -59,11 +59,19 @@ export function installBridge({ viewer, governor, layers }) {
 
   function startRenderProbe() {
     if (renderProbe) viewer.scene.postRender.removeEventListener(renderProbe.listener);
-    const probe = { frames: 0, times: [], last: null, startedAt: performance.now(), listener: null };
+    const probe = {
+      frames: 0,
+      times: [],
+      renderTimes: [],
+      last: null,
+      startedAt: performance.now(),
+      listener: null,
+    };
     probe.listener = () => {
       const now = performance.now();
       if (probe.last !== null) probe.times.push(now - probe.last);
       probe.last = now;
+      probe.renderTimes.push(now - probe.startedAt);
       probe.frames++;
     };
     viewer.scene.postRender.addEventListener(probe.listener);
@@ -85,6 +93,7 @@ export function installBridge({ viewer, governor, layers }) {
       frames: renderProbe.frames,
       elapsedMs: performance.now() - renderProbe.startedAt,
       frameTimesMs: [...renderProbe.times],
+      renderTimesMs: [...renderProbe.renderTimes],
     });
   }
 

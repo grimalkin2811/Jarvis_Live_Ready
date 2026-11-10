@@ -11,6 +11,7 @@ separately; only postRender is treated as an actual Cesium render.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -37,6 +38,13 @@ from src.gods_eye.widget import active_window, get_default_controller, request_o
 SAMPLE_INTERVAL_S = 0.5
 PROC = psutil.Process()
 GPU_SAMPLER: Any | None = None
+CRITICAL_JS_FILES = (
+    "web/gods_eye_view/src/bridge.js",
+    "web/gods_eye_view/src/flights.js",
+    "web/gods_eye_view/src/viewer.js",
+    "web/gods_eye_view/src/main.js",
+    "web/gods_eye_view/src/vendor/renderGovernor.js",
+)
 
 
 class _Gpu3DSampler:
@@ -153,7 +161,11 @@ HARNESS_JS = r"""
       if (window.PerformanceObserver &&
           PerformanceObserver.supportedEntryTypes.includes('longtask')) {
         this.longTaskObserver = new PerformanceObserver((list) => {
-          for (const entry of list.getEntries()) this.longTasks.push(entry.duration);
+          for (const entry of list.getEntries()) this.longTasks.push({
+            startTimeMs: entry.startTime,
+            durationMs: entry.duration,
+            name: entry.name
+          });
         });
         this.longTaskObserver.observe({ entryTypes: ['longtask'] });
       }
@@ -170,7 +182,7 @@ HARNESS_JS = r"""
         raf: { frames: this.rafFrames, frameTimesMs: this.rafTimes },
         cesium: JSON.parse(window.jarvisWorld.__benchmark.stopRenderProbe()),
         actionCapture: this.actionCapture,
-        longTasksMs: this.longTasks,
+        longTasks: this.longTasks,
         longTaskApiAvailable: Boolean(window.PerformanceObserver &&
           PerformanceObserver.supportedEntryTypes.includes('longtask'))
       });
@@ -347,6 +359,42 @@ def _frame_summary(frame_times_ms: list[float], frame_count: int, elapsed_ms: fl
     return result
 
 
+def _resource_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    cpu_process = [
+        sample["process_tree_cpu_pct_machine"]
+        for sample in samples
+        if isinstance(sample.get("process_tree_cpu_pct_machine"), (int, float))
+    ]
+    cpu_system = [
+        sample["system_cpu_pct"]
+        for sample in samples
+        if isinstance(sample.get("system_cpu_pct"), (int, float))
+    ]
+    gpu = [
+        sample["gpu_3d_utilization_pct"]
+        for sample in samples
+        if isinstance(sample.get("gpu_3d_utilization_pct"), (int, float))
+    ]
+    rss = [
+        sample["process_tree_rss_mb"]
+        for sample in samples
+        if isinstance(sample.get("process_tree_rss_mb"), (int, float))
+    ]
+    return {
+        "sample_count": len(samples),
+        "process_cpu_pct_of_machine_mean": round(statistics.fmean(cpu_process), 2) if cpu_process else
+            "NON MESURÉE — aucun échantillon CPU processus",
+        "system_cpu_pct_mean": round(statistics.fmean(cpu_system), 2) if cpu_system else
+            "NON MESURÉE — aucun échantillon CPU système",
+        "gpu_3d_pct_mean": round(statistics.fmean(gpu), 2) if gpu else
+            "NON MESURÉE — aucun échantillon GPU 3D PDH",
+        "process_tree_rss_mb_mean": round(statistics.fmean(rss), 1) if rss else
+            "NON MESURÉE — aucun échantillon RSS",
+        "process_tree_rss_mb_max": round(max(rss), 1) if rss else
+            "NON MESURÉE — aucun échantillon RSS",
+    }
+
+
 def _begin_capture(page: Any, app: QApplication) -> None:
     result = _run_js(page, app, "window.__gevBench.startCapture(); 'capturing';")
     if result != "capturing":
@@ -397,7 +445,8 @@ def _capture_for(
         raise TypeError(f"Invalid frame capture for {label}: {raw!r}")
     cesium = raw["cesium"]
     raf = raw["raf"]
-    long_task_times = raw["longTasksMs"]
+    long_tasks = raw["longTasks"]
+    long_task_durations = [entry["durationMs"] for entry in long_tasks]
     active_action_capture = raw.get("actionCapture")
     if active_action_capture is not None:
         active_action_capture = {
@@ -421,15 +470,20 @@ def _capture_for(
             cesium["frameTimesMs"], cesium["frames"], cesium["elapsedMs"]
         ),
         "long_tasks": {
-            "count": len(long_task_times) if raw["longTaskApiAvailable"] else None,
-            "total_ms": round(sum(long_task_times), 3) if raw["longTaskApiAvailable"] else
+            "count": len(long_tasks) if raw["longTaskApiAvailable"] else None,
+            "total_ms": round(sum(long_task_durations), 3) if raw["longTaskApiAvailable"] else
                 "NON MESURÉE — PerformanceObserver longtask indisponible dans QtWebEngine",
-            "durations_ms": long_task_times if raw["longTaskApiAvailable"] else
+            "entries": long_tasks if raw["longTaskApiAvailable"] else
                 "NON MESURÉE — PerformanceObserver longtask indisponible dans QtWebEngine",
         },
+        "resource_summary": _resource_summary(samples),
         "raw_frame_intervals_ms": {
             "raf": raf["frameTimesMs"],
             "cesium_post_render": cesium["frameTimesMs"],
+        },
+        "raw_frame_timestamps_ms": {
+            "cesium_post_render": cesium.get("renderTimesMs", []),
+            "clock": "performance.now() relative to postRender probe start; near-aligned with capture start",
         },
         "action_result": action_result,
         "action_elapsed_ms": round(action_ms, 2) if action_ms is not None else None,
@@ -550,7 +604,61 @@ def _synthetic_flights(count: int = 600) -> list[dict[str, Any]]:
     ]
 
 
-def run_benchmark(output_path: Path) -> dict[str, Any]:
+def _git_provenance() -> dict[str, Any]:
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    branch = subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return {
+        "git_head": head,
+        "git_branch": branch,
+        "git_clean": not bool(status.strip()),
+        "git_status_porcelain": status.splitlines(),
+    }
+
+
+def _critical_js_hashes() -> dict[str, str]:
+    return {
+        relative: hashlib.sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+        for relative in CRITICAL_JS_FILES
+    }
+
+
+def _parse_resolution(value: str) -> tuple[int, int]:
+    try:
+        width, height = (int(part) for part in value.lower().split("x", maxsplit=1))
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError(
+            "Résolution attendue au format LARGEURxHAUTEUR"
+        ) from error
+    if width <= 0 or height <= 0:
+        raise argparse.ArgumentTypeError("Les dimensions doivent être positives")
+    return width, height
+
+
+def run_benchmark(
+    output_path: Path,
+    expected_screen: tuple[int, int],
+    target_window: tuple[int, int],
+    target_canvas: tuple[int, int],
+) -> dict[str, Any]:
     global GPU_SAMPLER
     QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app = QApplication(sys.argv[:1])
@@ -558,6 +666,16 @@ def run_benchmark(output_path: Path) -> dict[str, Any]:
     PROC.cpu_percent(interval=None)
     psutil.cpu_percent(interval=None)
     _process_tree_snapshot()
+
+    screen = app.primaryScreen()
+    if screen is None:
+        raise RuntimeError("Écran Qt principal indisponible; résolution effective non vérifiable")
+    screen_resolution = (screen.geometry().width(), screen.geometry().height())
+    if screen_resolution != expected_screen:
+        raise RuntimeError(
+            f"Résolution écran inattendue avant benchmark: {screen_resolution}, "
+            f"attendu {expected_screen}"
+        )
 
     started = time.perf_counter()
     if not request_open(timeout=12.0):
@@ -576,29 +694,50 @@ def run_benchmark(output_path: Path) -> dict[str, Any]:
     window = active_window()
     if window is None:
         raise RuntimeError("La fenêtre GEV n'est pas accessible après request_open")
+    window.resize(*target_window)
+    window.raise_()
+    window.activateWindow()
+    app.processEvents()
     page = window._transport._page
     if page is None:
         raise RuntimeError("QWebEnginePage absente après ouverture")
     harness = _run_js(page, app, HARNESS_JS)
     if harness not in ("installed", "already_installed"):
         raise RuntimeError(f"Installation du harness échouée: {harness!r}")
-    page_info = _run_js(page, app, "window.__gevBench.pageInfo();")
+    expected_canvas_info = {"width": target_canvas[0], "height": target_canvas[1]}
+    resize_deadline = time.perf_counter() + 8.0
+    page_info = None
+    while time.perf_counter() < resize_deadline:
+        app.processEvents()
+        page_info = _run_js(page, app, "window.__gevBench.pageInfo();")
+        if (
+            (window.width(), window.height()) == target_window
+            and isinstance(page_info, dict)
+            and page_info.get("canvas") == expected_canvas_info
+        ):
+            break
+        time.sleep(0.05)
+    if (window.width(), window.height()) != target_window:
+        raise RuntimeError(
+            f"Taille effective de fenêtre {(window.width(), window.height())}; "
+            f"attendu {target_window}"
+        )
     if not isinstance(page_info, dict) or not page_info.get("canvas"):
         raise RuntimeError(f"Canvas Cesium absent; la scène n'est pas validée: {page_info!r}")
+    if page_info["canvas"] != expected_canvas_info:
+        raise RuntimeError(
+            f"Canvas Cesium effectif {page_info['canvas']}; attendu {expected_canvas_info}"
+        )
     benchmark_info = _run_js(page, app, "JSON.stringify(window.jarvisWorld.__benchmark);")
     if not isinstance(benchmark_info, dict) or not benchmark_info.get("cesiumVersion"):
         raise RuntimeError("La sonde Cesium postRender n'est pas disponible")
 
-    screen = app.primaryScreen()
     environment = _hardware_environment(page_info)
-    environment["screen"] = (
-        {
+    environment["screen"] = {
             "geometry_px": [screen.geometry().width(), screen.geometry().height()],
             "device_pixel_ratio": screen.devicePixelRatio(),
+            "expected_geometry_px": list(expected_screen),
         }
-        if screen
-        else "NON MESURÉE — écran Qt absent"
-    )
     environment["cesium_version"] = benchmark_info["cesiumVersion"]
     GPU_SAMPLER = _Gpu3DSampler()
     _process_tree_snapshot()
@@ -607,15 +746,18 @@ def run_benchmark(output_path: Path) -> dict[str, Any]:
     results: dict[str, Any] = {
         "schema_version": 1,
         "started_at_utc": datetime.now(timezone.utc).isoformat(),
-        "git_head": subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
-        ).stdout.strip(),
-        "git_branch": subprocess.run(
-            ["git", "branch", "--show-current"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
-        ).stdout.strip(),
+        **_git_provenance(),
+        "critical_js_sha256": _critical_js_hashes(),
         "environment": environment,
         "conditions": {
             "window_size_px": [window.width(), window.height()],
+            "expected_window_size_px": list(target_window),
+            "effective_canvas_size_px": [
+                page_info["canvas"]["width"],
+                page_info["canvas"]["height"],
+            ],
+            "expected_canvas_size_px": list(target_canvas),
+            "resolution_verified_before_run": True,
             "web_build_index_bytes": (REPO_ROOT / "web" / "gods_eye_view" / "dist" / "index.html").stat().st_size,
             "web_build_index_mtime": datetime.fromtimestamp(
                 (REPO_ROOT / "web" / "gods_eye_view" / "dist" / "index.html").stat().st_mtime,
@@ -979,9 +1121,27 @@ def main() -> int:
         default=Path("docs/benchmark_gev_real_results.json"),
         help="destination du résultat JSON (par défaut docs/benchmark_gev_real_results.json)",
     )
+    parser.add_argument(
+        "--expected-screen",
+        type=_parse_resolution,
+        default=(1920, 1080),
+        help="résolution écran requise avant la mesure (défaut: 1920x1080)",
+    )
+    parser.add_argument(
+        "--window-size",
+        type=_parse_resolution,
+        default=(1280, 720),
+        help="taille effective requise pour la fenêtre Qt (défaut: 1280x720)",
+    )
+    parser.add_argument(
+        "--canvas-size",
+        type=_parse_resolution,
+        default=(1280, 720),
+        help="taille effective requise pour le canvas Cesium (défaut: 1280x720)",
+    )
     args = parser.parse_args()
     output = args.output if args.output.is_absolute() else REPO_ROOT / args.output
-    results = run_benchmark(output)
+    results = run_benchmark(output, args.expected_screen, args.window_size, args.canvas_size)
     print(f"\nRésultats sauvegardés: {output}")
     for scenario in results["scenarios"]:
         cesium = scenario.get("cesium_post_render", {})
