@@ -324,7 +324,7 @@ def _start_action(page: Any, app: QApplication, action: str, args: dict[str, Any
 
 
 def _action_status(page: Any, app: QApplication) -> dict[str, Any] | None:
-    raw = _run_js(page, app, "JSON.stringify(window.__gevBench.actionStatus());", timeout_s=2.0)
+    raw = _run_js(page, app, "JSON.stringify(window.__gevBench.actionStatus());", timeout_s=10.0)
     if raw in (None, "null"):
         return None
     if isinstance(raw, dict):
