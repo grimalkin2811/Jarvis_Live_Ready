@@ -1,0 +1,62 @@
+{
+  "done": true,
+  "completedAt": "2026-11-10T22:30:25.915Z",
+  "results": [
+    {
+      "name": "esri-mapserver-metadata",
+      "result": "fetch-error",
+      "error": "TypeError: Failed to fetch",
+      "elapsedMs": 48
+    },
+    {
+      "name": "esri-imagery-tile",
+      "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/6/25/31",
+      "result": "error"
+    },
+    {
+      "name": "osm-tile",
+      "url": "https://tile.openstreetmap.org/5/7/12.png",
+      "result": "error"
+    },
+    {
+      "name": "adsb-live",
+      "result": "fetch-error",
+      "error": "TypeError: Failed to fetch",
+      "elapsedMs": 89.70000000298023
+    }
+  ],
+  "offline": {
+    "enableResult": {
+      "id": null,
+      "ok": true,
+      "action": "world_enable_layer",
+      "layer_id": "flights",
+      "enabled": true,
+      "changed": true
+    },
+    "source": "synthetic-sample",
+    "objectCount": 48,
+    "lastError": "adsb.lol indisponible (Failed to fetch (controlled offline test))",
+    "status": "HORS LIGNE — ÉCHANTILLON",
+    "chip": "FLIGHTS — 48 · ÉCHANTILLON",
+    "disableResult": {
+      "id": null,
+      "ok": true,
+      "action": "world_disable_layer",
+      "layer_id": "flights",
+      "enabled": false,
+      "changed": true
+    }
+  },
+  "geoview_state_after_probe": null,
+  "resolution": {
+    "screen": [
+      1920,
+      1080
+    ],
+    "window": [
+      1280,
+      720
+    ]
+  }
+}

@@ -1,0 +1,5 @@
+GOD'S EYE FROZEN SMOKE TEST
+  Frozen: True
+  Page: {"ready": true, "cesiumVersion": "1.147.0", "canvas": {"width": 1280, "height": 720}, "status": "PRÊT"}
+  Runtime: {"bundle_root": "E:\\_gev_corrective_validation_20261110\\pkg_gev\\dist\\Jarvis\\_internal", "web_index_exists": true, "qtwebengine_process_exists": true, "qt_resources_exists": true, "qt_library_executables_path": "E:\\_gev_corrective_validation_20261110\\pkg_gev\\dist\\Jarvis\\_internal\\PySide6", "qt_library_data_path": "E:\\_gev_corrective_validation_20261110\\pkg_gev\\dist\\Jarvis\\_internal\\PySide6", "qt_paths_inside_bundle": true}
+GOD'S EYE FROZEN SMOKE TEST PASSED

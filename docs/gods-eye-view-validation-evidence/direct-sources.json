@@ -1,0 +1,43 @@
+{
+  "measured_at_utc": "2026-11-11T00:21:36.144587+00:00",
+  "direct_python_http_checks": [
+    {
+      "name": "esri-imagery-metadata",
+      "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer?f=json",
+      "http_status": 200,
+      "content_type": "application/json",
+      "bytes": 11142,
+      "elapsed_ms": 289.0
+    },
+    {
+      "name": "esri-imagery-tile",
+      "url": "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/6/25/31",
+      "http_status": 200,
+      "content_type": "image/jpeg",
+      "bytes": 16505,
+      "elapsed_ms": 116.4
+    },
+    {
+      "name": "osm-tile",
+      "url": "https://tile.openstreetmap.org/5/7/12.png",
+      "http_status": 200,
+      "content_type": "image/png",
+      "bytes": 20206,
+      "elapsed_ms": 143.8
+    },
+    {
+      "name": "adsb-live",
+      "url": "https://api.adsb.lol/v2/lat/48.85/lon/2.35/dist/250",
+      "http_status": 200,
+      "content_type": "application/json",
+      "bytes": 25286,
+      "elapsed_ms": 209.6,
+      "aircraft_count": 0,
+      "response_timestamp_ms": 1794356495501,
+      "newest_position_age_s": null,
+      "oldest_position_age_s": null,
+      "sample_coordinates_stored": false
+    }
+  ],
+  "interpretation": "Ces r?ponses r?seau directes ne d?montrent pas le chargement depuis QtWebEngine; les r?sultats du client embarqu? sont consign?s s?par?ment."
+}

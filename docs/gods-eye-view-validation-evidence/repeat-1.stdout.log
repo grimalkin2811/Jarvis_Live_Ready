@@ -1,0 +1,9 @@
+
+Résultats sauvegardés: E:\_gev_corrective_validation_20261110\controlled_repeat_1.json
+A_globe_idle: Cesium FPS=2.78, p95=552.8
+B_camera_flyto: Cesium FPS=5.05, p95=274.9
+C_flights_on: Cesium FPS=3.95, p95=539.2
+D_flights_off: Cesium FPS=3.74, p95=539.8
+E_layer_churn_x10: Cesium FPS=N/A, p95=N/A
+F_synthetic_600_flights: Cesium FPS=0.01, p95=NON MESURÉE — aucun intervalle entre frames observé
+G_synthetic_600_flights_camera_move: Cesium FPS=4.87, p95=1252

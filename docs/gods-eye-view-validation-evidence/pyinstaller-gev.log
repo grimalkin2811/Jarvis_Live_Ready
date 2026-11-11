@@ -1,0 +1,449 @@
+1188 INFO: PyInstaller: 6.22.3, contrib hooks: 2026.8
+1189 INFO: Python: 3.11.9
+1527 INFO: Platform: Windows-10-10.0.26300-SP0
+1527 INFO: Python environment: C:\Users\Admin\AppData\Local\Programs\Python\Python311
+1591 INFO: Removing temporary files and cleaning cache in C:\Users\Admin\AppData\Local\pyinstaller
+77301 INFO: Module search paths (PYTHONPATH):
+['E:\\Jarvis_Live_Ready',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\python311.zip',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\DLLs',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\win32',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\win32\\lib',
+ 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\Pythonwin',
+ 'E:\\Jarvis_Live_Ready',
+ 'E:\\Jarvis_Live_Ready\\src']
+pygame 2.6.1 (SDL 2.28.4, Python 3.11.9)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+81084 INFO: Appending 'datas' from .spec
+81297 INFO: checking Analysis
+81298 INFO: Building Analysis because Analysis-00.toc is non existent
+81299 INFO: Looking for Python shared library...
+81299 INFO: Using Python shared library: C:\Users\Admin\AppData\Local\Programs\Python\Python311\python311.dll
+81300 INFO: Running Analysis Analysis-00.toc
+81300 INFO: Target bytecode optimization level: 0
+81301 INFO: Initializing module dependency graph...
+81308 INFO: Initializing module graph hook caches...
+81408 INFO: Analyzing modules for base_library.zip ...
+85173 INFO: Processing standard module hook 'hook-heapq.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+85372 INFO: Processing standard module hook 'hook-encodings.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+88181 INFO: Processing standard module hook 'hook-math.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+89255 INFO: Processing standard module hook 'hook-pickle.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+95014 INFO: Caching module dependency graph...
+95123 INFO: Analyzing E:\Jarvis_Live_Ready\run_jarvis.py
+95941 INFO: Processing standard module hook 'hook-PySide6.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+96474 INFO: Processing standard module hook 'hook-shiboken6.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+97046 INFO: Processing standard module hook 'hook-PySide6.QtNetwork.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+103811 INFO: Processing standard module hook 'hook-PySide6.QtCore.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+112937 INFO: Processing standard module hook 'hook-PySide6.QtWidgets.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+135064 INFO: Processing standard module hook 'hook-PySide6.QtGui.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+241362 INFO: Processing standard module hook 'hook-numpy.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+242772 INFO: Processing pre-safe-import-module hook 'hook-typing_extensions.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+242779 INFO: SetuptoolsInfo: initializing cached setuptools info...
+245795 INFO: Processing standard module hook 'hook-multiprocessing.util.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+246011 INFO: Processing standard module hook 'hook-xml.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+246867 INFO: Processing standard module hook 'hook-_ctypes.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+248666 INFO: Processing standard module hook 'hook-difflib.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+250176 INFO: Processing standard module hook 'hook-sysconfig.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+250465 INFO: Processing standard module hook 'hook-platform.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+251691 INFO: Processing standard module hook 'hook-webbrowser.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+251796 INFO: Processing standard module hook 'hook-psutil.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+257842 INFO: Processing standard module hook 'hook-charset_normalizer.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+259273 INFO: Processing pre-safe-import-module hook 'hook-importlib_metadata.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+259281 INFO: Processing pre-safe-import-module hook 'hook-importlib_resources.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+259408 INFO: Processing standard module hook 'hook-urllib3.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+259838 INFO: Processing pre-safe-import-module hook 'hook-backports.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+261733 INFO: Processing standard module hook 'hook-certifi.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+262141 INFO: Processing standard module hook 'hook-cryptography.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+266516 INFO: hook-cryptography: cryptography does not seem to be using dynamically linked OpenSSL.
+267791 INFO: Processing standard module hook 'hook-onnxruntime.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+268465 INFO: Processing standard module hook 'hook-torch.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+27272 WARNING: Failed to collect submodules for 'torch.testing._internal.opinfo' because importing 'torch.testing._internal.opinfo' raised: ModuleNotFoundError: No module named 'expecttest'
+C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\utils\hooks\__init__.py:665: DeprecationWarning: `torch.distributed._sharding_spec` will be deprecated, use `torch.distributed._shard.sharding_spec` instead
+  __import__(name)
+C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\utils\hooks\__init__.py:665: DeprecationWarning: `torch.distributed._sharded_tensor` will be deprecated, use `torch.distributed._shard.sharded_tensor` instead
+  __import__(name)
+C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\utils\hooks\__init__.py:665: DeprecationWarning: `torch.distributed._shard.checkpoint` will be deprecated, use `torch.distributed.checkpoint` instead
+  __import__(name)
+344940 INFO: hook-torch: this torch build does not depend on MKL...
+351129 INFO: Processing standard module hook 'hook-py.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+352313 INFO: Processing standard module hook 'hook-pygments.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+358882 INFO: Processing pre-safe-import-module hook 'hook-packaging.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+359564 INFO: Processing pre-safe-import-module hook 'hook-tomli.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+361449 INFO: Processing standard module hook 'hook-pytest.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+362387 INFO: Processing standard module hook 'hook-pkg_resources.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+395231 INFO: Processing standard module hook 'hook-scipy.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+398139 INFO: Processing standard module hook 'hook-pycparser.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+398504 INFO: Processing standard module hook 'hook-setuptools.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+398549 INFO: Processing pre-safe-import-module hook 'hook-distutils.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+398552 INFO: Processing pre-find-module-path hook 'hook-distutils.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+401190 INFO: Processing standard module hook 'hook-distutils.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+401482 INFO: Processing standard module hook 'hook-distutils.util.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+401641 INFO: Processing standard module hook 'hook-_osx_support.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+405678 INFO: Processing standard module hook 'hook-scipy.linalg.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+417208 INFO: Processing pre-safe-import-module hook 'hook-win32com.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\pre_safe_import_module'
+417482 INFO: Processing standard module hook 'hook-win32com.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+417500 INFO: Processing standard module hook 'hook-pythoncom.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+417833 INFO: Processing standard module hook 'hook-pywintypes.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+420011 INFO: Processing standard module hook 'hook-sqlite3.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+445978 INFO: Processing pre-safe-import-module hook 'hook-tensorflow.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\pre_safe_import_module'
+463416 INFO: Processing standard module hook 'hook-fsspec.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+475006 INFO: Processing standard module hook 'hook-xml.dom.domreg.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+478375 INFO: Processing standard module hook 'hook-PIL.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+479381 INFO: Processing standard module hook 'hook-PIL.Image.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+480581 INFO: Processing standard module hook 'hook-xml.etree.cElementTree.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+480979 INFO: Processing standard module hook 'hook-PIL.ImageFilter.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+497865 INFO: Processing standard module hook 'hook-torchaudio.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+513797 INFO: Processing standard module hook 'hook-scipy.io.matlab.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+539472 INFO: Processing standard module hook 'hook-jinja2.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+548239 INFO: Processing standard module hook 'hook-numba.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+548341 INFO: Processing standard module hook 'hook-llvmlite.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+652773 INFO: Processing standard module hook 'hook-rich.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+684007 INFO: Processing standard module hook 'hook-scipy.special._ufuncs.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+684955 INFO: Processing standard module hook 'hook-scipy.special._ellip_harm_2.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+708243 INFO: Processing standard module hook 'hook-scipy.spatial._ckdtree.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+714852 INFO: Processing standard module hook 'hook-scipy.spatial.transform.rotation.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+724612 INFO: Processing standard module hook 'hook-scipy.stats._stats.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+730698 INFO: Processing standard module hook 'hook-scipy.sparse.csgraph.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+789088 INFO: Processing standard module hook 'hook-sklearn.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+792142 INFO: Processing standard module hook 'hook-sklearn.utils.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+793843 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.numpy.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+794004 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.cupy.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+794057 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.torch.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+794153 INFO: Processing standard module hook 'hook-sklearn.externals.array_api_compat.dask.array.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+794977 INFO: Processing standard module hook 'hook-sklearn.metrics.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+803965 INFO: Processing standard module hook 'hook-sklearn.metrics.cluster.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+804147 INFO: Processing standard module hook 'hook-sklearn.metrics.pairwise.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+804781 INFO: Processing standard module hook 'hook-sklearn.cluster.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+805227 INFO: Processing standard module hook 'hook-sklearn.neighbors.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+805645 INFO: Processing standard module hook 'hook-sklearn.linear_model.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+809573 INFO: Processing standard module hook 'hook-PySide6.QtWebEngineWidgets.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+813538 INFO: Processing standard module hook 'hook-PySide6.QtPrintSupport.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+817856 INFO: Processing standard module hook 'hook-PySide6.QtWebEngineCore.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+828954 INFO: Processing standard module hook 'hook-PySide6.QtWebChannel.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+832405 INFO: Processing standard module hook 'hook-sounddevice.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+833319 INFO: Processing standard module hook 'hook-pydantic.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+835234 INFO: Processing standard module hook 'hook-zoneinfo.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+837647 INFO: Processing standard module hook 'hook-anyio.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+846336 INFO: Processing standard module hook 'hook-websockets.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+859361 INFO: Processing standard module hook 'hook-comtypes.client.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+862105 INFO: Processing standard module hook 'hook-PySide6.QtMultimedia.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+890450 INFO: Analyzing hidden import 'openwakeword.metrics'
+890627 INFO: Analyzing hidden import 'openwakeword.train'
+890967 INFO: Analyzing hidden import 'google.genai._local_tokenizer_loader'
+891277 INFO: Processing standard module hook 'hook-transformers.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+960314 INFO: Processing standard module hook 'hook-orjson.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+963063 INFO: Processing standard module hook 'hook-uvicorn.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+972477 INFO: Processing standard module hook 'hook-soundfile.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+972521 INFO: Processing standard module hook 'hook-librosa.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+973837 INFO: Processing standard module hook 'hook-cv2.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+975183 INFO: Processing standard module hook 'hook-av.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+979057 INFO: Processing standard module hook 'hook-regex.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+984259 INFO: Processing standard module hook 'hook-emoji.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1036396 INFO: Processing standard module hook 'hook-nltk.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1058810 INFO: Processing standard module hook 'hook-pygame.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\pygame\\__pyinstaller'
+1063318 INFO: Processing standard module hook 'hook-spacy.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1080474 INFO: Processing standard module hook 'hook-thinc.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1085671 INFO: Processing pre-safe-import-module hook 'hook-zipp.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+1086192 INFO: Processing standard module hook 'hook-thinc.backends.numpy_ops.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1086485 INFO: Processing standard module hook 'hook-srsly.msgpack._packer.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1094124 INFO: Processing pre-safe-import-module hook 'hook-wheel.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+1109965 INFO: Processing standard module hook 'hook-babel.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1111132 INFO: Processing standard module hook 'hook-pytz.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1112010 INFO: Processing standard module hook 'hook-jsonschema.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1112655 INFO: Processing standard module hook 'hook-jsonschema_specifications.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1112893 INFO: Processing standard module hook 'hook-dateutil.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1113314 INFO: Processing pre-safe-import-module hook 'hook-six.moves.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+1113953 INFO: Processing standard module hook 'hook-rdflib.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1173348 INFO: Analyzing hidden import 'google.genai._test_api_client'
+1173361 INFO: Analyzing hidden import 'google.genai.agents'
+1173375 INFO: Analyzing hidden import 'google.genai.credentials'
+1173395 INFO: Analyzing hidden import 'google.genai.environments'
+1173409 INFO: Analyzing hidden import 'google.genai.interactions'
+1173432 INFO: Analyzing hidden import 'google.genai.local_tokenizer'
+1173550 INFO: Analyzing hidden import 'google.genai.tests'
+1173564 INFO: Analyzing hidden import 'google.genai.tests.afc'
+1173581 INFO: Analyzing hidden import 'google.genai.tests.afc.test_convert_if_exist_pydantic_model'
+1173696 INFO: Analyzing hidden import 'google.genai.tests.afc.test_convert_number_values_for_function_call_args'
+1173770 INFO: Analyzing hidden import 'google.genai.tests.afc.test_find_afc_incompatible_tool_indexes'
+1173799 INFO: Analyzing hidden import 'google.genai.tests.afc.test_generate_content_stream_afc'
+1173841 INFO: Analyzing hidden import 'google.genai.tests.afc.test_generate_content_stream_afc_thoughts'
+1173931 INFO: Analyzing hidden import 'google.genai.tests.afc.test_get_function_map'
+1173982 INFO: Analyzing hidden import 'google.genai.tests.afc.test_get_function_response_parts'
+1174041 INFO: Analyzing hidden import 'google.genai.tests.afc.test_get_max_remote_calls_for_afc'
+1174109 INFO: Analyzing hidden import 'google.genai.tests.afc.test_get_usage_header'
+1174138 INFO: Analyzing hidden import 'google.genai.tests.afc.test_invoke_function_from_dict_args'
+1174229 INFO: Analyzing hidden import 'google.genai.tests.afc.test_raise_error_for_afc_incompatible_config'
+1174317 INFO: Analyzing hidden import 'google.genai.tests.afc.test_should_append_afc_history'
+1174338 INFO: Analyzing hidden import 'google.genai.tests.afc.test_should_disable_afc'
+1174369 INFO: Analyzing hidden import 'google.genai.tests.batches'
+1174380 INFO: Analyzing hidden import 'google.genai.tests.batches.test_cancel'
+1174399 INFO: Analyzing hidden import 'google.genai.tests.batches.test_create'
+1174420 INFO: Analyzing hidden import 'google.genai.tests.batches.test_create_with_bigquery'
+1174470 INFO: Analyzing hidden import 'google.genai.tests.batches.test_create_with_file'
+1174516 INFO: Analyzing hidden import 'google.genai.tests.batches.test_create_with_gcs'
+1174537 INFO: Analyzing hidden import 'google.genai.tests.batches.test_create_with_inlined_requests'
+1174602 INFO: Analyzing hidden import 'google.genai.tests.batches.test_create_with_vertex_dataset'
+1174698 INFO: Analyzing hidden import 'google.genai.tests.batches.test_delete'
+1174775 INFO: Analyzing hidden import 'google.genai.tests.batches.test_embedding'
+1174849 INFO: Analyzing hidden import 'google.genai.tests.batches.test_get'
+1174891 INFO: Analyzing hidden import 'google.genai.tests.batches.test_list'
+1174922 INFO: Analyzing hidden import 'google.genai.tests.caches'
+1174936 INFO: Analyzing hidden import 'google.genai.tests.caches.constants'
+1174950 INFO: Analyzing hidden import 'google.genai.tests.caches.test_create'
+1175253 INFO: Analyzing hidden import 'google.genai.tests.caches.test_create_custom_url'
+1175378 INFO: Analyzing hidden import 'google.genai.tests.caches.test_delete'
+1175491 INFO: Analyzing hidden import 'google.genai.tests.caches.test_delete_custom_url'
+1175536 INFO: Analyzing hidden import 'google.genai.tests.caches.test_get'
+1175551 INFO: Analyzing hidden import 'google.genai.tests.caches.test_get_custom_url'
+1175625 INFO: Analyzing hidden import 'google.genai.tests.caches.test_list'
+1175641 INFO: Analyzing hidden import 'google.genai.tests.caches.test_update'
+1175722 INFO: Analyzing hidden import 'google.genai.tests.caches.test_update_custom_url'
+1175793 INFO: Analyzing hidden import 'google.genai.tests.chats'
+1175802 INFO: Analyzing hidden import 'google.genai.tests.chats.test_continuation_token'
+1175907 INFO: Analyzing hidden import 'google.genai.tests.chats.test_get_history'
+1176026 INFO: Analyzing hidden import 'google.genai.tests.chats.test_send_message'
+1176082 INFO: Analyzing hidden import 'google.genai.tests.chats.test_send_message_continuation_token'
+1176153 INFO: Analyzing hidden import 'google.genai.tests.chats.test_validate_response'
+1176231 INFO: Analyzing hidden import 'google.genai.tests.client'
+1176244 INFO: Analyzing hidden import 'google.genai.tests.client.test_async_stream'
+1176346 INFO: Analyzing hidden import 'google.genai.tests.client.test_client_close'
+1176581 INFO: Analyzing hidden import 'google.genai.tests.client.test_client_initialization'
+1176741 INFO: Analyzing hidden import 'google.genai.tests.client.test_client_requests'
+1176789 INFO: Analyzing hidden import 'google.genai.tests.client.test_custom_client'
+1176815 INFO: Analyzing hidden import 'google.genai.tests.client.test_http_options'
+1176845 INFO: Analyzing hidden import 'google.genai.tests.client.test_httpx2_client'
+1176923 INFO: Analyzing hidden import 'google.genai.tests.client.test_replay_client_equality'
+1176968 INFO: Analyzing hidden import 'google.genai.tests.client.test_retries'
+1177054 INFO: Analyzing hidden import 'google.genai.tests.client.test_upload_errors'
+1177109 INFO: Analyzing hidden import 'google.genai.tests.common'
+1177140 INFO: Analyzing hidden import 'google.genai.tests.common.test_common'
+1177239 INFO: Analyzing hidden import 'google.genai.tests.common.test_duck_type'
+1177281 INFO: Analyzing hidden import 'google.genai.tests.conftest'
+1177351 INFO: Analyzing hidden import 'google.genai.tests.documents'
+1177365 INFO: Analyzing hidden import 'google.genai.tests.documents.test_delete'
+1177382 INFO: Analyzing hidden import 'google.genai.tests.documents.test_get'
+1177452 INFO: Analyzing hidden import 'google.genai.tests.documents.test_list'
+1177478 INFO: Analyzing hidden import 'google.genai.tests.errors'
+1177488 INFO: Analyzing hidden import 'google.genai.tests.errors.test_api_error'
+1177519 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores'
+1177529 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_create'
+1177627 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_delete'
+1177653 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_get'
+1177731 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_import_file'
+1177793 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_list'
+1177807 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_multimodal_flow'
+1177906 INFO: Analyzing hidden import 'google.genai.tests.file_search_stores.test_upload_to_file_search_store'
+1177997 INFO: Analyzing hidden import 'google.genai.tests.files'
+1178009 INFO: Analyzing hidden import 'google.genai.tests.files.test_delete'
+1178078 INFO: Analyzing hidden import 'google.genai.tests.files.test_download'
+1178112 INFO: Analyzing hidden import 'google.genai.tests.files.test_get'
+1178187 INFO: Analyzing hidden import 'google.genai.tests.files.test_list'
+1178253 INFO: Analyzing hidden import 'google.genai.tests.files.test_register'
+1178298 INFO: Analyzing hidden import 'google.genai.tests.files.test_register_table'
+1178348 INFO: Analyzing hidden import 'google.genai.tests.files.test_upload'
+1178427 INFO: Analyzing hidden import 'google.genai.tests.gaos'
+1178436 INFO: Analyzing hidden import 'google.genai.tests.gaos.test_credentials_lifecycle'
+1178470 INFO: Analyzing hidden import 'google.genai.tests.gaos.test_environments_lifecycle'
+1178526 INFO: Analyzing hidden import 'google.genai.tests.gaos.test_triggers_lifecycle'
+1178645 INFO: Analyzing hidden import 'google.genai.tests.gaos.test_voices_lifecycle'
+1178815 INFO: Analyzing hidden import 'google.genai.tests.interactions'
+1178818 INFO: Analyzing hidden import 'google.genai.tests.interactions.test_auth'
+1178871 INFO: Analyzing hidden import 'google.genai.tests.interactions.test_httpx_compat'
+1178912 INFO: Analyzing hidden import 'google.genai.tests.interactions.test_integration'
+1178990 INFO: Analyzing hidden import 'google.genai.tests.interactions.test_paths'
+1179015 INFO: Analyzing hidden import 'google.genai.tests.live'
+1179026 INFO: Analyzing hidden import 'google.genai.tests.live.test_live'
+1179207 INFO: Analyzing hidden import 'google.genai.tests.live.test_live_music'
+1179251 INFO: Analyzing hidden import 'google.genai.tests.live.test_live_response'
+1179332 INFO: Analyzing hidden import 'google.genai.tests.live.test_send_client_content'
+1179412 INFO: Analyzing hidden import 'google.genai.tests.live.test_send_realtime_input'
+1179451 INFO: Analyzing hidden import 'google.genai.tests.live.test_send_tool_response'
+1179483 INFO: Analyzing hidden import 'google.genai.tests.live_api'
+1179484 INFO: Analyzing hidden import 'google.genai.tests.live_api.conftest'
+1179549 INFO: Analyzing hidden import 'google.genai.tests.live_api.test_live_session'
+1179590 INFO: Analyzing hidden import 'google.genai.tests.local_tokenizer'
+1179601 INFO: Analyzing hidden import 'google.genai.tests.local_tokenizer.test_local_tokenizer'
+1179677 INFO: Analyzing hidden import 'google.genai.tests.local_tokenizer.test_local_tokenizer_loader'
+1179700 INFO: Analyzing hidden import 'google.genai.tests.mcp'
+1179710 INFO: Analyzing hidden import 'google.genai.tests.mcp.test_has_mcp_tool_usage'
+1179734 INFO: Analyzing hidden import 'google.genai.tests.mcp.test_mcp_to_gemini_tools'
+1179773 INFO: Analyzing hidden import 'google.genai.tests.mcp.test_parse_config_for_mcp_sessions'
+1179840 INFO: Analyzing hidden import 'google.genai.tests.mcp.test_parse_config_for_mcp_usage'
+1179931 INFO: Analyzing hidden import 'google.genai.tests.mcp.test_set_mcp_usage_header'
+1179947 INFO: Analyzing hidden import 'google.genai.tests.models'
+1179958 INFO: Analyzing hidden import 'google.genai.tests.models.constants'
+1179987 INFO: Analyzing hidden import 'google.genai.tests.models.test_compute_tokens'
+1180060 INFO: Analyzing hidden import 'google.genai.tests.models.test_count_tokens'
+1180133 INFO: Analyzing hidden import 'google.genai.tests.models.test_delete'
+1180199 INFO: Analyzing hidden import 'google.genai.tests.models.test_edit_image'
+1180225 INFO: Analyzing hidden import 'google.genai.tests.models.test_embed_content'
+1180291 INFO: Analyzing hidden import 'google.genai.tests.models.test_function_call_streaming'
+1180786 INFO: Analyzing hidden import 'google.genai.tests.models.test_gc_continuation_token'
+1180987 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content'
+1181112 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_cached_content'
+1181180 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_config_zero_value'
+1181228 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_continuation_token'
+1181298 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_from_apikey'
+1181383 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_http_options'
+1181410 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_image_generation'
+1181456 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_mcp'
+1181565 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_media_resolution'
+1181622 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_model'
+1181693 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_multi_regional'
+1181762 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_part'
+1181804 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_content_thought'
+1181866 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_images'
+1181908 INFO: Analyzing hidden import 'google.genai.tests.models.test_generate_videos'
+1181969 INFO: Analyzing hidden import 'google.genai.tests.models.test_get'
+1182029 INFO: Analyzing hidden import 'google.genai.tests.models.test_list'
+1182057 INFO: Analyzing hidden import 'google.genai.tests.models.test_recontext_image'
+1182125 INFO: Analyzing hidden import 'google.genai.tests.models.test_segment_image'
+1182149 INFO: Analyzing hidden import 'google.genai.tests.models.test_update'
+1182177 INFO: Analyzing hidden import 'google.genai.tests.operations'
+1182186 INFO: Analyzing hidden import 'google.genai.tests.operations.test_get'
+1182212 INFO: Analyzing hidden import 'google.genai.tests.public_samples'
+1182235 INFO: Analyzing hidden import 'google.genai.tests.public_samples.test_gemini_text_only'
+1182309 INFO: Analyzing hidden import 'google.genai.tests.shared'
+1182333 INFO: Analyzing hidden import 'google.genai.tests.shared.batches'
+1182343 INFO: Analyzing hidden import 'google.genai.tests.shared.batches.test_create_delete'
+1182380 INFO: Analyzing hidden import 'google.genai.tests.shared.batches.test_create_get_cancel'
+1182452 INFO: Analyzing hidden import 'google.genai.tests.shared.batches.test_list'
+1182507 INFO: Analyzing hidden import 'google.genai.tests.shared.caches'
+1182512 INFO: Analyzing hidden import 'google.genai.tests.shared.caches.test_create_get_delete'
+1182575 INFO: Analyzing hidden import 'google.genai.tests.shared.caches.test_create_update_get'
+1182610 INFO: Analyzing hidden import 'google.genai.tests.shared.caches.test_list'
+1182652 INFO: Analyzing hidden import 'google.genai.tests.shared.chats'
+1182656 INFO: Analyzing hidden import 'google.genai.tests.shared.chats.test_send_message'
+1182695 INFO: Analyzing hidden import 'google.genai.tests.shared.chats.test_send_message_stream'
+1182742 INFO: Analyzing hidden import 'google.genai.tests.shared.files'
+1182747 INFO: Analyzing hidden import 'google.genai.tests.shared.files.test_list'
+1182784 INFO: Analyzing hidden import 'google.genai.tests.shared.files.test_upload_get_delete'
+1182812 INFO: Analyzing hidden import 'google.genai.tests.shared.models'
+1182817 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_compute_tokens'
+1182836 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_count_tokens'
+1182875 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_edit_image'
+1182966 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_embed'
+1182987 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_generate_content'
+1183030 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_generate_content_stream'
+1183098 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_generate_images'
+1183155 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_generate_videos'
+1183218 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_list'
+1183253 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_recontext_image'
+1183331 INFO: Analyzing hidden import 'google.genai.tests.shared.models.test_segment_image'
+1183380 INFO: Analyzing hidden import 'google.genai.tests.shared.tunings'
+1183393 INFO: Analyzing hidden import 'google.genai.tests.shared.tunings.test_create'
+1183420 INFO: Analyzing hidden import 'google.genai.tests.shared.tunings.test_create_get_cancel'
+1183446 INFO: Analyzing hidden import 'google.genai.tests.shared.tunings.test_list'
+1183503 INFO: Analyzing hidden import 'google.genai.tests.tokens'
+1183508 INFO: Analyzing hidden import 'google.genai.tests.tokens.test_create'
+1183603 INFO: Analyzing hidden import 'google.genai.tests.transformers'
+1183614 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_blobs'
+1183635 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_bytes'
+1183665 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_function_responses'
+1183763 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_schema'
+1183861 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_batch'
+1183953 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_content'
+1183998 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_contents'
+1184083 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_part'
+1184108 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_parts'
+1184163 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_tool'
+1184226 INFO: Analyzing hidden import 'google.genai.tests.transformers.test_t_tools'
+1184287 INFO: Analyzing hidden import 'google.genai.tests.tunings'
+1184291 INFO: Analyzing hidden import 'google.genai.tests.tunings.test_cancel'
+1184351 INFO: Analyzing hidden import 'google.genai.tests.tunings.test_end_to_end'
+1184423 INFO: Analyzing hidden import 'google.genai.tests.tunings.test_get'
+1184448 INFO: Analyzing hidden import 'google.genai.tests.tunings.test_list'
+1184477 INFO: Analyzing hidden import 'google.genai.tests.tunings.test_tune'
+1184504 INFO: Analyzing hidden import 'google.genai.tests.tunings.test_validate_reward'
+1184598 INFO: Analyzing hidden import 'google.genai.tests.types'
+1184602 INFO: Analyzing hidden import 'google.genai.tests.types.test_bytes_internal'
+1184683 INFO: Analyzing hidden import 'google.genai.tests.types.test_bytes_type'
+1184760 INFO: Analyzing hidden import 'google.genai.tests.types.test_future'
+1184779 INFO: Analyzing hidden import 'google.genai.tests.types.test_optional_types'
+1184832 INFO: Analyzing hidden import 'google.genai.tests.types.test_part_type'
+1184877 INFO: Analyzing hidden import 'google.genai.tests.types.test_schema_from_json_schema'
+1184956 INFO: Analyzing hidden import 'google.genai.tests.types.test_schema_json_schema'
+1185003 INFO: Analyzing hidden import 'google.genai.tests.types.test_types'
+1185141 INFO: Analyzing hidden import 'google.genai.triggers'
+1185194 INFO: Analyzing hidden import 'google.genai.webhooks'
+1185243 INFO: Analyzing hidden import 'src.packaging_validation'
+1185270 INFO: Analyzing hidden import 'src.updater'
+1185301 INFO: Analyzing hidden import 'UI.screen_halo_overlay'
+1185303 INFO: Processing module hooks (post-graph stage)...
+1193346 INFO: Processing pre-safe-import-module hook 'hook-platformdirs.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+1193378 INFO: Processing standard module hook 'hook-platformdirs.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1194727 INFO: Processing pre-safe-import-module hook 'hook-gi.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_safe_import_module'
+1196737 WARNING: Hidden import "pycparser.lextab" not found!
+1196738 WARNING: Hidden import "pycparser.yacctab" not found!
+1203166 INFO: Processing standard module hook 'hook-sklearn.tree.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1244593 INFO: Processing standard module hook 'hook-PIL.SpiderImagePlugin.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1257217 INFO: Processing standard module hook 'hook-PySide6.QtMultimediaWidgets.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1264898 INFO: Processing standard module hook 'hook-PySide6.QtPositioning.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1292747 INFO: Processing standard module hook 'hook-PySide6.QtQuickWidgets.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1308662 WARNING: Hidden import "scipy.special._cdflib" not found!
+1309153 INFO: Processing standard module hook 'hook-setuptools._vendor.importlib_metadata.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1310872 INFO: Processing standard module hook 'hook-setuptools._vendor.jaraco.text.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1316267 INFO: Processing standard module hook 'hook-tzdata.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\stdhooks'
+1318328 INFO: Performing binary vs. data reclassification (3956 entries)
+1366301 INFO: Looking for ctypes DLLs
+1366577 WARNING: Ignoring /usr/lib64/libgomp.so.1 imported from C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\torch\_inductor\codecache.py - only basenames are supported with ctypes imports!
+1366609 WARNING: Library nvcuda.dll required via ctypes not found
+1368754 WARNING: Library _name.dll required via ctypes not found
+1368763 WARNING: Library _handle.dll required via ctypes not found
+1369593 INFO: Analyzing run-time hooks ...
+1369665 INFO: Including run-time hook 'pyi_rth_inspect.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+1369681 INFO: Including run-time hook 'pyi_rth_pyside6.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+1369695 INFO: Processing pre-find-module-path hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\pre_find_module_path'
+1369711 INFO: Processing standard module hook 'hook-_pyi_rth_utils.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks'
+1369733 INFO: Including run-time hook 'pyi_rth_pkgutil.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+1369748 INFO: Including run-time hook 'pyi_rth_multiprocessing.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+1369764 INFO: Including run-time hook 'pyi_rth_cryptography_openssl.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+1369776 INFO: Including run-time hook 'pyi_rth_pkgres.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+1369794 INFO: Including run-time hook 'pyi_rth_pywintypes.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+1369807 INFO: Including run-time hook 'pyi_rth_pythoncom.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+1369810 INFO: Including run-time hook 'pyi_rth_setuptools.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks'
+1369826 INFO: Including run-time hook 'pyi_rth_nltk.py' from 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\_pyinstaller_hooks_contrib\\rthooks'
+1370332 INFO: Creating base_library.zip...
+1370379 INFO: Looking for dynamic libraries
+C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\building\build_main.py:227: DeprecationWarning: `torch.distributed._sharding_spec` will be deprecated, use `torch.distributed._shard.sharding_spec` instead
+  __import__(package)
+C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\building\build_main.py:227: DeprecationWarning: `torch.distributed._sharded_tensor` will be deprecated, use `torch.distributed._shard.sharded_tensor` instead
+  __import__(package)
+C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\building\build_main.py:227: DeprecationWarning: `torch.distributed._shard.checkpoint` will be deprecated, use `torch.distributed.checkpoint` instead
+  __import__(package)
+pygame 2.6.1 (SDL 2.28.4, Python 3.11.9)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+1471113 INFO: Extra DLL search directories (AddDllDirectory): ['C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\shiboken6', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\numpy.libs', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\scipy.libs', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\pandas.libs', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\pygame', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\torch\\lib', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\av.libs', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\cv2\\../../x64/vc17/bin', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\llvmlite.libs']
+1471113 INFO: Extra DLL search directories (PATH): ['C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\cv2\\../../x64/vc17/bin', 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\PySide6']
+1487566 WARNING: Library not found: could not resolve 'tbb12.dll', dependency of 'C:\\Users\\Admin\\AppData\\Local\\Programs\\Python\\Python311\\Lib\\site-packages\\numba\\np\\ufunc\\tbbpool.cp311-win_amd64.pyd'.
+1488745 INFO: Warnings written to E:\_gev_corrective_validation_20261110\pkg_gev\work\jarvis\warn-jarvis.txt
+1491390 INFO: Graph cross-reference written to E:\_gev_corrective_validation_20261110\pkg_gev\work\jarvis\xref-jarvis.html
+1492164 INFO: checking PYZ
+1492164 INFO: Building PYZ because PYZ-00.toc is non existent
+1492164 INFO: Building PYZ (ZlibArchive) E:\_gev_corrective_validation_20261110\pkg_gev\work\jarvis\PYZ-00.pyz
+1504449 INFO: Building PYZ (ZlibArchive) E:\_gev_corrective_validation_20261110\pkg_gev\work\jarvis\PYZ-00.pyz completed successfully.
+1504938 INFO: checking PKG
+1504938 INFO: Building PKG because PKG-00.toc is non existent
+1504938 INFO: Building PKG (CArchive) Jarvis.pkg
+1505073 INFO: Building PKG (CArchive) Jarvis.pkg completed successfully.
+1505075 INFO: Bootloader C:\Users\Admin\AppData\Local\Programs\Python\Python311\Lib\site-packages\PyInstaller\bootloader\Windows-64bit-intel\run.exe
+1505075 INFO: checking EXE
+1505076 INFO: Building EXE because EXE-00.toc is non existent
+1505076 INFO: Building EXE from EXE-00.toc
+1505079 INFO: Copying bootloader EXE to E:\_gev_corrective_validation_20261110\pkg_gev\work\jarvis\Jarvis.exe
+1505184 INFO: Copying icon to EXE
+1505238 INFO: Copying 0 resources to EXE
+1505238 INFO: Embedding manifest in EXE
+1505309 INFO: Appending PKG archive to EXE
+1505399 INFO: Fixing EXE headers
+1506548 INFO: Building EXE from EXE-00.toc completed successfully.
+1506640 INFO: checking COLLECT
+1506640 INFO: Building COLLECT because COLLECT-00.toc is non existent
+1506647 INFO: Building COLLECT COLLECT-00.toc
+1552261 INFO: Building COLLECT COLLECT-00.toc completed successfully.
+1553207 INFO: Build complete! The results are available in: E:\_gev_corrective_validation_20261110\pkg_gev\dist
+pygame 2.6.1 (SDL 2.28.4, Python 3.11.9)
+Hello from the pygame community. https://www.pygame.org/contribute.html
